@@ -15,6 +15,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
@@ -23,15 +24,17 @@ import (
 
 // Deps yönlendiricinin ihtiyaç duyduğu bağımlılıklar.
 type Deps struct {
-	Config   *config.Config
-	Pool     *pgxpool.Pool
-	Redis    *goredis.Client
-	Queries  *db.Queries
-	Sessions port.SessionStore
-	Limiter  port.RateLimiter
+	Config    *config.Config
+	Pool      *pgxpool.Pool
+	Redis     *goredis.Client
+	Queries   *db.Queries
+	Sessions  port.SessionStore
+	Limiter   port.RateLimiter
 	AuthSvc   *authsvc.Service
 	WalletSvc *walletsvc.Service
 	QuoteSvc  *pricingsvc.QuoteService
+	OrderSvc  *ordersvc.Service
+	OrderBus  handler.OrderStream
 }
 
 // NewRouter uygulamanın HTTP yönlendiricisini kurar.
@@ -67,6 +70,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	authH := handler.NewAuth(d.AuthSvc, d.Queries, responder, d.Config.SessionTTL, secureCookie)
 	walletH := handler.NewWallet(d.WalletSvc, d.Queries, responder)
 	catalogH := handler.NewCatalog(d.Queries, d.QuoteSvc, responder)
+	orderH := handler.NewOrder(d.OrderSvc, d.OrderBus, responder)
 
 	requireAuth := middleware.RequireAuth(middleware.AuthDeps{
 		Sessions: d.Sessions, Queries: d.Queries,
@@ -128,6 +132,29 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 				Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			catalogH.Quote)
+
+		// ─── Siparişler ───
+		//
+		// Satın alma DOĞRULANMIŞ E-POSTA gerektirir (FR-101) ve ayrı bir hız
+		// limiti taşır: her istek gerçek para harcar ve sağlayıcıda envanter
+		// tüketir. Genel /auth limitiyle aynı kovaya koymak, bir kullanıcının
+		// giriş denemeleriyle satın alma hakkını tüketmesi demekti.
+		auth.POST("/orders",
+			middleware.RequireVerifiedEmail(Fail),
+			middleware.RateLimit(d.Limiter, "order", middleware.RateLimitConfig{
+				Limit: 20, Window: time.Minute, KeyFn: middleware.ByUser,
+			}, Fail),
+			orderH.Create)
+
+		auth.GET("/orders", orderH.List)
+		auth.GET("/orders/:id", orderH.Get)
+		// DELETE: durum DEĞİŞTİRİR, dolayısıyla GET olamaz (değişmez #8).
+		auth.DELETE("/orders/:id", orderH.Cancel)
+
+		// SSE akışı. Hız limiti YOK: uzun ömürlü tek bir bağlantıdır ve
+		// limitlemek kod bekleyen kullanıcıyı akıştan düşürürdü. Koruma
+		// sahiplik kontrolündedir — başkasının akışı 404 döner (KK-403).
+		auth.GET("/orders/:id/stream", orderH.Stream)
 	}
 
 	// ─── Yönetim: izin ZORUNLU ───

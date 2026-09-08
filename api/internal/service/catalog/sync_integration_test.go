@@ -68,6 +68,11 @@ func setup(t *testing.T) (*catalog.Service, *fake.Provider, int64, *db.Queries) 
 
 	// Katalog tablolarını temizle (defter/kullanıcıya dokunmadan).
 	for _, q := range []string{
+		// price_quotes ÖNCE silinir: products'a RESTRICT bir FK ile bağlıdır.
+		// Başka bir paketten kalan tek bir teklif satırı, buradaki
+		// `DELETE FROM products` çağrısını FK ihlaliyle düşürür ve paketteki
+		// TÜM testler ortak setup'ta patlar — "bazen düşen testler" böyle olur.
+		"DELETE FROM price_quotes",
 		"DELETE FROM provider_offers", "DELETE FROM provider_dimension_maps",
 		"DELETE FROM products", "DELETE FROM providers",
 		"DELETE FROM operators", "DELETE FROM countries", "DELETE FROM services",

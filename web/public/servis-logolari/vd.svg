@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Betfair">
+  <rect width="24" height="24" rx="5.4" fill="#FFB80B"/>
+  <g transform="translate(4.560 4.560) scale(0.62)">
+    <path d="M20.218 3.14h-7.083v3.6H9.352l7.359 8.582L24 6.67h-3.782zM0 17.26h3.782v3.6h7.083v-3.6h3.783l-7.29-8.583z" fill="#ffffff"/>
+  </g>
+</svg>

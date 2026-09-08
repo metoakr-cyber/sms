@@ -116,14 +116,14 @@ type Money struct {
 }
 
 type UserResponse struct {
-	ID            string  `json:"id"` // public_id (UUID) — sayısal id dışarı verilmez
-	Email         string  `json:"email"`
-	Username      string  `json:"username"`
-	Status        string  `json:"status"`
-	EmailVerified bool    `json:"emailVerified"`
-	Balance       Money   `json:"balance"`
+	ID            string   `json:"id"` // public_id (UUID) — sayısal id dışarı verilmez
+	Email         string   `json:"email"`
+	Username      string   `json:"username"`
+	Status        string   `json:"status"`
+	EmailVerified bool     `json:"emailVerified"`
+	Balance       Money    `json:"balance"`
 	Permissions   []string `json:"permissions"`
-	CreatedAt     string  `json:"createdAt"`
+	CreatedAt     string   `json:"createdAt"`
 }
 
 type SessionResponse struct {
@@ -221,7 +221,7 @@ type StatementResponse struct {
 type AdjustBalanceRequest struct {
 	// AmountMinor kuruş cinsinden; pozitif ekler, negatif düşer.
 	// Çıplak ondalık sayı KABUL EDİLMEZ (docs/trd.md §9).
-	AmountMinor int64 `json:"amountMinor"`
+	AmountMinor int64  `json:"amountMinor"`
 	Note        string `json:"note"`
 
 	// IdempotencyKey ZORUNLUDUR ve İSTEMCİ tarafından üretilir.
@@ -294,4 +294,61 @@ type QuoteResponse struct {
 	Stock     int    `json:"stock"`
 	ExpiresAt string `json:"expiresAt"`
 	ExpiresIn int    `json:"expiresIn"` // saniye
+}
+
+// ─────────────────────────── Siparişler ───────────────────────────
+
+// CreateOrderRequest satın alma isteği.
+//
+// GÖVDEDE BAŞKA HİÇBİR ALAN YOKTUR. Fiyat, sağlayıcı ve maliyet istemciden
+// gelmez (CLAUDE.md değişmez #9); teklif kimliği hepsini sunucuda belirler.
+type CreateOrderRequest struct {
+	QuoteID string `json:"quoteId"`
+}
+
+func (r *CreateOrderRequest) Validate() []FieldError {
+	if strings.TrimSpace(r.QuoteID) == "" {
+		return []FieldError{{"quoteId", "Fiyat teklifi seçilmedi."}}
+	}
+	return nil
+}
+
+// OrderMessageResponse bir SMS mesajı.
+type OrderMessageResponse struct {
+	Code       string `json:"code"`
+	Body       string `json:"body"`
+	Sender     string `json:"sender,omitempty"`
+	ReceivedAt string `json:"receivedAt"`
+}
+
+// OrderResponse sipariş — dışa açık görünüm.
+//
+// Sayısal id, sağlayıcı kimliği, maliyet ve kur BURADA YOKTUR ve olmayacaktır.
+type OrderResponse struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	PhoneNumber string `json:"phoneNumber"`
+	ServiceCode string `json:"serviceCode"`
+	ServiceName string `json:"serviceName"`
+	CountryISO2 string `json:"countryIso2"`
+	CountryName string `json:"countryName"`
+	PhoneCode   string `json:"phoneCode,omitempty"`
+	Price       Money  `json:"price"`
+
+	ExpiresAt string `json:"expiresAt"`
+	// ExpiresIn sunucunun hesapladığı kalan saniye. İstemci kendi saatiyle
+	// hesaplamaz: saat kayması ve donmuş sekme yanlış sonuç verir.
+	ExpiresIn     int    `json:"expiresIn"`
+	CancellableAt string `json:"cancellableAt"`
+	CancellableIn int    `json:"cancellableIn"`
+	CreatedAt     string `json:"createdAt"`
+
+	Messages []OrderMessageResponse `json:"messages"`
+}
+
+type OrderListResponse struct {
+	Items  []OrderResponse `json:"items"`
+	Total  int64           `json:"total"`
+	Limit  int32           `json:"limit"`
+	Offset int32           `json:"offset"`
 }

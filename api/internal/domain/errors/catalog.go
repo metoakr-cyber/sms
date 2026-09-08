@@ -50,6 +50,22 @@ var (
 		"Fiyat teklifinin süresi doldu. Lütfen tekrar deneyin.", http.StatusConflict)
 	ErrQuoteConsumed = NewStatus(KindDomain, "QUOTE_CONSUMED",
 		"Bu teklif zaten kullanılmış.", http.StatusConflict)
+	// ErrQuoteNotFound teklif yok VEYA başkasına ait.
+	//
+	// İKİSİ AYNI HATAYA DÜŞER, bilerek: "bu teklif başkasının" demek, geçerli
+	// teklif kimliklerinin varlığını sızdırır ve numaralandırma saldırısına
+	// kapı açar.
+	ErrQuoteNotFound = NewStatus(KindDomain, "QUOTE_NOT_FOUND",
+		"Fiyat teklifi bulunamadı. Lütfen tekrar fiyat alın.", http.StatusNotFound)
+	// ErrMappingMissing sağlayıcı eşleştirmesi eksik. 🚨 Yapılandırma hatası.
+	ErrMappingMissing = NewStatus(KindInfra, "PROVIDER_MAPPING_MISSING",
+		"Bu servis şu an kullanılamıyor. Lütfen başka bir seçim yapın.", http.StatusServiceUnavailable)
+	// ErrOrderNotFound sipariş yok VEYA başkasına ait (aynı gerekçe).
+	ErrOrderNotFound = NewStatus(KindDomain, "ORDER_NOT_FOUND",
+		"Sipariş bulunamadı.", http.StatusNotFound)
+	// ErrOrderNotCancellable sipariş iptal edilebilir durumda değil.
+	ErrOrderNotCancellable = NewStatus(KindDomain, "ORDER_NOT_CANCELLABLE",
+		"Bu sipariş iptal edilemez.", http.StatusConflict)
 	ErrPriceChanged = NewStatus(KindDomain, "PRICE_CHANGED",
 		"Fiyat değişti. Lütfen yeni fiyatı görüp tekrar deneyin.", http.StatusConflict)
 	ErrOutOfStock = NewStatus(KindDomain, "OUT_OF_STOCK",

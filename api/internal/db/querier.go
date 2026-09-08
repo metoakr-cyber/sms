@@ -20,9 +20,17 @@ type Querier interface {
 	// WHERE consumed_at IS NULL sayesinde yarış durumunda ikinci çağrı
 	// SIFIR satır döner — kilitle birlikte çift savunma.
 	ConsumeQuote(ctx context.Context, arg ConsumeQuoteParams) (PriceQuote, error)
+	CountAllOrders(ctx context.Context, arg CountAllOrdersParams) (int64, error)
 	CountDimensionMaps(ctx context.Context, arg CountDimensionMapsParams) (int64, error)
 	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
+	CountOrderMessages(ctx context.Context, orderID int64) (int64, error)
+	CountUserOrders(ctx context.Context, userID int64) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
+	// Sipariş kaydı — T2 içinde, sağlayıcı çağrısı BAŞARILI olduktan sonra.
+	//
+	// Katalog alanları ANLIK GÖRÜNTÜ olarak yazılır: servis/ülke satırları katalog
+	// senkronunda silinebilir, sipariş geçmişi buna dayanamaz.
+	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	CreatePricingRule(ctx context.Context, arg CreatePricingRuleParams) (PricingRule, error)
 	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
 	// ─────────────────────── Teklif ───────────────────────
@@ -47,6 +55,14 @@ type Querier interface {
 	FindLedgerEntryByKey(ctx context.Context, idempotencyKey string) (LedgerEntry, error)
 	GetCountryByISO(ctx context.Context, iso2 string) (Country, error)
 	GetLatestFXRate(ctx context.Context, arg GetLatestFXRateParams) (FxRate, error)
+	// Webhook korelasyonu: sağlayıcı YALNIZ aktivasyon kimliğini taşır.
+	GetOrderByRemote(ctx context.Context, arg GetOrderByRemoteParams) (Order, error)
+	// Durum değiştirmeden ÖNCE kilitle. Kilitsiz okuma + yazma, iki işçinin aynı
+	// siparişi aynı anda sonlandırmasına ve çift iadeye yol açar.
+	GetOrderForUpdate(ctx context.Context, id int64) (Order, error)
+	// SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7).
+	// Ayrı bir `if order.UserID != userID` kontrolü yazılmaz: unutulabilir.
+	GetOrderForUser(ctx context.Context, arg GetOrderForUserParams) (Order, error)
 	GetProductForActivation(ctx context.Context, arg GetProductForActivationParams) (Product, error)
 	GetProvider(ctx context.Context, id int64) (Provider, error)
 	GetProviderByName(ctx context.Context, name string) (Provider, error)
@@ -58,6 +74,11 @@ type Querier interface {
 	// test: internal/service/pricing/remote_codes_integration_test.go#TestProviderReceivesItsOwnCodes
 	GetProviderRemoteCodes(ctx context.Context, arg GetProviderRemoteCodesParams) (GetProviderRemoteCodesRow, error)
 	GetQuoteByPublicID(ctx context.Context, publicID uuid.UUID) (PriceQuote, error)
+	// Sipariş anlık görüntüsü için servis/ülke adları.
+	//
+	// Sipariş satırına KOPYALANIR: katalog satırları senkronda silinebilir ve
+	// sipariş geçmişi bir yıl sonra da okunabilir olmalıdır.
+	GetQuoteContext(ctx context.Context, quoteID int64) (GetQuoteContextRow, error)
 	GetRemoteCode(ctx context.Context, arg GetRemoteCodeParams) (string, error)
 	GetRoleByName(ctx context.Context, name string) (Role, error)
 	GetServiceByCode(ctx context.Context, code string) (Service, error)
@@ -73,9 +94,17 @@ type Querier interface {
 	// ─────────────────────── Kur ───────────────────────
 	InsertFXRate(ctx context.Context, arg InsertFXRateParams) (FxRate, error)
 	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) (LedgerEntry, error)
+	// ─────────────────────────── Mesajlar ───────────────────────────
+	// DEDUP: aynı mesaj webhook, yoklama ve yeniden gönderimlerle en az sekiz kez
+	// gelebilir. UNIQUE kısıt son savunma hattıdır; ON CONFLICT ile sessizce
+	// yutulur ve `inserted` alanı gerçekten yeni mi söyler.
+	InsertOrderMessage(ctx context.Context, arg InsertOrderMessageParams) (OrderMessage, error)
 	InvalidateUserTokens(ctx context.Context, arg InvalidateUserTokensParams) error
 	// ─────────────────────── Sağlayıcı ───────────────────────
 	ListActiveProviders(ctx context.Context) ([]Provider, error)
+	// ─────────────────────────── Yönetim ───────────────────────────
+	// Yönetim paneli — `orders:read_all` izni gerektirir.
+	ListAllOrders(ctx context.Context, arg ListAllOrdersParams) ([]ListAllOrdersRow, error)
 	// ─────────────────────── Fiyat kuralları ───────────────────────
 	// Bir ürün için uygulanabilir TÜM kuralları döner.
 	// En spesifik olanı seçmek domain/pricing.SelectRule'ün işidir; öncelik
@@ -85,15 +114,32 @@ type Querier interface {
 	// Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
 	ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error)
 	ListDimensionMaps(ctx context.Context, arg ListDimensionMapsParams) ([]ProviderDimensionMap, error)
+	// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan siparişler.
+	ListExpiredPendingOrders(ctx context.Context, arg ListExpiredPendingOrdersParams) ([]Order, error)
 	// Kullanıcının hareket dökümü. SAHİPLİK sorgunun parçasıdır: user_id ayrı bir
 	// if kontrolü değil, WHERE koşuludur (docs/design.md §10).
 	ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error)
 	// Bir ürün için sağlayıcı teklifleri; en ucuz önce.
 	ListOffersForProduct(ctx context.Context, productID int64) ([]ListOffersForProductRow, error)
+	ListOrderMessages(ctx context.Context, orderID int64) ([]OrderMessage, error)
+	// `orphan-hold-reaper` için: PARASI ÇEKİLMİŞ ama siparişi olmayan teklifler.
+	//
+	// T1 (teklif tüket + bakiye düş) ile T2 (sipariş yaz) arasında süreç ölürse
+	// kullanıcının parası gitmiş ama elinde numara yoktur. Bu sorgu o durumu bulur.
+	//
+	// `consumed_at` eşiği, henüz T2'ye ulaşmamış NORMAL akışları yakalamamak için:
+	// satın alma birkaç saniye sürer, hemen "yetim" ilan etmek çalışan bir siparişi
+	// iade eder.
+	ListOrphanHolds(ctx context.Context, arg ListOrphanHoldsParams) ([]PriceQuote, error)
+	// ─────────────────────────── İşçi sorguları ───────────────────────────
+	// `order-poller` için: kod bekleyen, süresi dolmamış siparişler.
+	ListPendingOrdersForPoll(ctx context.Context, arg ListPendingOrdersForPollParams) ([]Order, error)
 	ListPricingRules(ctx context.Context) ([]PricingRule, error)
 	// Mutabakat: defter toplamı ile önbelleklenmiş bakiyenin uyuşmadığı kullanıcılar.
 	// Boş dönmesi beklenir; dönmezse ALARM üretilir (docs/trd.md FR-205).
 	ListReconciliationDrift(ctx context.Context, limit int32) ([]ListReconciliationDriftRow, error)
+	// `provider-refund-retry` için: sağlayıcıdan iade beklenen siparişler.
+	ListRefundRetryOrders(ctx context.Context, arg ListRefundRetryOrdersParams) ([]Order, error)
 	// Servis IZGARASI için özet: yalnız en az bir ülkede STOKLU olan servisler,
 	// her biri için stoklu ülke sayısı.
 	//
@@ -102,6 +148,10 @@ type Querier interface {
 	// kabul edilemez (docs/frontend-contract.md §8). Izgara yalnız servisleri
 	// gösterir; ülkeler servis seçilince ayrıca çekilir (~6 KB).
 	ListServicesWithStock(ctx context.Context) ([]ListServicesWithStockRow, error)
+	// `activation-reaper` için: terminal ama sağlayıcıda kapatılmamış siparişler.
+	// KK-412: bu sorgunun sonucu uzun vadede BOŞ olmalıdır.
+	ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]Order, error)
+	ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]Order, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListVisibleCountries(ctx context.Context) ([]Country, error)
@@ -114,9 +164,17 @@ type Querier interface {
 	// Kilit, transaction bitene kadar tutulur.
 	LockUserForUpdate(ctx context.Context, id int64) (LockUserForUpdateRow, error)
 	MarkEmailVerified(ctx context.Context, id int64) error
+	// Kapatma BAŞARILI OLDUKTAN SONRA çağrılır.
+	// Başarısızken yazılırsa reaper o siparişi bir daha hiç denemez ve aktivasyon
+	// sağlayıcıda açık kalır (FR-412).
+	MarkProviderClosed(ctx context.Context, arg MarkProviderClosedParams) error
 	// Senkron turunda görülmeyen teklifler "yok" sayılır. Aksi halde sağlayıcının
 	// listeden çıkardığı bir kombinasyon sonsuza kadar stokta görünürdü.
 	MarkStaleOffersUnavailable(ctx context.Context, arg MarkStaleOffersUnavailableParams) (int64, error)
+	// Yönetim özeti. Tek sorguda: N ayrı COUNT sorgusu atmak, tablo büyüdükçe
+	// panelin açılışını yavaşlatır.
+	OrderStatsSummary(ctx context.Context, since time.Time) (OrderStatsSummaryRow, error)
+	RecordCloseFailure(ctx context.Context, arg RecordCloseFailureParams) error
 	ReplaceUserRoles(ctx context.Context, arg ReplaceUserRolesParams) error
 	// Sağlayıcının İngilizce ülke adını ISO2 + Türkçe ad + telefon koduna çevirir.
 	ResolveCountryRef(ctx context.Context, nameKey string) (ResolveCountryRefRow, error)
@@ -129,7 +187,11 @@ type Querier interface {
 	RevokeAllUserSessions(ctx context.Context, userID int64) error
 	RevokeRole(ctx context.Context, arg RevokeRoleParams) error
 	RevokeSession(ctx context.Context, id string) error
+	// Durum yazımı — YALNIZ domain/order.Transition doğruladıktan sonra çağrılır.
+	// Veritabanındaki tetikleyici ikinci savunma hattıdır.
+	SetOrderStatus(ctx context.Context, arg SetOrderStatusParams) (Order, error)
 	SetProviderActive(ctx context.Context, arg SetProviderActiveParams) error
+	SetProviderRefundStatus(ctx context.Context, arg SetProviderRefundStatusParams) error
 	// Servis logosunu ayarlar. Yol `web/public/` köküne göredir: /servis-logolari/wa.svg
 	SetServiceIcon(ctx context.Context, arg SetServiceIconParams) (SetServiceIconRow, error)
 	SetUserBalance(ctx context.Context, arg SetUserBalanceParams) error

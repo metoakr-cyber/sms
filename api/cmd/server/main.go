@@ -26,6 +26,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	httptransport "github.com/ikmetrik/sms-platform/api/internal/transport/http"
@@ -101,6 +102,7 @@ func run() error {
 	}
 
 	walletService := walletsvc.New(txRunner)
+	orderBus := redis.NewOrderBus(rdb)
 
 	secrets, err := crypto.New(cfg.EncryptionKey)
 	if err != nil {
@@ -127,6 +129,12 @@ func run() error {
 		FX: fxService, Clock: port.RealClock{}, FXSafetyMargin: safety,
 	})
 
+	orderService := ordersvc.New(ordersvc.Deps{
+		TxRunner: txRunner, Registry: registry, Secrets: secrets,
+		Wallet: walletService, Publisher: ordersvc.NewBusPublisher(orderBus),
+		Clock: port.RealClock{},
+	})
+
 	authService := authsvc.New(authsvc.Deps{
 		TxRunner: txRunner, Sessions: sessions, Mailer: mail,
 		Captcha: cap, Limiter: limiter, Clock: port.RealClock{},
@@ -140,6 +148,7 @@ func run() error {
 			Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
 			Sessions: sessions, Limiter: limiter,
 			AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
+			OrderSvc: orderService, OrderBus: orderBus,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

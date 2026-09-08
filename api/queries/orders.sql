@@ -1,0 +1,193 @@
+-- name: CreateOrder :one
+-- Sipariş kaydı — T2 içinde, sağlayıcı çağrısı BAŞARILI olduktan sonra.
+--
+-- Katalog alanları ANLIK GÖRÜNTÜ olarak yazılır: servis/ülke satırları katalog
+-- senkronunda silinebilir, sipariş geçmişi buna dayanamaz.
+INSERT INTO orders (
+    user_id, provider_id, remote_order_id, provider_activation_id,
+    phone_number, verification_type,
+    product_id, service_code, service_name, country_iso2, country_name, phone_code,
+    quote_id, price_paid_minor, cost_micro, fx_rate,
+    expires_at, cancellable_at
+) VALUES (
+    @user_id, @provider_id, @remote_order_id, sqlc.narg(provider_activation_id),
+    @phone_number, @verification_type,
+    sqlc.narg(product_id), @service_code, @service_name, @country_iso2, @country_name, @phone_code,
+    sqlc.narg(quote_id), @price_paid_minor, @cost_micro, @fx_rate,
+    @expires_at, @cancellable_at
+)
+RETURNING *;
+
+-- name: GetOrderForUser :one
+-- SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7).
+-- Ayrı bir `if order.UserID != userID` kontrolü yazılmaz: unutulabilir.
+SELECT * FROM orders WHERE public_id = @public_id AND user_id = @user_id;
+
+-- name: GetOrderForUpdate :one
+-- Durum değiştirmeden ÖNCE kilitle. Kilitsiz okuma + yazma, iki işçinin aynı
+-- siparişi aynı anda sonlandırmasına ve çift iadeye yol açar.
+SELECT * FROM orders WHERE id = @id FOR UPDATE;
+
+-- name: GetOrderByRemote :one
+-- Webhook korelasyonu: sağlayıcı YALNIZ aktivasyon kimliğini taşır.
+SELECT * FROM orders
+WHERE provider_id = @provider_id AND remote_order_id = @remote_order_id;
+
+-- name: ListUserOrders :many
+SELECT * FROM orders
+WHERE user_id = @user_id
+ORDER BY created_at DESC
+LIMIT @lim OFFSET @off;
+
+-- name: CountUserOrders :one
+SELECT count(*) FROM orders WHERE user_id = @user_id;
+
+-- name: SetOrderStatus :one
+-- Durum yazımı — YALNIZ domain/order.Transition doğruladıktan sonra çağrılır.
+-- Veritabanındaki tetikleyici ikinci savunma hattıdır.
+UPDATE orders SET
+    status       = @status,
+    completed_at = CASE WHEN @status::order_status = 'COMPLETED' THEN coalesce(completed_at, @now) ELSE completed_at END,
+    cancelled_at = CASE WHEN @status::order_status IN ('CANCELLED','REFUNDED') THEN coalesce(cancelled_at, @now) ELSE cancelled_at END,
+    refunded_at  = CASE WHEN @status::order_status = 'REFUNDED' THEN coalesce(refunded_at, @now) ELSE refunded_at END,
+    cancel_reason = CASE WHEN @reason::text <> '' THEN @reason ELSE cancel_reason END
+WHERE id = @id
+RETURNING *;
+
+-- name: SetProviderRefundStatus :exec
+UPDATE orders SET
+    provider_refund_status       = @provider_refund_status,
+    provider_refund_amount_minor = @provider_refund_amount_minor,
+    refund_attempts              = refund_attempts + 1,
+    refund_next_attempt_at       = sqlc.narg(refund_next_attempt_at)
+WHERE id = @id;
+
+-- name: MarkProviderClosed :exec
+-- Kapatma BAŞARILI OLDUKTAN SONRA çağrılır.
+-- Başarısızken yazılırsa reaper o siparişi bir daha hiç denemez ve aktivasyon
+-- sağlayıcıda açık kalır (FR-412).
+UPDATE orders SET provider_closed_at = @now, close_last_error = '' WHERE id = @id;
+
+-- name: RecordCloseFailure :exec
+UPDATE orders SET close_attempts = close_attempts + 1, close_last_error = @close_last_error
+WHERE id = @id;
+
+-- ─────────────────────────── İşçi sorguları ───────────────────────────
+
+-- name: ListPendingOrdersForPoll :many
+-- `order-poller` için: kod bekleyen, süresi dolmamış siparişler.
+SELECT * FROM orders
+WHERE status = 'PENDING' AND expires_at > @now
+ORDER BY created_at
+LIMIT @lim;
+
+-- name: ListExpiredPendingOrders :many
+-- `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan siparişler.
+SELECT * FROM orders
+WHERE status = 'PENDING' AND expires_at <= @now
+ORDER BY expires_at
+LIMIT @lim;
+
+-- name: ListUnclosedTerminalOrders :many
+-- `activation-reaper` için: terminal ama sağlayıcıda kapatılmamış siparişler.
+-- KK-412: bu sorgunun sonucu uzun vadede BOŞ olmalıdır.
+SELECT * FROM orders
+WHERE provider_closed_at IS NULL
+  AND status IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REFUNDED')
+ORDER BY updated_at
+LIMIT @lim;
+
+-- name: ListRefundRetryOrders :many
+-- `provider-refund-retry` için: sağlayıcıdan iade beklenen siparişler.
+SELECT * FROM orders
+WHERE provider_refund_status IN ('PENDING', 'RETRY_SCHEDULED')
+  AND (refund_next_attempt_at IS NULL OR refund_next_attempt_at <= @now)
+ORDER BY coalesce(refund_next_attempt_at, created_at)
+LIMIT @lim;
+
+-- name: ListOrphanHolds :many
+-- `orphan-hold-reaper` için: PARASI ÇEKİLMİŞ ama siparişi olmayan teklifler.
+--
+-- T1 (teklif tüket + bakiye düş) ile T2 (sipariş yaz) arasında süreç ölürse
+-- kullanıcının parası gitmiş ama elinde numara yoktur. Bu sorgu o durumu bulur.
+--
+-- `consumed_at` eşiği, henüz T2'ye ulaşmamış NORMAL akışları yakalamamak için:
+-- satın alma birkaç saniye sürer, hemen "yetim" ilan etmek çalışan bir siparişi
+-- iade eder.
+SELECT q.* FROM price_quotes q
+LEFT JOIN orders o ON o.quote_id = q.id
+WHERE q.consumed_at IS NOT NULL
+  AND q.consumed_at < @older_than
+  AND o.id IS NULL
+ORDER BY q.consumed_at
+LIMIT @lim;
+
+-- ─────────────────────────── Mesajlar ───────────────────────────
+
+-- name: InsertOrderMessage :one
+-- DEDUP: aynı mesaj webhook, yoklama ve yeniden gönderimlerle en az sekiz kez
+-- gelebilir. UNIQUE kısıt son savunma hattıdır; ON CONFLICT ile sessizce
+-- yutulur ve `inserted` alanı gerçekten yeni mi söyler.
+INSERT INTO order_messages (order_id, provider_otp_id, code, body, sender, received_at)
+VALUES (@order_id, @provider_otp_id, @code, @body, @sender, @received_at)
+ON CONFLICT (order_id, provider_otp_id) DO NOTHING
+RETURNING *;
+
+-- name: ListOrderMessages :many
+SELECT * FROM order_messages WHERE order_id = @order_id ORDER BY received_at, id;
+
+-- name: CountOrderMessages :one
+SELECT count(*) FROM order_messages WHERE order_id = @order_id;
+
+-- ─────────────────────────── Yönetim ───────────────────────────
+
+-- name: ListAllOrders :many
+-- Yönetim paneli — `orders:read_all` izni gerektirir.
+SELECT o.*, u.username, u.email
+FROM orders o
+JOIN users u ON u.id = o.user_id
+WHERE (sqlc.narg(status)::order_status IS NULL OR o.status = sqlc.narg(status))
+  AND (sqlc.narg(q)::text IS NULL
+       OR u.email ILIKE '%' || sqlc.narg(q) || '%'
+       OR u.username ILIKE '%' || sqlc.narg(q) || '%'
+       OR o.phone_number ILIKE '%' || sqlc.narg(q) || '%')
+ORDER BY o.created_at DESC
+LIMIT @lim OFFSET @off;
+
+-- name: CountAllOrders :one
+SELECT count(*)
+FROM orders o JOIN users u ON u.id = o.user_id
+WHERE (sqlc.narg(status)::order_status IS NULL OR o.status = sqlc.narg(status))
+  AND (sqlc.narg(q)::text IS NULL
+       OR u.email ILIKE '%' || sqlc.narg(q) || '%'
+       OR u.username ILIKE '%' || sqlc.narg(q) || '%'
+       OR o.phone_number ILIKE '%' || sqlc.narg(q) || '%');
+
+-- name: OrderStatsSummary :one
+-- Yönetim özeti. Tek sorguda: N ayrı COUNT sorgusu atmak, tablo büyüdükçe
+-- panelin açılışını yavaşlatır.
+SELECT
+    count(*)                                                   AS total,
+    count(*) FILTER (WHERE status = 'PENDING')                 AS pending,
+    count(*) FILTER (WHERE status = 'COMPLETED')               AS completed,
+    count(*) FILTER (WHERE status IN ('CANCELLED','REFUNDED')) AS cancelled,
+    count(*) FILTER (WHERE provider_closed_at IS NULL
+                       AND status <> 'PENDING')                AS unclosed,
+    coalesce(sum(price_paid_minor) FILTER (WHERE status = 'COMPLETED'), 0)::bigint AS revenue_minor
+FROM orders
+WHERE created_at >= @since;
+
+-- name: GetQuoteContext :one
+-- Sipariş anlık görüntüsü için servis/ülke adları.
+--
+-- Sipariş satırına KOPYALANIR: katalog satırları senkronda silinebilir ve
+-- sipariş geçmişi bir yıl sonra da okunabilir olmalıdır.
+SELECT
+    s.code AS service_code, s.name AS service_name, s.name_tr AS service_name_tr,
+    c.iso2 AS country_iso2, c.name AS country_name, c.name_tr AS country_name_tr,
+    c.phone_code
+FROM price_quotes q
+JOIN products  p ON p.id = q.product_id
+JOIN services  s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+WHERE q.id = @quote_id;

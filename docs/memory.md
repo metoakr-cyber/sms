@@ -325,72 +325,29 @@ Kaçırılmamış (unescaped) hata mesajı → **yansımalı XSS** + yığın/SQ
 **Yapılacak:** İkisi de **rotate edilmeli** (yeni repoya taşınmayacak olsa bile, eski repo geçmişinde
 kalıyorlar). → `roadmap.md` M0.
 
-### 3.13b AÇIK: katalog entegrasyon testlerinde açıklanamayan bir düşüş
+### 3.13b ÇÖZÜLDÜ: katalog testlerindeki kararsız düşüş
 
-2026-09-08'de `check.sh` bir kez `service/catalog` paketindeki ALTI testin
-tamamıyla düştü (paketin ortak `setup`'ı düşünce olan budur), sonraki iki tam
-koşu ve tekil koşular geçti.
+`check.sh` bir kez `service/catalog` paketindeki altı testin tamamıyla düşmüştü;
+sonraki koşular geçmişti ve sebep bulunamamıştı.
 
-Hipotez kuruldu ve **ÇÜRÜTÜLDÜ:** "kalıntı `price_quotes` satırı
-`DELETE FROM providers`'ı FK ihlaliyle düşürüyor" denildi; elle bir teklif satırı
-bırakılıp test koşuldu, **geçti**. Sebep hâlâ bilinmiyor.
+**Sebep:** katalog testlerinin temizliği `DELETE FROM products` yapıyor ama
+`price_quotes.product_id` bu tabloya RESTRICT bir FK ile bağlı. Başka bir
+paketten kalan TEK bir teklif satırı, ortak `setup` içindeki bu silmeyi FK
+ihlaliyle düşürüyor ve paketteki bütün testler aynı anda patlıyor. Kalıntı
+teklif bazen oluyor bazen olmuyordu — "kararsız test" görüntüsü buradan
+geliyordu.
 
-Teşhis edilemedi çünkü `check.sh` yalnız süzülmüş 12 satır basıp gerisini
-atıyordu. Artık her adımın tam çıktısı `.check-logs/` altına yazılıyor. Bu
-düşüş tekrarlanırsa **önce o log okunacak**, tahmin yürütülmeyecek.
+**Düzeltme:** `price_quotes` bağımlı tablo olarak ÖNCE siliniyor.
 
-Kararsız bir birleştirme kapısı, kapısızlıktan az miktarda daha iyidir: insan
-"yine o hata" deyip yeniden koşmayı öğrenir ve gerçek hatayı da öyle geçer.
+**Kendi sürecimdeki hata — kayda değer:** bu hipotez ilk seferinde kurulmuştu
+("kalıntı `price_quotes` temizliği düşürüyor") ama yanlış test edildi: `products`
+yerine `providers` FK'sı denendi, test geçti ve hipotez **çürütülmüş sayıldı.**
+Doğru hipotez yanlış deneyle elendi. Ders: bir hipotezi çürütürken, deneyin
+hipotezin TAM İFADESİNİ sınadığından emin ol — yakın bir varyantını değil.
 
-### 3.15 Aynı hata üç katmanda: sağlayıcı kodu ≠ bizim kodumuz
-
-HeroSMS bağlandığında ortaya çıktı. Sağlayıcı ülkeyi `62` diye bilir, biz `TR`.
-Bu ayrım üç ayrı yerde ihlal edilmişti ve **üçü de FakeProvider ile
-görünmüyordu**, çünkü FakeProvider ülke kodu olarak zaten ISO2 kullanıyor:
-yanlış kod, doğru sonucu veriyordu.
-
-1. **Boyut senkronu** — `iso = rc.RemoteCode`: sağlayıcının kodu doğrudan
-   `countries.iso2` sütununa yazılıyordu. Sonuç: `iso2='62'`, Türkçe ad yok,
-   telefon kodu yok. → `country_reference` tablosu (migration 00007) eklendi;
-   ISO2 artık İNGİLİZCE ADDAN çözülüyor.
-2. **Teklif senkronu** — `GetCountryByISO(o.CountryCode)`: sağlayıcının kodu
-   bizim sütunumuzda aranıyordu. ISO2 düzeltilince arama boşa düştü ve senkron
-   **"0 teklif, 0 hata"** diyerek başarılı göründü, ardından tüm katalogu bayat
-   işaretledi. → `provider_dimension_maps` üzerinden çözülüyor.
-3. **Fiyat teklifi** — `GetPriceAndStock(ServiceCode: svc.Code, CountryCode: ctry.Iso2)`:
-   sağlayıcıya BİZİM kodumuz gönderiliyordu. Sağlayıcı "yok" diyor, kullanıcı
-   stokta 1469 numara varken `NO_PROVIDER_AVAILABLE` görüyordu.
-
-**Ders 1 — sınır çevirisi tek yerde yapılmaz, HER ÇAĞRIDA yapılır.** Sağlayıcının
-kodu yalnız `provider_dimension_maps`te yaşar; oradan çıkan hiçbir değer yerel
-bir sütunla karşılaştırılmaz.
-
-**Ders 2 — sahte sağlayıcı gerçeğe FAZLA benziyorsa hata gizler.** FakeProvider
-ISO2 kullandığı için üç hatanın hiçbiri testlerde görünmedi. Yeni testler
-(`TestCountryIsoComesFromReferenceNotProviderCode`,
-`TestProviderReceivesItsOwnCodes`) bilerek SAYISAL kod veren taklitler kullanır.
-
-**Ders 3 — sessiz `continue` bir hata sınıfını görünmez kılar.** Teklif senkronu
-eşleşmeyenleri sessizce atlıyordu. Artık sayılıp raporlanıyor ve "sağlayıcı
-teklif döndürdü ama hiçbiri eşleşmedi" durumunda katalog KORUNUYOR.
-
-### 3.16 Sessizce atlanan test "ok" der — testsizlikten kötüdür
-
-Bu turda regresyon testleri yazıldı ve `go test` "ok" dedi. **Hiçbiri
-çalışmamıştı.** `TestMain`, `DATABASE_URL` tanımsızken `os.Exit(0)` diyordu ve
-`go test` bunu BAŞARI sayıyordu. Kabuk `.env`i yüklemediği için testler sessizce
-atlanıyor, ekranda yeşil "ok" görünüyordu.
-
-Bu, testlerin sabotajı yakalayıp yakalamadığını denerken ortaya çıktı: sabote
-edilmiş kod da "ok" veriyordu. Enum'da olmayan bir `provider_protocol` değeri
-kullandıkları için aslında iki test de derlenip düşüyordu — ama kimse görmedi.
-
-Artık `DATABASE_URL` yoksa entegrasyon testleri **düşer**; bilerek atlamak için
-`ALLOW_SKIP_INTEGRATION=1` gerekir ve atlama açıkça yazılır.
-
-**Ders:** bir testin geçtiğini görmek yetmez; **düşmesi gereken durumda
-düştüğünü** de görmek gerekir. Her yeni regresyon testi, düzeltme geri
-alındığında düşerek kanıtlanmalıdır.
+**Teşhisi mümkün kılan:** `check.sh` artık her adımın tam çıktısını
+`.check-logs/` altına yazıyor. İlk seferinde çıktı atılmıştı ve elde tahminden
+başka bir şey yoktu.
 
 ### 3.14 Yönlendirme ve rota tutarsızlıkları
 

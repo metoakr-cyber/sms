@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Neon">
+  <rect width="24" height="24" rx="5.4" fill="#34D59A"/>
+  <g transform="translate(4.560 4.560) scale(0.62)">
+    <path d="M24 0V24l-9.365-8.045V24H0V0ZM2.942 21.087h8.751V9.563l9.365 8.204V2.919L2.942 2.914Z" fill="#ffffff"/>
+  </g>
+</svg>

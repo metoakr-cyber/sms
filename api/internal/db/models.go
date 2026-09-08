@@ -56,6 +56,92 @@ func (ns NullCurrencyCode) Value() (driver.Value, error) {
 	return string(ns.CurrencyCode), nil
 }
 
+type DepositMethodKind string
+
+const (
+	DepositMethodKindBANKTRANSFER DepositMethodKind = "BANK_TRANSFER"
+	DepositMethodKindCRYPTO       DepositMethodKind = "CRYPTO"
+)
+
+func (e *DepositMethodKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = DepositMethodKind(s)
+	case string:
+		*e = DepositMethodKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for DepositMethodKind: %T", src)
+	}
+	return nil
+}
+
+type NullDepositMethodKind struct {
+	DepositMethodKind DepositMethodKind
+	Valid             bool // Valid is true if DepositMethodKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullDepositMethodKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.DepositMethodKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.DepositMethodKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullDepositMethodKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.DepositMethodKind), nil
+}
+
+type DepositStatus string
+
+const (
+	DepositStatusPENDING   DepositStatus = "PENDING"
+	DepositStatusCOMPLETED DepositStatus = "COMPLETED"
+	DepositStatusREJECTED  DepositStatus = "REJECTED"
+	DepositStatusREFUNDED  DepositStatus = "REFUNDED"
+)
+
+func (e *DepositStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = DepositStatus(s)
+	case string:
+		*e = DepositStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for DepositStatus: %T", src)
+	}
+	return nil
+}
+
+type NullDepositStatus struct {
+	DepositStatus DepositStatus
+	Valid         bool // Valid is true if DepositStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullDepositStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.DepositStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.DepositStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullDepositStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.DepositStatus), nil
+}
+
 type LedgerType string
 
 const (
@@ -100,6 +186,51 @@ func (ns NullLedgerType) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.LedgerType), nil
+}
+
+type OrderStatus string
+
+const (
+	OrderStatusPENDING   OrderStatus = "PENDING"
+	OrderStatusCOMPLETED OrderStatus = "COMPLETED"
+	OrderStatusCANCELLED OrderStatus = "CANCELLED"
+	OrderStatusFAILED    OrderStatus = "FAILED"
+	OrderStatusREFUNDED  OrderStatus = "REFUNDED"
+)
+
+func (e *OrderStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = OrderStatus(s)
+	case string:
+		*e = OrderStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for OrderStatus: %T", src)
+	}
+	return nil
+}
+
+type NullOrderStatus struct {
+	OrderStatus OrderStatus
+	Valid       bool // Valid is true if OrderStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullOrderStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.OrderStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.OrderStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullOrderStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.OrderStatus), nil
 }
 
 type PricingScope string
@@ -230,6 +361,51 @@ func (ns NullProviderProtocol) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.ProviderProtocol), nil
+}
+
+type RefundStatus string
+
+const (
+	RefundStatusNOTAPPLICABLE  RefundStatus = "NOT_APPLICABLE"
+	RefundStatusPENDING        RefundStatus = "PENDING"
+	RefundStatusRETRYSCHEDULED RefundStatus = "RETRY_SCHEDULED"
+	RefundStatusREFUNDED       RefundStatus = "REFUNDED"
+	RefundStatusDENIED         RefundStatus = "DENIED"
+)
+
+func (e *RefundStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = RefundStatus(s)
+	case string:
+		*e = RefundStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for RefundStatus: %T", src)
+	}
+	return nil
+}
+
+type NullRefundStatus struct {
+	RefundStatus RefundStatus
+	Valid        bool // Valid is true if RefundStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullRefundStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.RefundStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.RefundStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullRefundStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.RefundStatus), nil
 }
 
 type TokenPurpose string
@@ -403,6 +579,43 @@ type CountryReference struct {
 	PhoneCode string
 }
 
+type Deposit struct {
+	ID               int64
+	PublicID         uuid.UUID
+	UserID           int64
+	MethodID         *int64
+	MethodName       string
+	AmountMinor      int64
+	CreditedMinor    int64
+	Status           DepositStatus
+	TxHash           *string
+	Network          string
+	ReceiptPath      string
+	UserNote         string
+	AdminNote        string
+	RejectionReason  string
+	ReviewedByUserID *int64
+	ReviewedAt       *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type DepositMethod struct {
+	ID             int64
+	PublicID       uuid.UUID
+	Code           string
+	Kind           DepositMethodKind
+	Name           string
+	Instructions   string
+	Config         []byte
+	MinAmountMinor int64
+	MaxAmountMinor int64
+	IsActive       bool
+	SortOrder      int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type FxRate struct {
 	ID        int64
 	Base      CurrencyCode
@@ -440,6 +653,54 @@ type Operator struct {
 	CountryID int64
 	Code      string
 	Name      string
+}
+
+type Order struct {
+	ID                        int64
+	PublicID                  uuid.UUID
+	UserID                    int64
+	ProviderID                int64
+	RemoteOrderID             string
+	ProviderActivationID      *int64
+	PhoneNumber               string
+	VerificationType          VerificationType
+	ProductID                 *int64
+	ServiceCode               string
+	ServiceName               string
+	CountryIso2               string
+	CountryName               string
+	PhoneCode                 string
+	QuoteID                   *int64
+	PricePaidMinor            int64
+	CostMicro                 int64
+	FxRate                    pgtype.Numeric
+	Status                    OrderStatus
+	ExpiresAt                 time.Time
+	CancellableAt             time.Time
+	CompletedAt               *time.Time
+	CancelledAt               *time.Time
+	RefundedAt                *time.Time
+	ProviderClosedAt          *time.Time
+	CloseAttempts             int32
+	CloseLastError            string
+	ProviderRefundStatus      RefundStatus
+	ProviderRefundAmountMinor int64
+	RefundAttempts            int32
+	RefundNextAttemptAt       *time.Time
+	CancelReason              string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+}
+
+type OrderMessage struct {
+	ID            int64
+	OrderID       int64
+	ProviderOtpID string
+	Code          string
+	Body          string
+	Sender        string
+	ReceivedAt    time.Time
+	CreatedAt     time.Time
 }
 
 type Permission struct {
@@ -530,6 +791,14 @@ type ProviderOffer struct {
 	Stock        int32
 	IsAvailable  bool
 	SyncedAt     time.Time
+}
+
+type RentalDetail struct {
+	OrderID       int64
+	DurationHours int32
+	RenewedCount  int32
+	RentalEndsAt  time.Time
+	CreatedAt     time.Time
 }
 
 type Role struct {

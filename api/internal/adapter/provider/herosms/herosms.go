@@ -406,33 +406,6 @@ func (p *Provider) GetBalance(ctx context.Context, c port.Creds) (money.Money, e
 	return usdFromFloat(v)
 }
 
-/* ─────────────────────── Sipariş işlemleri — M5 ─────────────────────── */
-//
-// Satın alma, durum, iptal ve kapatma BİLEREK uygulanmadı.
-//
-// Bunlar PARA HARCAYAN işlemlerdir ve sipariş servisi (rezerve/onayla akışı,
-// idempotency, iade) olmadan test edilemezler. Test edilmemiş bir satın alma
-// yolunu "hazır" diye bırakmak, ilk çağrıldığında gerçek parayla hata yapar.
-//
-// Uygulanana kadar AÇIK hata dönerler; sessizce boş sonuç dönmezler.
-// docs/roadmap.md M5.
-
-func (p *Provider) Purchase(context.Context, port.Creds, port.PurchaseCmd) (*port.PurchaseResult, error) {
-	return nil, fmt.Errorf("%w: herosms Purchase M5'te uygulanacak", port.ErrUnsupported)
-}
-
-func (p *Provider) GetStatus(context.Context, port.Creds, string) (*port.RemoteStatus, error) {
-	return nil, fmt.Errorf("%w: herosms GetStatus M5'te uygulanacak", port.ErrUnsupported)
-}
-
-func (p *Provider) Cancel(context.Context, port.Creds, string) error {
-	return fmt.Errorf("%w: herosms Cancel M5'te uygulanacak", port.ErrUnsupported)
-}
-
-func (p *Provider) Finish(context.Context, port.Creds, string) error {
-	return fmt.Errorf("%w: herosms Finish M5'te uygulanacak", port.ErrUnsupported)
-}
-
 /* ───────────────────────────── Para ───────────────────────────── */
 
 // usdFromFloat sağlayıcının float fiyatını mikro-dolara çevirir.

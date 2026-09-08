@@ -1,6 +1,7 @@
 package port
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -106,4 +107,60 @@ func AsConcurrencyLimit(err error) (*ConcurrencyLimitError, bool) {
 	var e *ConcurrencyLimitError
 	ok := errors.As(err, &e)
 	return e, ok
+}
+
+// OTPArrivedError iptal reddedildi ÇÜNKÜ yeni bir kod geldi.
+//
+// Bu, "iptal başarısız" değildir — kullanıcı LEHİNE bir sonuçtur: sağlayıcı
+// test: ../adapter/provider/herosms/status_test.go#TestCancelRejectionsAreDistinguished
+// iptali reddederken elindeki kodu da yanıtta gönderir. Çağıran bu kodu
+// kaydetmeli ve siparişi Cancel() ile değil Finish() ile kapatmalıdır.
+//
+// Genel bir "iptal başarısız" hatası altında toplanırsa gelmiş kod kullanıcıya
+// teslim edilmez ve aktivasyon sağlayıcıda açık kalır.
+type OTPArrivedError struct {
+	Messages []RemoteMessage
+	err      error
+}
+
+func NewOTPArrived(msgs []RemoteMessage, cause error) *OTPArrivedError {
+	return &OTPArrivedError{Messages: msgs, err: cause}
+}
+
+func (e *OTPArrivedError) Error() string {
+	return fmt.Sprintf("provider: iptal reddedildi, %d yeni mesaj var", len(e.Messages))
+}
+func (e *OTPArrivedError) Unwrap() error { return e.err }
+
+// AsOTPArrived hata zincirinde OTPArrivedError arar.
+func AsOTPArrived(err error) (*OTPArrivedError, bool) {
+	var e *OTPArrivedError
+	ok := errors.As(err, &e)
+	return e, ok
+}
+
+// BatchPoller toplu durum sorgulamayı destekleyen sağlayıcılar.
+//
+// AYRI BİR ARAYÜZ çünkü her sağlayıcı desteklemez. `order-poller` bu arayüzü
+// uygulayan sağlayıcılarda TOPLU sorgu yapar; uygulamayanlarda sipariş başına
+// tekil sorguya düşer. Zorunlu kılsaydık, desteklemeyen sağlayıcı için sahte
+// bir toplu uygulama yazmak gerekirdi — ve o sahte uygulama sessizce N istek
+// atardı (eski prototipin hatası).
+type BatchPoller interface {
+	// ListActive açık aktivasyonları sayfalı döner. size sağlayıcı sınırına
+	// göre kırpılır; cursor boş string ile başlar, boş dönerse sayfa biter.
+	ListActive(ctx context.Context, c Creds, cursor string, size int) (ActivePage, error)
+}
+
+// ActivePage toplu yoklama sayfası.
+type ActivePage struct {
+	Items      []ActiveOrder
+	NextCursor string // boş ise son sayfa
+}
+
+// ActiveOrder toplu yoklamada dönen sipariş özeti.
+type ActiveOrder struct {
+	RemoteOrderID string
+	State         RemoteOrderState
+	Messages      []RemoteMessage
 }
