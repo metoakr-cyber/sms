@@ -59,13 +59,22 @@ type Config struct {
 	MetricsEnabled bool
 }
 
+// LoadDotEnv .env dosyasını ortama yükler. Yalnız GELİŞTİRME kolaylığıdır;
+// mevcut ortam değişkenlerini EZMEZ ve dosya yoksa sessizce geçer.
+//
+// Load() bunu KENDİSİ çağırmaz: bir yapılandırma okuyucusunun diskten dosya
+// okuması onu ortama bağımlı kılar ve testleri kırılgan yapar. Çağıran (main)
+// ne zaman yükleyeceğine kendi karar verir.
+func LoadDotEnv(paths ...string) {
+	if len(paths) == 0 {
+		paths = []string{".env", "../.env"}
+	}
+	_ = godotenv.Load(paths...)
+}
+
 // Load ortam değişkenlerini okur ve doğrular.
 // Bir hata dönerse çağıran süreci sonlandırmalıdır — kısmi yapılandırmayla çalışılmaz.
 func Load() (*Config, error) {
-	// .env yalnız geliştirme kolaylığıdır; yoksa sorun değil.
-	// Üretimde değişkenler gerçek ortamdan gelir.
-	_ = godotenv.Load(".env", "../.env")
-
 	v := &validator{}
 	c := &Config{
 		Env:           Env(v.oneOf("APP_ENV", "development", "development", "staging", "production")),

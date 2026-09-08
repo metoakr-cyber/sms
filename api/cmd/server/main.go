@@ -32,6 +32,8 @@ func main() {
 
 func run() error {
 	// 1) Yapılandırma — eksikse BURADA dururuz, yarı çalışır bir sunucu başlatmayız.
+	//    .env yalnız geliştirme kolaylığıdır ve mevcut ortamı ezmez.
+	config.LoadDotEnv()
 	cfg, err := config.Load()
 	if err != nil {
 		return err

@@ -12,7 +12,14 @@ PASS=0; FAIL=0
 
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
 fail() { printf '  \033[31m✗\033[0m %s\n     %s\n' "$1" "${2:-}"; FAIL=$((FAIL+1)); }
-psql() { docker exec smsplatform-dev-postgres-1 psql -U smsplatform -d smsplatform -qtA "$@"; }
+# Yerelde Docker konteynerine, CI'da doğrudan servise bağlanırız.
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q smsplatform-dev-postgres-1; then
+  psql()  { docker exec smsplatform-dev-postgres-1 psql -U smsplatform -d smsplatform -qtA "$@"; }
+  rediscli() { docker exec smsplatform-dev-redis-1 redis-cli "$@"; }
+else
+  psql()  { command psql "$DATABASE_URL" -qtA "$@"; }
+  rediscli() { command redis-cli -u "$REDIS_URL" "$@"; }
+fi
 
 # ── temiz başlangıç ──
 pkill -f '/tmp/smoke-api' 2>/dev/null; sleep 0.5
@@ -29,7 +36,12 @@ psql -c "DELETE FROM users;" >/dev/null 2>&1
 
 REMAIN=$(psql -c "SELECT count(*) FROM users;" 2>/dev/null)
 [ "$REMAIN" = "0" ] || { echo "temizlik başarısız: $REMAIN kullanıcı kaldı"; exit 1; }
-docker exec smsplatform-dev-redis-1 redis-cli FLUSHDB >/dev/null 2>&1
+rediscli FLUSHDB >/dev/null 2>&1
+SIZE=$(rediscli DBSIZE 2>/dev/null | tr -dc '0-9')
+[ "${SIZE:-1}" = "0" ] || {
+  echo "redis temizlenemedi (DBSIZE=${SIZE:-?}) — hız limiti sayaçları koşular arasında birikir"
+  exit 1
+}
 
 (cd api && go build -o /tmp/smoke-api ./cmd/server) || { echo "derleme başarısız"; exit 1; }
 rm -f "$LOG"; /tmp/smoke-api > "$LOG" 2>&1 &
@@ -100,7 +112,7 @@ S=$(code "$API/me" -H 'Cookie: sid=uydurma-oturum-kimligi')
 
 echo "─── Hesap kilidi (KK-102) ───"
 # IP sayacını sıfırla: bu test HESAP bazlı kilidi ölçüyor, IP limitini değil.
-docker exec smsplatform-dev-redis-1 redis-cli --scan --pattern 'rl:auth:*' 2>/dev/null |   xargs -r docker exec smsplatform-dev-redis-1 redis-cli DEL >/dev/null 2>&1
+rediscli --scan --pattern 'rl:auth:*' 2>/dev/null |   xargs -r rediscli DEL >/dev/null 2>&1
 for i in $(seq 1 6); do
   code -X POST "$API/auth/login" -H 'Content-Type: application/json' \
     -d '{"email":"ali@ornek.com","password":"yanlis"}' >/dev/null
@@ -111,7 +123,7 @@ S=$(code -X POST "$API/auth/login" -H 'Content-Type: application/json' \
   && pass "5 başarısız denemeden sonra hesap kilitlendi" || fail "hesap kilidi" "$(body)"
 
 echo "─── Şifre sıfırlama (KK-103) ───"
-docker exec smsplatform-dev-redis-1 redis-cli FLUSHDB >/dev/null 2>&1  # kilidi temizle
+rediscli FLUSHDB >/dev/null 2>&1  # kilidi temizle
 S=$(code -X POST "$API/auth/password/forgot" -H 'Content-Type: application/json' -d '{"email":"ali@ornek.com"}')
 M1=$(field message)
 S=$(code -X POST "$API/auth/password/forgot" -H 'Content-Type: application/json' -d '{"email":"hicyok@ornek.com"}')

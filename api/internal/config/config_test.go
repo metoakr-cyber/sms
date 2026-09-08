@@ -19,8 +19,22 @@ func key32(t *testing.T) string {
 }
 
 // valid geçerli bir minimum ortam kurar.
+//
+// Testler .env dosyasından ETKİLENMEZ: config.Load() diskten okumaz, yalnız
+// ortam değişkenlerine bakar. Yine de kalıntı değişkenler sızmasın diye
+// varsayılanı test edilen alanlar burada açıkça temizlenir.
 func valid(t *testing.T) {
 	t.Helper()
+	for _, k := range []string{
+		"HTTP_ADDR", "LOG_LEVEL", "PUBLIC_BASE_URL", "SESSION_TTL",
+		"FX_PROVIDER", "FX_SAFETY_MARGIN_PCT", "FX_MAX_AGE",
+		"MAIL_PROVIDER", "MAIL_FROM", "RESEND_API_KEY",
+		"RECAPTCHA_SITE_KEY", "RECAPTCHA_SECRET_KEY",
+		"WEBHOOK_HEROSMS_SECRET", "WEBHOOK_HEROSMS_ALLOWED_IPS",
+		"SENTRY_DSN", "METRICS_ENABLED",
+	} {
+		t.Setenv(k, "")
+	}
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
