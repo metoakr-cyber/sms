@@ -64,8 +64,11 @@ test-cover:
 	cd $(API) && go test ./... -race -coverprofile=coverage.out -covermode=atomic && go tool cover -func=coverage.out | tail -1
 
 ## test-integration: gerçek Postgres'e karşı entegrasyon testleri
+# -p 1 ZORUNLU: bu testler TEK bir gerçek veritabanını paylaşıyor ve her paket
+# kendi kurulumunda katalog tablolarını temizliyor. Paralel koşarlarsa
+# birbirlerinin verisini silerler ve testler RASTGELE kırılır.
 test-integration:
-	cd $(API) && go test -tags=integration ./... -race -count=1
+	cd $(API) && go test -tags=integration -p 1 ./... -race -count=1
 
 ## smoke: uçtan uca duman testi (sunucuyu başlatır, senaryoları koşar, temizler)
 smoke:
@@ -76,6 +79,7 @@ lint:
 	cd $(API) && go vet ./... && golangci-lint run
 
 ## check: birleştirmeden önce çalıştır
-check: gen-check lint test test-integration
+check:
+	./scripts/check.sh
 
 .PHONY: help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover test-integration smoke lint check

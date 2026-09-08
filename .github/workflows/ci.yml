@@ -77,7 +77,7 @@ jobs:
 
       - name: Entegrasyon testleri
         working-directory: api
-        run: go test -tags=integration ./... -race -count=1
+        run: go test -tags=integration -p 1 ./... -race -count=1
 
       - name: Kapsam (domain >= %90)
         working-directory: api
