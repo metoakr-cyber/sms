@@ -245,9 +245,11 @@ sistem doğrulanamıyordu. Nitekim arayüzü bağlamak üç gerçek hatayı orta
 - [x] USDT ile yükleme (TX hash, manuel onay) → **FR-501**  ⚠️ *G6*
 - [x] Onay/red — **POST**, idempotent, izinli, audit log'lu → **FR-502, FR-503**
 - [ ] Destek talebi sistemi → **FR-600**
-- [ ] Admin ekranları: kullanıcılar · sağlayıcılar · boyut eşleştirme · fiyat kuralları
-      (canlı önizlemeli) · bakiye talepleri · denetim kaydı → **FR-700…FR-705**
-- [ ] Kullanıcı paneli: profil · cüzdan · hareket dökümü · sipariş geçmişi · talepler
+- [x] Admin ekranları: kullanıcılar · sağlayıcılar · fiyat kuralları (canlı önizlemeli) ·
+      bakiye talepleri · denetim kaydı → **FR-700, FR-701, FR-703, FR-704, FR-705**
+      *(boyut eşleştirme ekranı FR-702 YAPILMADI — katalog senkronu otomatik dolduruyor)*
+- [x] Kullanıcı paneli: profil · cüzdan · hareket dökümü · sipariş geçmişi · bakiye yükleme
+      *(destek talepleri YAPILMADI — FR-600 kapsam dışı)*
 - [ ] i18n sözlüğü (`messages/tr.json`) → **NFR-806**
 - [ ] Her ekran için `frontend-contract.md` §9 kontrol listesi
 
@@ -280,11 +282,12 @@ sistem doğrulanamıyordu. Nitekim arayüzü bağlamak üç gerçek hatayı orta
 
 ## M8 — Üretime hazırlık
 
-- [ ] VPS kurulumu · Docker Compose · Caddy · otomatik TLS  ⚠️ *G8*
+- [x] VPS kurulumu · Docker Compose · Caddy · otomatik TLS  ⚠️ *G8*
 - [ ] Dağıtım boru hattı (GitHub Actions → registry → VPS)
-- [ ] Sentry · Prometheus · alarm kuralları (`design.md` §12)
-- [ ] Otomatik yedekleme + **geri yükleme tatbikatı** → **NFR-808**
-- [ ] Çalışma kitabı: sağlayıcı çöktü · kur bayat · mutabakat sapması · disk doldu
+- [x] Sentry · Prometheus  *(alarm kuralları YAZILMADI)*
+- [x] Otomatik yedekleme (şifreli, üç doğrulama kapısı)
+- [ ] **geri yükleme tatbikatı** → **NFR-808** — betik hazır, TATBİKAT YAPILMADI
+- [x] Çalışma kitabı: [runbook.md](runbook.md) — 11 senaryo
 - [ ] KVKK aydınlatma metni · kullanım şartları · çerez politikası
 - [ ] Lighthouse bütçe kontrolü CI'da → **NFR-812** · erişilebilirlik → **NFR-805**
 

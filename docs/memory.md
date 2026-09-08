@@ -721,6 +721,41 @@ kapıdır ve tören niyetine test atıfı doldurmaya yol açar — denetleyicini
 log çıktısı hem dönen hata metni aranıyor (hata metinleri servis katmanında
 log'lanıyor, oraya sızan da sonunda log'a düşer). Sabotajla doğrulandı.
 
+---
+
+### 3.16 Denetim kendi bulduğu tuzağa düştü — GELİŞTİRME VERİTABANI SİLİNDİ
+
+Teslim öncesi denetim turunda bir ajan `make test-integration`in geliştirme
+veritabanını sildiğini buldu ve şöyle yazdı: *"Üretim sunucusunda
+`set -a; source deploy/.env` sonrası çalıştırılırsa ÜRETİM kataloğunu ve
+sağlayıcı kaydını (AES-GCM şifreli API anahtarıyla birlikte) siler."*
+
+**Aynı tur içinde bu tam olarak gerçekleşti.** Denetim ajanları entegrasyon
+testlerini geliştirme veritabanına karşı koşturdu. Kayıp:
+
+| | önce | sonra |
+|---|---|---|
+| servis | 495 | 1 |
+| ürün | 15.212 | 1 |
+| teklif | 24.957 | 0 |
+| sağlayıcı | herosms (şifreli anahtarla) | yalnız test stub'ı |
+
+Sağlayıcı kaydı gittiği için **şifreli API anahtarı da gitti** — geri
+getirilemez, elle yeniden girilmeli.
+
+**Kapı EKLENDİ** (`internal/testsupport/dbguard.go`): veritabanı adı `_test`
+ile bitmiyorsa entegrasyon testleri HİÇ BAŞLAMAZ. Kapı bilerek Makefile'da
+değil TESTİN KENDİSİNDE: `go test` komutunu elle yazan kişiyi Makefile korumaz.
+Geliştirme veritabanına yöneltilerek doğrulandı — reddedildi, veri yerinde kaldı.
+
+**Ders:** bir tuzağı BULMAK onu kapatmaz. Bulgu raporlanana kadar geçen sürede
+tuzak hâlâ açıktır ve o sürede ona düşülebilir. Bulunan her veri-kaybı tuzağı
+raporlanmadan ÖNCE kapatılmalı.
+
+İkinci ders: defterin `ledger_entries` değişmezlik tetikleyicisi temizlik
+sırasında silmeyi REDDETTİ ve doğru olanı yaptı. Şema düzeyindeki savunmalar,
+o an aceleci davranan kişiye karşı da çalışır.
+
 ## 7. Bu dokümanı güncelleme kuralı
 
 - **Bir karar verildiğinde** → §1'e tarihiyle ve gerekçesiyle yaz

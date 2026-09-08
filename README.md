@@ -73,30 +73,38 @@ make migrate-new name=add_x
 | [docs/frontend-contract.md](docs/frontend-contract.md) | Responsive, tarayıcı uyumluluğu, SSE |
 | [docs/roadmap.md](docs/roadmap.md) | Yapım sırası ve çıkış kriterleri |
 | [docs/memory.md](docs/memory.md) | Karar günlüğü, tuzaklar, açık sorular |
+| [docs/TESLIM.md](docs/TESLIM.md) | **Devralan kişi için**: ne hazır, ne değil, ilk gün |
 | [docs/runbook.md](docs/runbook.md) | **Arıza anında**: sağlayıcı çöktü, mutabakat sapması, disk doldu |
 | [deploy/README.md](deploy/README.md) | Üretime alma: sıfırdan kurulum, yedek, geri alma |
 | [CLAUDE.md](CLAUDE.md) | Çalışma kuralları ve değişmezler |
 
 ## Durum
 
-Geliştirme aşamasında — `docs/roadmap.md`'ye bakın.
+Kilometre taşları için [docs/roadmap.md](docs/roadmap.md).
 
-- [x] **M0** Temel: monorepo, Docker Compose, Makefile, sqlc + goose, yapılandırma doğrulaması
-- [x] **M2 (kısmi)** `domain/money` — tam sayı para, kayıpsız oran aritmetiği.
-      **%95,5 kapsam**, KK-304 altın testi geçiyor: `0,35 USD × 43,20 × 1,40 = 2117 kuruş`
-- [x] **M1** Kimlik: kayıt · e-posta doğrulama · giriş · oturum (Redis) · şifre sıfırlama ·
-      RBAC · hız limiti
-- [x] **M2** Ledger: değişmez defter · `FOR UPDATE` kilidi · idempotency · mutabakat ·
-      hareket dökümü · admin düzeltme.
-      **KK-200…KK-203 gerçek PostgreSQL'e karşı ispatlandı** (`make test-integration`)
-- [x] **M3 (sahte sağlayıcı ile)** Genişletilebilir katalog · `ProviderPort` ·
-      `FakeProvider` + 13 maddelik sözleşme testi · AES-GCM anahtar şifreleme ·
-      katalog senkronu · yönetim CLI'ı. **HeroSMS adaptörü sağlayıcı bakiyesi bekliyor**
-- [x] **M4** Fiyatlandırma: kur (TCMB) · kapsam öncelikli marj kuralları ·
-      tek kullanımlık fiyat teklifi. **KK-302/305/402 ispatlandı**
-- [ ] M5 Sipariş+SSE · M6 Panel
+| | Durum |
+|---|---|
+| **M0** Temel · monorepo, Compose, sqlc + goose, yapılandırma doğrulaması | ✅ |
+| **M1** Kimlik · kayıt, e-posta doğrulama, oturum (Redis), şifre sıfırlama, RBAC, hız limiti | ✅ |
+| **M2** Defter · değişmez kayıt, `FOR UPDATE`, idempotency, mutabakat, admin düzeltme | ✅ |
+| **M3** Sağlayıcı · `ProviderPort`, HeroSMS adaptörü, AES-GCM anahtar, katalog senkronu | ✅ |
+| **M4** Fiyatlandırma · TCMB kuru, kapsam öncelikli marj, tek kullanımlık teklif | ✅ |
+| **M5** Sipariş · satın alma, webhook, SSE, iptal/iade, yoklama, iade mutabakatı | ✅ |
+| **M6** Panel · bakiye yükleme, yönetim ekranları, denetim kaydı | ✅ |
+| **M7** Sertleştirme · ikinci sağlayıcı, yük testi, gerçek cihaz turu | ⬜ |
+| **M8** Üretim · dağıtım paketi ✅ · izleme ✅ · yedek ✅ · **geri yükleme tatbikatı yapılmadı** | 🟨 |
+| **M9** Lansman kapısı · ticari/yasal karar | ⬜ |
 
-**Uçtan uca 26/26 duman testi geçiyor** (`make smoke`)
+**Uçtan uca doğrulanmış akışlar** — gerçek sunucuya karşı, test değil:
+
+- Numara alma → SSE ile kod → iptal → tam iade → sağlayıcıda kapatma
+- 20 eşzamanlı bakiye onayı → **tek** defter kaydı (KK-502)
+- `image/jpeg` başlıklı PHP dosyası dekont olarak reddedildi (KK-500)
+- Mutabakat: `Σ defter == bakiye`, sapma sıfır (KK-200)
+- 115 sayfa×genişlik responsive denetimi temiz (23 sayfa × 320…1440 px)
+
+**Teslim öncesi bilinmesi gerekenler:** [docs/TESLIM.md](docs/TESLIM.md) —
+neyin hazır olduğu, neyin olmadığı ve ilk gün yapılacaklar.
 
 ### Duman testi
 
