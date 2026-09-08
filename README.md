@@ -70,7 +70,15 @@ make migrate-new name=add_x
 
 Geliştirme aşamasında — `docs/roadmap.md`'ye bakın.
 
-- [x] **M0** Temel: monorepo, Docker, Makefile, sqlc, CI iskeleti
-- [x] **M2 (kısmi)** `domain/money`: tam sayı para, kayıpsız oran aritmetiği — **%95,5 kapsam**,
-      KK-304 altın testi geçiyor
-- [ ] M1 Kimlik · M2 Ledger · M3 Sağlayıcı · M4 Fiyatlandırma · M5 Sipariş+SSE · M6 Panel
+- [x] **M0** Temel: monorepo, Docker Compose, Makefile, sqlc + goose, yapılandırma doğrulaması
+- [x] **M2 (kısmi)** `domain/money` — tam sayı para, kayıpsız oran aritmetiği.
+      **%95,5 kapsam**, KK-304 altın testi geçiyor: `0,35 USD × 43,20 × 1,40 = 2117 kuruş`
+- [x] **M1 (kısmi)** Kimlik şeması (8 tablo), hata taksonomisi, HTTP iskeleti,
+      `/healthz` + `/readyz` çalışıyor. Doğrulanmış kısıtlar: KK-203 (negatif bakiye reddi),
+      CITEXT benzersizlik, yumuşak silme sonrası e-posta yeniden kullanımı
+- [ ] M1 kalan: kayıt/giriş/oturum/RBAC · M2 Ledger · M3 Sağlayıcı · M4 Fiyat · M5 Sipariş+SSE · M6 Panel
+
+### Yerel portlar
+
+8080 ve 5432/6379 makinede doluydu; çakışmayı önlemek için:
+postgres **55432**, redis **56379**, API **8091**. `.env` ile değiştirilebilir.
