@@ -330,14 +330,23 @@ UPDATE providers SET
 WHERE id = @id
 RETURNING id, name, protocol, base_url, is_active, priority, cost_multiplier;
 
--- name: UpdateProviderAPIKey :exec
+-- name: UpdateProviderAPIKey :one
 -- API anahtarı güncelleme — AYRI bir sorgu.
 --
 -- Diğer ayarlarla aynı UPDATE'e konsaydı, ayar değiştiren her istek anahtarı
 -- da yazardı ve boş bir alan anahtarı SİLERDİ. Ayrı tutmak, "kaydet"e basmanın
 -- anahtarı yanlışlıkla silmesini imkânsız kılar.
 -- test: internal/transport/http/handler/admin_integration_test.go#TestSavingProviderSettingsDoesNotEraseAPIKey
-UPDATE providers SET api_key_enc = @api_key_enc, updated_at = now() WHERE id = @id;
+--
+-- 🔴 `:exec` DEĞİL `:one`: etkilenen satır sayısı GÖRÜLMELİDİR. `:exec` yalnız
+-- hata döner, "hiçbir satır güncellenmedi" hata DEĞİLDİR — var olmayan bir
+-- sağlayıcı kimliğine anahtar yazmak sessizce başarılı görünüyordu ve yönetici
+-- maskeli önizlemeyi görüp anahtarı kaydettiğini sanıyordu. Sağlayıcı
+-- çalışmadığında sebep aranacak en son yer orasıdır.
+-- test: internal/transport/http/handler/admin_provider_integration_test.go#TestSetAPIKeyOnMissingProviderIs404
+UPDATE providers SET api_key_enc = @api_key_enc, updated_at = now()
+WHERE id = @id
+RETURNING id;
 
 -- name: ListOffersForProductAnyStock :many
 -- YALNIZ YÖNETİM ÖNİZLEMESİ İÇİN: stok koşulu yoktur.

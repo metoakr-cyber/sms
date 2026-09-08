@@ -26,6 +26,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
 	"github.com/ikmetrik/sms-platform/api/internal/db"
+	apperr "github.com/ikmetrik/sms-platform/api/internal/domain/errors"
 	"github.com/ikmetrik/sms-platform/api/internal/testsupport"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/dto"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
@@ -79,7 +80,19 @@ func newAdminRig(t *testing.T) *adminRig {
 		Responder: handler.Responder{
 			OK:        func(c *gin.Context, b any) { c.JSON(http.StatusOK, b) },
 			NoContent: func(c *gin.Context) { c.Status(http.StatusNoContent) },
-			Fail:      func(c *gin.Context, err error) { c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()}) },
+			Fail: func(c *gin.Context, err error) {
+				// 🔴 GERÇEK EŞLEME + ABORT. İki ayrı tuzak:
+				//  · Her hatayı 400'e çevirmek 404/409/422 ölçen testleri yanıltır.
+				//  · `c.JSON` zinciri DURDURMAZ — handler çalışmaya devam eder ve
+				//    "yetkisiz istek reddedildi" sanılan çağrı işi GERÇEKTEN yapar.
+				ae, ok := apperr.As(err)
+				if !ok {
+					ae = apperr.Internal(err)
+				}
+				c.AbortWithStatusJSON(ae.HTTPStatus(), gin.H{
+					"error": gin.H{"code": ae.Code, "message": ae.Message},
+				})
+			},
 			FailField: func(c *gin.Context, errs []dto.FieldError) {
 				c.JSON(http.StatusUnprocessableEntity, gin.H{"fields": errs})
 			},

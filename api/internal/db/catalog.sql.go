@@ -1056,8 +1056,10 @@ func (q *Queries) SetServiceIcon(ctx context.Context, arg SetServiceIconParams) 
 	return i, err
 }
 
-const updateProviderAPIKey = `-- name: UpdateProviderAPIKey :exec
-UPDATE providers SET api_key_enc = $1, updated_at = now() WHERE id = $2
+const updateProviderAPIKey = `-- name: UpdateProviderAPIKey :one
+UPDATE providers SET api_key_enc = $1, updated_at = now()
+WHERE id = $2
+RETURNING id
 `
 
 type UpdateProviderAPIKeyParams struct {
@@ -1071,9 +1073,18 @@ type UpdateProviderAPIKeyParams struct {
 // da yazardı ve boş bir alan anahtarı SİLERDİ. Ayrı tutmak, "kaydet"e basmanın
 // anahtarı yanlışlıkla silmesini imkânsız kılar.
 // test: internal/transport/http/handler/admin_integration_test.go#TestSavingProviderSettingsDoesNotEraseAPIKey
-func (q *Queries) UpdateProviderAPIKey(ctx context.Context, arg UpdateProviderAPIKeyParams) error {
-	_, err := q.db.Exec(ctx, updateProviderAPIKey, arg.ApiKeyEnc, arg.ID)
-	return err
+//
+// 🔴 `:exec` DEĞİL `:one`: etkilenen satır sayısı GÖRÜLMELİDİR. `:exec` yalnız
+// hata döner, "hiçbir satır güncellenmedi" hata DEĞİLDİR — var olmayan bir
+// sağlayıcı kimliğine anahtar yazmak sessizce başarılı görünüyordu ve yönetici
+// maskeli önizlemeyi görüp anahtarı kaydettiğini sanıyordu. Sağlayıcı
+// çalışmadığında sebep aranacak en son yer orasıdır.
+// test: internal/transport/http/handler/admin_provider_integration_test.go#TestSetAPIKeyOnMissingProviderIs404
+func (q *Queries) UpdateProviderAPIKey(ctx context.Context, arg UpdateProviderAPIKeyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, updateProviderAPIKey, arg.ApiKeyEnc, arg.ID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const updateProviderBalance = `-- name: UpdateProviderBalance :exec

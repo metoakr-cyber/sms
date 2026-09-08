@@ -40,6 +40,14 @@ import (
 // kullanıcının bakiyesi düşülmüş hâlde ekranda asılı kalması demektir.
 const providerTimeout = 10 * time.Second
 
+// t2Timeout satın alma sonrası telafi adımlarının üst sınırı.
+//
+// Bu adımlar (sipariş yazımı, numarayı bırakma, iade) İSTEMCİDEN BAĞIMSIZ
+// çalışır — kullanıcı sekmeyi kapatsa da parası geri verilmeli. Kendi
+// zaman aşımı vardır çünkü çağıranın bağlamından koparıldı ve süresiz bir
+// bağlam takılan bir sorguyu sonsuza kadar bekletirdi.
+const t2Timeout = 15 * time.Second
+
 // defaultCancelGrace sağlayıcı süre bildirmezse iptal için beklenecek süre.
 //
 // Sağlayıcı ilk ~120 saniye iptali reddediyor (minActivationTime). Bu değer
@@ -140,9 +148,32 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (db.Order, error) 
 
 	res, perr := s.callProvider(pctx, hold)
 
+	// 🔴 T2 ARTIK İSTEMCİNİN BAĞLANTISINA BAĞLI DEĞİL.
+	//
+	// Para T1'de ZATEN DÜŞÜLDÜ. Bundan sonraki telafi adımları (siparişi yaz,
+	// numarayı bırak, parayı iade et) çağıranın bağlamını kullanırsa,
+	// kullanıcının sekmeyi kapatması ya da mobilde ağın düşmesi iadeyi
+	// engeller: net/http `c.Request.Context()`'i iptal eder, `InTx` içindeki
+	// `pool.Begin(ctx)` "context canceled" ile düşer ve defterde HİÇ iade
+	// kaydı oluşmaz.
+	//
+	// Ölçüldü: bakiye 10000 → 7500, REFUND kaydı 0.
+	//
+	// `orphan-hold-reaper` bunu 2-3 dakikada toplar (ve o güvenlik ağı bu
+	// turda ayrıca onarıldı), ama kullanıcının parasını dakikalarca askıda
+	// bırakmanın ve numarayı sağlayıcıda açık bırakmanın gerekçesi yok:
+	// kullanıcının kontrolündeki bir olay para kaybına dönüşmemeli.
+	//
+	// Sağlayıcı çağrısı BİLEREK dışarıda kaldı: kullanıcı vazgeçtiyse yeni
+	// numara almaya devam etmenin anlamı yok.
+	//
+	// test: order_integration_test.go#TestClientDisconnectStillRefunds
+	t2, t2cancel := context.WithTimeout(context.WithoutCancel(ctx), t2Timeout)
+	defer t2cancel()
+
 	// ── T2: siparişi yaz veya parayı geri ver ──
 	if perr != nil {
-		if refundErr := s.refundHold(ctx, hold, perr); refundErr != nil {
+		if refundErr := s.refundHold(t2, hold, perr); refundErr != nil {
 			// İade YAZILAMADI. Bu, kullanıcının parasının askıda kalması
 			// demektir — sessiz geçilemez. `orphan-hold-reaper` ikinci
 			// şanstır ama olay burada da yüksek sesle kaydedilir.
@@ -153,19 +184,19 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (db.Order, error) 
 		return db.Order{}, mapProviderError(perr)
 	}
 
-	ord, err := s.persist(ctx, hold, res)
+	ord, err := s.persist(t2, hold, res)
 	if err != nil {
 		// Numara ALINDI ama sipariş YAZILAMADI. Numarayı sağlayıcıda açıkta
 		// bırakmayız: hemen iptal etmeye çalışırız, sonra parayı iade ederiz.
-		s.abandonRemote(ctx, hold, res.RemoteOrderID)
-		if refundErr := s.refundHold(ctx, hold, err); refundErr != nil {
+		s.abandonRemote(t2, hold, res.RemoteOrderID)
+		if refundErr := s.refundHold(t2, hold, err); refundErr != nil {
 			slog.Error("sipariş yazılamadı VE iade yazılamadı",
 				"quote", hold.QuotePublicID, "err", err, "refund_err", refundErr)
 		}
 		return db.Order{}, err
 	}
 
-	s.publish(ctx, ord, "status", nil)
+	s.publish(t2, ord, "status", nil)
 	return ord, nil
 }
 

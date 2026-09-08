@@ -761,18 +761,44 @@ function ReceiptViewer({ depositId, hasReceipt }: { depositId: string; hasReceip
     return () => URL.revokeObjectURL(file.url);
   }, [file]);
 
+  /*
+   * 🔴 YÜKLEME SÜRERKEN DİYALOG KAPANIRSA: yukarıdaki temizlik `file` state'i
+   * hiç dolmadığı için ÇALIŞMAZ ve blob sekme kapanana kadar bellekte kalır.
+   * Bu bayrak isteğin sonucunu "artık kimse beklemiyor" diye işaretler;
+   * gelen blob o zaman state'e yazılmadan doğrudan serbest bırakılır.
+   * Ayrıca istek de iptal edilir — kimsenin okumayacağı bir indirmeyi
+   * sürdürmenin anlamı yok.
+   */
+  const canli = React.useRef(true);
+  const iptal = React.useRef<AbortController | null>(null);
+  React.useEffect(() => {
+    canli.current = true;
+    return () => {
+      canli.current = false;
+      iptal.current?.abort();
+    };
+  }, []);
+
   async function load() {
     setLoading(true);
     setErr(null);
+    const ac = new AbortController();
+    iptal.current = ac;
     try {
       const r = await apiBlob(`/admin/deposits/${encodeURIComponent(depositId)}/receipt`, {
         timeoutMs: 30_000, // dekont birkaç MB olabilir; 15 sn mobil ağda dar
+        signal: ac.signal,
       });
+      if (!canli.current) {
+        URL.revokeObjectURL(r.url); // kimse beklemiyor — sızdırma
+        return;
+      }
       setFile({ url: r.url, mime: r.mime });
     } catch (e) {
+      if (!canli.current) return;
       setErr(e instanceof ApiError ? e : new ApiError({ code: 'UNKNOWN', message: 'Dekont açılamadı.' }));
     } finally {
-      setLoading(false);
+      if (canli.current) setLoading(false);
     }
   }
 

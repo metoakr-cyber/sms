@@ -63,8 +63,23 @@ export function Modal({
       );
       if (items.length === 0) return;
       const first = items[0]!, last = items[items.length - 1]!;
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      const aktif = document.activeElement;
+
+      // 🔴 ODAK PANELİN DIŞINDAYSA GERİ ÇEKİLİR.
+      //
+      // Eski kod yalnız `aktif === first` / `aktif === last` durumlarını
+      // yakalıyordu. Odak panelin KENDİSİNDEYSE (ilk açılışta öyle olur) ya da
+      // bir adım değişiminde tıklanan düğme DOM'dan kalktığı için <body>'ye
+      // düştüyse, hiçbir dal çalışmıyor ve Tab kullanıcıyı diyaloğun
+      // ARKASINDAKİ sayfaya taşıyordu. Para onayı gösteren bir diyalogda
+      // klavye kullanıcısı böylece arkadaki formu doldurmaya başlıyordu.
+      if (!aktif || !panel.current.contains(aktif)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (e.shiftKey && aktif === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && aktif === last) { e.preventDefault(); first.focus(); }
     };
     window.addEventListener('keydown', onKey);
     return () => { window.removeEventListener('keydown', onKey); prevFocus?.focus?.(); };

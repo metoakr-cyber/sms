@@ -65,12 +65,16 @@ func depositResponder() handler.Responder {
 		OK:        func(c *gin.Context, b any) { c.JSON(http.StatusOK, b) },
 		NoContent: func(c *gin.Context) { c.Status(http.StatusNoContent) },
 		Fail: func(c *gin.Context, err error) {
-			appErr, ok := apperr.As(err)
+			// 🔴 GERÇEK EŞLEME + ABORT. İki ayrı tuzak:
+			//  · Her hatayı 400'e çevirmek 404/409/422 ölçen testleri yanıltır.
+			//  · `c.JSON` zinciri DURDURMAZ — handler çalışmaya devam eder ve
+			//    "yetkisiz istek reddedildi" sanılan çağrı işi GERÇEKTEN yapar.
+			ae, ok := apperr.As(err)
 			if !ok {
-				appErr = apperr.Internal(err)
+				ae = apperr.Internal(err)
 			}
-			c.AbortWithStatusJSON(appErr.HTTPStatus(), gin.H{
-				"error": gin.H{"code": appErr.Code, "message": appErr.Message},
+			c.AbortWithStatusJSON(ae.HTTPStatus(), gin.H{
+				"error": gin.H{"code": ae.Code, "message": ae.Message},
 			})
 		},
 		FailField: func(c *gin.Context, errs []dto.FieldError) {

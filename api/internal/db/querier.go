@@ -409,7 +409,14 @@ type Querier interface {
 	// da yazardı ve boş bir alan anahtarı SİLERDİ. Ayrı tutmak, "kaydet"e basmanın
 	// anahtarı yanlışlıkla silmesini imkânsız kılar.
 	// test: internal/transport/http/handler/admin_integration_test.go#TestSavingProviderSettingsDoesNotEraseAPIKey
-	UpdateProviderAPIKey(ctx context.Context, arg UpdateProviderAPIKeyParams) error
+	//
+	// 🔴 `:exec` DEĞİL `:one`: etkilenen satır sayısı GÖRÜLMELİDİR. `:exec` yalnız
+	// hata döner, "hiçbir satır güncellenmedi" hata DEĞİLDİR — var olmayan bir
+	// sağlayıcı kimliğine anahtar yazmak sessizce başarılı görünüyordu ve yönetici
+	// maskeli önizlemeyi görüp anahtarı kaydettiğini sanıyordu. Sağlayıcı
+	// çalışmadığında sebep aranacak en son yer orasıdır.
+	// test: internal/transport/http/handler/admin_provider_integration_test.go#TestSetAPIKeyOnMissingProviderIs404
+	UpdateProviderAPIKey(ctx context.Context, arg UpdateProviderAPIKeyParams) (int64, error)
 	UpdateProviderBalance(ctx context.Context, arg UpdateProviderBalanceParams) error
 	// Sağlayıcı ayarları. API ANAHTARI BURADAN GÜNCELLENMEZ — ayrı bir yol var.
 	UpdateProviderSettings(ctx context.Context, arg UpdateProviderSettingsParams) (UpdateProviderSettingsRow, error)

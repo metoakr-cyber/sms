@@ -78,8 +78,10 @@ type stubProvider struct {
 	// statusMessages GetStatus'un döndüreceği mesajlar. Boşken sağlayıcı
 	// "kod yok" der — sahte webhook testinin dayanağı budur.
 	statusMessages []port.RemoteMessage
-	expiresIn      time.Duration
-	now            func() time.Time
+	// purchaseHook satın alma çağrısının ortasında çalıştırılır.
+	purchaseHook func()
+	expiresIn    time.Duration
+	now          func() time.Time
 
 	/* ── Toplu yoklama (port.BatchPoller) ── */
 
@@ -133,7 +135,14 @@ func (p *stubProvider) Purchase(_ context.Context, _ port.Creds, cmd port.Purcha
 	p.mu.Lock()
 	p.maxPrices = append(p.maxPrices, cmd.MaxCost.Minor())
 	fail := p.failPurchase
+	hook := p.purchaseHook
 	p.mu.Unlock()
+
+	// purchaseHook satın alma ÇAĞRISI SIRASINDA çalışır: istemci kopmasını
+	// gerçek anında (T1 bitmiş, T2 başlamamış) simüle etmenin tek yolu.
+	if hook != nil {
+		hook()
+	}
 
 	n := p.purchases.Add(1)
 	if fail != nil {
@@ -995,5 +1004,60 @@ func TestRefundedOrderDoesNotLeakCode(t *testing.T) {
 	}
 	if durumSonra == "COMPLETED" {
 		t.Fatal("🔴 iade edilmiş sipariş COMPLETED oldu")
+	}
+}
+
+// TestClientDisconnectStillRefunds
+//
+// 🔴 KULLANICININ SEKMEYİ KAPATMASI PARA KAYBI OLAMAZ.
+//
+// T1'de para ZATEN düşüldü. Sağlayıcı çağrısı sürerken kullanıcı sekmeyi
+// kapatır / mobilde uygulamayı arka plana alır / ağ düşerse net/http istek
+// bağlamını iptal eder. Telafi adımları o bağlamı kullanırsa `pool.Begin(ctx)`
+// "context canceled" ile düşer ve defterde HİÇ iade kaydı oluşmaz:
+// bakiye düşülmüş, sipariş yok, iade yok.
+//
+// Ölçülen eski davranış: bakiye 10000 → 7500, REFUND kaydı 0.
+func TestClientDisconnectStillRefunds(t *testing.T) {
+	e := setup(t, 100_000)
+
+	// Sağlayıcı hata versin ki iade yolu çalışsın.
+	e.stub.mu.Lock()
+	e.stub.failPurchase = fmt.Errorf("%w: stok yok", port.ErrOutOfStock)
+	e.stub.mu.Unlock()
+
+	quote := e.makeQuote(t, 2_500)
+	oncesi := e.balance(t)
+
+	// İSTEMCİ KOPMASI: bağlam TAM satın alma çağrısı sırasında iptal edilir.
+	// T1 bitmiş (para düşülmüş), T2 henüz başlamamıştır — net/http'nin
+	// `c.Request.Context()` üzerinde yaptığı da tam olarak budur.
+	ctx, cancel := context.WithCancel(context.Background())
+	e.stub.mu.Lock()
+	e.stub.purchaseHook = cancel
+	e.stub.mu.Unlock()
+
+	_, err := e.svc.Create(ctx, ordersvc.CreateInput{UserID: e.userID, QuoteID: quote})
+	if err == nil {
+		t.Fatal("satın alma başarılı görünüyor — stub hata döndürmeliydi")
+	}
+	cancel()
+
+	sonrasi := e.balance(t)
+	if sonrasi != oncesi {
+		t.Fatalf("🔴 İADE YAZILMADI: bakiye %d → %d (fark %d). İstemcinin bağlantıyı "+
+			"koparması kullanıcının parasını askıda bıraktı.", oncesi, sonrasi, oncesi-sonrasi)
+	}
+
+	// İade defterde GERÇEKTEN olmalı — bakiyenin değişmemesi tek başına
+	// "hiç düşülmedi" anlamına da gelebilirdi.
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM ledger_entries WHERE idempotency_key = $1`,
+		"order:"+quote.String()+":refund").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("🔴 iade defter kaydı yok (%d) — bakiye tesadüfen mi tuttu?", n)
 	}
 }

@@ -274,3 +274,35 @@ func TestSyncEndpointRefusesWhenNotConfigured(t *testing.T) {
 		t.Errorf("hata kodu yanıtta yok: %s", body)
 	}
 }
+
+// TestSetAPIKeyOnMissingProviderIs404
+//
+// 🔴 SESSİZ BAŞARI, BAŞARISIZLIKTAN KÖTÜDÜR.
+//
+// Sorgu `:exec` iken etkilenen satır sayısı görülmüyordu: var olmayan bir
+// sağlayıcı kimliğine anahtar yazmak 200 + maskeli önizleme döndürüyordu.
+// Yönetici anahtarı kaydettiğini sanıyor, sağlayıcı çalışmıyor ve sebep
+// aranacak en son yer orası oluyordu.
+func TestSetAPIKeyOnMissingProviderIs404(t *testing.T) {
+	rig := newAdminRig(t)
+
+	w, body := rig.do(t, http.MethodPut, "/admin/providers/999999999/api-key",
+		dto.SetAPIKeyRequest{APIKey: "sahte-anahtar-123456"})
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("🔴 var olmayan sağlayıcıya anahtar yazıldı ve 200 döndü — "+
+			"yönetici anahtarı kaydettiğini sanır. Gövde: %s", body)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Errorf("durum = %d, 404 bekleniyordu — gövde: %s", w.Code, body)
+	}
+
+	// Test bir şey doğrulasın: GERÇEK sağlayıcıda hâlâ çalışmalı.
+	id, _ := rig.seedProvider(t, "onceki-anahtar")
+	w2, body2 := rig.do(t, http.MethodPut,
+		"/admin/providers/"+strconv.FormatInt(id, 10)+"/api-key",
+		dto.SetAPIKeyRequest{APIKey: "yeni-gecerli-anahtar-987"})
+	if w2.Code != http.StatusOK {
+		t.Fatalf("gerçek sağlayıcıda anahtar yazılamadı: %d — %s", w2.Code, body2)
+	}
+}

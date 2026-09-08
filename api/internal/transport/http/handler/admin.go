@@ -28,6 +28,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
@@ -318,9 +319,16 @@ func (a *Admin) SetProviderAPIKey(c *gin.Context) {
 		a.r.Fail(c, apperr.Internal(err))
 		return
 	}
-	if err := a.queries.UpdateProviderAPIKey(c.Request.Context(), db.UpdateProviderAPIKeyParams{
+	if _, err := a.queries.UpdateProviderAPIKey(c.Request.Context(), db.UpdateProviderAPIKeyParams{
 		ID: id, ApiKeyEnc: enc,
 	}); err != nil {
+		// Satır yoksa sqlc pgx.ErrNoRows döner: var olmayan sağlayıcı.
+		// Bunu 200 + maskeli önizleme ile geçmek, yöneticiye anahtarı
+		// kaydettiğini sandırırdı.
+		if errors.Is(err, pgx.ErrNoRows) {
+			a.r.Fail(c, apperr.ErrNotFound)
+			return
+		}
 		a.r.Fail(c, apperr.Internal(err))
 		return
 	}
