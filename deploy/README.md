@@ -22,21 +22,31 @@ Tüm komutlar **depo kökünden** çalıştırılır.
 Bunlar bu paketin dışındaki kod eksikleridir. Bilmeden kurulum yapmak, yarım
 saat sonra anlaşılmaz bir hataya çarpmak demektir.
 
-### 🔴 E2 — Webhook IP izin listesi ters vekil arkasında her bildirimi eler
+### ✅ E2 — ÇÖZÜLDÜ: webhook ters vekil arkasında gerçek IP'yi görüyor
 
-`api/internal/transport/http/router.go` yalnız `127.0.0.1` ve `::1` vekiline
-güveniyor. Caddy ayrı bir konteynerdir, yani Go tarafında görünen istemci IP'si
-her zaman Caddy'nin konteyner adresidir. HeroSMS'in bildirimleri "izin listesi
-dışı" sayılıp atılır — **200 dönerek, sessizce**.
+*(Bu madde bir engeldi; 2026-09-08'de kapatıldı ve burada kayıt olarak kalıyor.)*
 
-Bunun güvenlik ağı olan sipariş yoklayıcısı (order-poller) da henüz yazılmadı.
-Yani düzeltme yapılmadan dağıtılırsa: kullanıcı numara alır, kod hiç görünmez,
-süre dolar, iade edilir. Sistem "çalışıyor" görünür, gelir sıfırdır.
+**Sorun neydi:** api yalnız `127.0.0.1` ve `::1` vekiline güveniyordu. Caddy
+ayrı bir konteyner olduğu için Go tarafında görünen istemci IP'si her zaman
+Caddy'nin adresiydi; HeroSMS bildirimleri "izin listesi dışı" sayılıp
+**200 dönerek sessizce** atılıyordu. Sistem çalışıyor görünür, gelir sıfır olurdu.
 
-**Gereken:** api tarafında `TRUSTED_PROXIES` desteği (Docker ağı CIDR'i) ve
-webhook el tutucusunda güvenilen vekilden gelen `X-Real-IP`'in okunması.
-Caddy bu başlığı **zaten gönderiyor** (`deploy/Caddyfile` → `api_vekil`); eksik
-olan taraf api'dir.
+**Çözüm:** `TRUSTED_PROXIES` yapılandırması eklendi (aşağıda). Webhook el
+tutucusu artık şu kuralı uyguluyor:
+
+> Vekil başlıklarına **yalnız** bağlantı güvenilen bir vekilden geliyorsa
+> bakılır. Zincirde **sağdan sola** yürünür ve güvenilmeyen **ilk** adres
+> alınır — saldırganın gövdeye eklediği sahte adresler onun solunda kalır.
+
+İki uç hata da testle kapalı:
+`webhook_test.go#TestForwardedForHeaderIsIgnored` (uydurma başlık geçmez) ve
+`webhook_test.go#TestTrustedProxyHeaderIsHonored` (vekil arkasında çalışır).
+`0.0.0.0/0` yapılandırması açılışta **reddedilir**
+(`config_test.go#TestTrustedProxiesRejectsOpenRange`).
+
+**Sizin yapmanız gereken:** `.env` içinde `TRUSTED_PROXIES` değerini Docker
+ağınızın CIDR'i olarak verin (varsayılan compose ağı için `172.16.0.0/12`).
+Üretimde bu değişken **boş bırakılamaz** — süreç başlamaz.
 
 ### 🟡 E3 — `api` **tek örnek** çalışır, ölçeklenemez
 

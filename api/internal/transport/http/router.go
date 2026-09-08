@@ -4,6 +4,7 @@ package http
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -39,6 +40,10 @@ type Deps struct {
 	QuoteSvc     *pricingsvc.QuoteService
 	OrderSvc     *ordersvc.Service
 	OrderBus     handler.OrderStream
+
+	// Metrics Prometheus toplayıcısının HTTP işleyicisi. nil ise /metrics
+	// ucu HİÇ tanımlanmaz (METRICS_ENABLED=false).
+	Metrics http.Handler
 }
 
 // NewRouter uygulamanın HTTP yönlendiricisini kurar.
@@ -50,14 +55,34 @@ func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	r.RedirectTrailingSlash = false
 
-	// Vekil güveni: yalnız ters vekilimizden gelen X-Forwarded-For'a güveniriz.
-	// Varsayılan "tüm vekillere güven" IP tabanlı hız limitini işe yaramaz hale getirir.
-	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
+	// Vekil güveni YAPILANDIRMADAN gelir, koda gömülü DEĞİLDİR.
+	//
+	// Gömülü "127.0.0.1, ::1" listesi geliştirmede doğru, üretimde SESSİZCE
+	// YANLIŞTI: Docker'da Caddy ayrı bir konteynerdir, peer 172.x.x.x olur ve
+	// hiçbir vekil başlığı okunmaz. Sonuç: IP hız limiti bütün kullanıcıları
+	// tek kovaya koyar, webhook izin listesi sağlayıcının her bildirimini eler.
+	// Varsayılan "tüm vekillere güven" ise hız limitini tümüyle atlatılabilir
+	// kılardı — config.cidrs() bu yüzden 0.0.0.0/0'ı reddediyor.
+	if err := r.SetTrustedProxies(d.Config.TrustedProxies); err != nil {
+		// Yapılandırma açılışta doğrulandı; buraya düşmek programlama hatasıdır.
+		panic(fmt.Sprintf("güvenilen vekil listesi geçersiz: %v", err))
+	}
 
 	r.Use(middleware.RequestID(), middleware.Recovery(), middleware.Logger())
 
 	r.GET("/healthz", healthz)
 	r.GET("/readyz", readyz(d))
+
+	// /metrics — YALNIZ İÇ AĞ.
+	//
+	// 🔴 Uç kimlik doğrulaması İSTEMEZ; korunması ters vekildedir
+	// (deploy/Caddyfile bu yolu dışarıdan 404 yapar). Metrikler sistemin
+	// hacmini, hata oranını ve kuyruk derinliğini açık eder — rakibe de,
+	// saldırgana da. Vekil olmadan doğrudan internete açılırsa bu bilgi
+	// herkese açıktır.
+	if d.Metrics != nil {
+		r.GET("/metrics", gin.WrapH(d.Metrics))
+	}
 
 	registerV1(r.Group("/api/v1"), d)
 
@@ -179,7 +204,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	// olurdu (NFR-802).
 	if d.Config.WebhookHeroSMSSecret != "" && d.WebhookQueue != nil {
 		webhookH := handler.NewWebhook(d.WebhookQueue, d.Config.WebhookHeroSMSSecret,
-			d.Config.WebhookHeroSMSAllowedIPs, responder)
+			d.Config.WebhookHeroSMSAllowedIPs, d.Config.TrustedProxies, responder)
 		rg.POST("/webhooks/herosms/:secret",
 			middleware.RateLimit(d.Limiter, "webhook", middleware.RateLimitConfig{
 				Limit: 300, Window: time.Minute, KeyFn: middleware.ByIP,

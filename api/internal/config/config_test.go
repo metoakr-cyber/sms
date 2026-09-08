@@ -142,6 +142,9 @@ func TestProductionRequiresSecurityConfig(t *testing.T) {
 		t.Setenv("SENTRY_DSN", "https://x@sentry.io/1")
 		t.Setenv("MAIL_PROVIDER", "resend")
 		t.Setenv("RESEND_API_KEY", "re_x")
+		// Ters vekilin ağ aralığı: üretimde AÇIKÇA verilmek zorunda.
+		// Varsayılan loopback listesi Caddy ayrı bir konteynerken hiç eşleşmez.
+		t.Setenv("TRUSTED_PROXIES", "172.16.0.0/12")
 	}
 
 	t.Run("tam yapılandırma geçerli", func(t *testing.T) {
@@ -218,5 +221,76 @@ func TestKeyWrongLengthRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SESSION_SECRET") {
 		t.Fatalf("hata: %v", err)
+	}
+}
+
+// TestTrustedProxiesRejectsOpenRange
+//
+// 🔴 "0.0.0.0/0" yazmak "her istemciye vekil gibi güven" demektir: o anda
+// X-Forwarded-For'u uyduran herkes webhook izin listesini ve IP hız limitini
+// atlar. Yapılandırmayla açılabilen bir güvenlik açığı, olmayan bir
+// savunmadan kötüdür — çünkü var sanılır.
+func TestTrustedProxiesRejectsOpenRange(t *testing.T) {
+	for _, deger := range []string{"0.0.0.0/0", "::/0", "10.0.0.0/8,0.0.0.0/0"} {
+		t.Run(deger, func(t *testing.T) {
+			valid(t)
+			t.Setenv("TRUSTED_PROXIES", deger)
+			_, err := config.Load()
+			if err == nil {
+				t.Fatalf("%q kabul edildi — vekil başlığı uyduran herkes izin listesini atlardı", deger)
+			}
+			if !strings.Contains(err.Error(), "TRUSTED_PROXIES") {
+				t.Fatalf("hata TRUSTED_PROXIES'ten söz etmiyor: %v", err)
+			}
+		})
+	}
+}
+
+// TestTrustedProxiesAcceptsRealRanges
+//
+// Test bir şey doğrulasın: geçerli aralıklar KABUL edilmeli. Yoksa yukarıdaki
+// test, "her şeyi reddet" diyen bozuk bir uygulamayla da geçerdi.
+func TestTrustedProxiesAcceptsRealRanges(t *testing.T) {
+	valid(t)
+	t.Setenv("TRUSTED_PROXIES", "172.16.0.0/12, 127.0.0.1, ::1")
+	c, err := config.Load()
+	if err != nil {
+		t.Fatalf("geçerli aralıklar reddedildi: %v", err)
+	}
+	// Çıplak IP tek adreslik maskeye çevrilmeli.
+	want := []string{"172.16.0.0/12", "127.0.0.1/32", "::1/128"}
+	if len(c.TrustedProxies) != len(want) {
+		t.Fatalf("got=%v want=%v", c.TrustedProxies, want)
+	}
+	for i := range want {
+		if c.TrustedProxies[i] != want[i] {
+			t.Errorf("got[%d]=%q want %q", i, c.TrustedProxies[i], want[i])
+		}
+	}
+}
+
+// TestProductionRequiresTrustedProxies
+//
+// Üretimde ters vekil VARDIR (Caddy, ayrı konteyner). Varsayılan loopback
+// listesi orada asla eşleşmez ve sistem sessizce yanlış çalışır: webhook
+// izin listesi her bildirimi eler, hız limiti herkesi tek kovaya koyar.
+func TestProductionRequiresTrustedProxies(t *testing.T) {
+	valid(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("PUBLIC_BASE_URL", "https://ornek.test")
+	t.Setenv("RECAPTCHA_SITE_KEY", "x")
+	t.Setenv("RECAPTCHA_SECRET_KEY", "x")
+	t.Setenv("WEBHOOK_HEROSMS_SECRET", "x")
+	t.Setenv("WEBHOOK_HEROSMS_ALLOWED_IPS", "1.2.3.4")
+	t.Setenv("SENTRY_DSN", "https://x@o1.ingest.sentry.io/1")
+	t.Setenv("MAIL_PROVIDER", "smtp")
+	t.Setenv("SMTP_HOST", "smtp.ornek.test")
+	t.Setenv("SMTP_USERNAME", "u")
+	t.Setenv("SMTP_PASSWORD", "p")
+	t.Setenv("TRUSTED_PROXIES", "")
+
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXIES") {
+		t.Fatalf("üretimde boş TRUSTED_PROXIES kabul edildi: %v", err)
 	}
 }

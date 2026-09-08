@@ -54,14 +54,12 @@
 		# gönderdiğini EZER (header_up atar, eklemez), bu yüzden istemci
 		# kendi değerini geçiremez.
 		#
-		# ⚠️ BUGÜN ETKİSİZ: api/internal/transport/http/router.go yalnız
-		# 127.0.0.1 ve ::1'e güveniyor; Caddy ayrı bir konteyner olduğu için
-		# X-Forwarded-For oradan gelmez ve Gin bu başlıkları yok sayar.
-		# Sonuç: webhook IP izin listesi HeroSMS'in her bildirimini eler ve
-		# IP hız limiti tüm kullanıcıları tek kovaya koyar. Düzeltme api
-		# tarafındadır (TRUSTED_PROXIES) ve deploy/README.md "Bilinen
-		# engeller" bölümünde yazılıdır. Başlıklar şimdiden gönderiliyor ki
-		# api düzeltildiğinde vekil tarafında iş kalmasın.
+		# ⚠️ BU BAŞLIKLARIN OKUNMASI api tarafındaki TRUSTED_PROXIES
+		# ayarına BAĞLIDIR. O değişken bu konteynerin ağ aralığını
+		# içermezse api başlıklara HİÇ bakmaz (bilinçli: güvenilmeyen
+		# bir kaynağın uydurduğu başlığa bakmak izin listesini anlamsız
+		# kılar) ve webhook izin listesi her bildirimi eler.
+		# deploy/.env.prod.example → TRUSTED_PROXIES
 		# (X-Forwarded-For / -Proto / -Host Caddy'nin varsayılanıdır; elle
 		#  yazmak `caddy validate` uyarısı üretir.)
 		header_up X-Real-IP {http.request.remote.host}

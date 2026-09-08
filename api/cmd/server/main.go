@@ -197,12 +197,13 @@ func run() error {
 		Sessions: sessions, Limiter: limiter, Secrets: secrets,
 		AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
 		OrderSvc: orderService, OrderBus: orderBus,
+		Metrics:      metricsHandler(metrics),
 		WebhookQueue: webhookQueue,
 	})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           withMetricsEndpoint(router, metrics),
+		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// SSE akışları uzun sürer; WriteTimeout bilinçli olarak kapalıdır.
@@ -287,23 +288,15 @@ func setupMetrics(cfg *config.Config) *obs.Metrics {
 	return obs.NewMetrics()
 }
 
-// withMetricsEndpoint /metrics ucunu uygulamanın ÖNÜNE takar.
+// metricsHandler metrik işleyicisini döner; metrikler kapalıysa nil.
 //
-// 🔶 GEÇİCİ KABLOLAMA: uç asıl olarak router.go'da tanımlanmalı (Deps'e bir
-// MetricsHandler alanı + `r.GET("/metrics", gin.WrapH(...))`). Bu dalgada
-// router.go başka bir çalışmanın altında olduğu için uç burada, sarmalayarak
-// veriliyor; router.go'ya taşındığında bu fonksiyon silinmelidir.
-//
-// 🔴 Bu uç DIŞARIYA AÇILMAMALI: ters vekilde /metrics yalnız iç ağdan
-// erişilebilir olmalıdır (deploy/Caddyfile).
-func withMetricsEndpoint(app http.Handler, m *obs.Metrics) http.Handler {
+// nil dönmek bilinçlidir: router.go bunu görüp ucu HİÇ tanımlamaz.
+// "Kapalıyken boş yanıt veren bir uç" açık bir uçtur ve varlığını sızdırır.
+func metricsHandler(m *obs.Metrics) http.Handler {
 	if m == nil {
-		return app
+		return nil
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", m.Handler())
-	mux.Handle("/", app)
-	return mux
+	return m.Handler()
 }
 
 func setupLogger(cfg *config.Config, sen *obs.Sentry) {

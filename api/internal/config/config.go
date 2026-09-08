@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -67,6 +68,18 @@ type Config struct {
 
 	WebhookHeroSMSSecret     string
 	WebhookHeroSMSAllowedIPs []string
+
+	// TrustedProxies ters vekilin ağ aralıkları (CIDR).
+	//
+	// 🔴 BU LİSTE BOŞSA VEKİL BAŞLIKLARINA HİÇ BAKILMAZ ve ters vekil
+	// arkasında gerçek istemci IP'si GÖRÜLEMEZ: webhook izin listesi
+	// sağlayıcının her bildirimini eler, IP hız limiti tüm kullanıcıları
+	// tek kovaya koyar. Docker'da Caddy ayrı bir konteynerdir, yani
+	// 127.0.0.1 varsayılanı üretimde HİÇBİR ZAMAN eşleşmez.
+	//
+	// test: config_test.go#TestProductionRequiresTrustedProxies
+	// test: ../transport/http/handler/webhook_test.go#TestTrustedProxyHeaderIsHonored
+	TrustedProxies []string
 
 	SentryDSN      string
 	MetricsEnabled bool
@@ -130,6 +143,7 @@ func Load() (*Config, error) {
 
 		WebhookHeroSMSSecret:     v.str("WEBHOOK_HEROSMS_SECRET", ""),
 		WebhookHeroSMSAllowedIPs: v.csv("WEBHOOK_HEROSMS_ALLOWED_IPS"),
+		TrustedProxies:           v.cidrs("TRUSTED_PROXIES", "127.0.0.1/32", "::1/128"),
 
 		RecaptchaSiteKey:   v.str("RECAPTCHA_SITE_KEY", ""),
 		RecaptchaSecretKey: v.str("RECAPTCHA_SECRET_KEY", ""),
@@ -168,6 +182,20 @@ func Load() (*Config, error) {
 		}
 		if len(c.WebhookHeroSMSAllowedIPs) == 0 {
 			v.fail("WEBHOOK_HEROSMS_ALLOWED_IPS", "üretimde boş olamaz (webhook imza doğrulaması yok)")
+		}
+		// Üretimde ters vekil VARDIR (Caddy, ayrı konteyner).
+		//
+		// 🔴 BURADA "len(c.TrustedProxies) == 0" KONTROLÜ YETMEZ: değişken
+		// tanımsızken cidrs() geliştirme varsayılanını (loopback) döndürür,
+		// yani liste hiçbir zaman boş olmaz ve kontrol hiç tetiklenmezdi.
+		// Değişkenin AÇIKÇA VERİLMİŞ olması aranır — çünkü sessizce yanlış
+		// bir varsayılan, eksik bir ayardan daha kötüdür.
+		//
+		// test: config_test.go#TestProductionRequiresTrustedProxies
+		if strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")) == "" {
+			v.fail("TRUSTED_PROXIES",
+				"üretimde açıkça verilmelidir — ters vekilin ağ aralığı (örn. 172.16.0.0/12). "+
+					"Varsayılan loopback listesi ters vekil arkasında ASLA eşleşmez")
 		}
 	}
 
@@ -316,6 +344,44 @@ func (v *validator) boolean(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// cidrs vekil ağ aralıklarını okur ve DOĞRULAR.
+//
+// 🔴 HERKESE AÇIK ARALIK REDDEDİLİR. "0.0.0.0/0" yazmak "her istemciye vekil
+// gibi güven" demektir: o anda X-Forwarded-For'u uyduran herkes izin
+// listesini ve hız limitini atlar. Yapılandırmayla açılabilen bir güvenlik
+// açığı, olmayan bir savunmadan kötüdür — çünkü var sanılır.
+//
+// test: config_test.go#TestTrustedProxiesRejectsOpenRange
+func (v *validator) cidrs(key string, def ...string) []string {
+	raw := v.csv(key)
+	if len(raw) == 0 {
+		raw = def
+	}
+	out := make([]string, 0, len(raw))
+	for _, s := range raw {
+		// Çıplak IP de kabul edilir; tek adreslik maskeye çevrilir.
+		if ip := net.ParseIP(s); ip != nil {
+			if ip4 := ip.To4(); ip4 != nil {
+				s = ip4.String() + "/32"
+			} else {
+				s = ip.String() + "/128"
+			}
+		}
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			v.fail(key, fmt.Sprintf("geçersiz CIDR: %q", s))
+			continue
+		}
+		if ones, bits := n.Mask.Size(); ones == 0 && bits > 0 {
+			v.fail(key, fmt.Sprintf("%q tüm interneti kapsıyor — vekil başlıkları "+
+				"uyduran herkes izin listesini atlardı", s))
+			continue
+		}
+		out = append(out, n.String())
+	}
+	return out
 }
 
 func (v *validator) csv(key string) []string {

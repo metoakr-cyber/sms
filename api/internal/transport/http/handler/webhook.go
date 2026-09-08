@@ -14,7 +14,7 @@ package handler
 //
 // ÜÇ KATMANLI SAVUNMA:
 //  1. Tahmin edilemez yol (128 bit, ortam değişkeninden)
-//  2. Kaynak IP izin listesi (GERÇEK peer IP — X-Forwarded-For DEĞİL)
+//  2. Kaynak IP izin listesi (aşağıya bakın — başlığa körlemesine güvenilmez)
 //  3. Sağlayıcıdan teyit (gövdeye güvenmeme)
 //
 // Üçü de tek başına yetersiz; birlikte anlamlı.
@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -57,10 +58,13 @@ type Webhook struct {
 	queue      WebhookQueue
 	secret     string
 	allowedIPs []net.IP
-	r          Responder
+	// trusted GÜVENİLEN ters vekillerin ağ aralıkları. Vekil başlıklarına
+	// YALNIZ bu aralıklardan gelen bir bağlantıda bakılır.
+	trusted []*net.IPNet
+	r       Responder
 }
 
-func NewWebhook(q WebhookQueue, secret string, allowedIPs []string, r Responder) *Webhook {
+func NewWebhook(q WebhookQueue, secret string, allowedIPs, trustedProxies []string, r Responder) *Webhook {
 	ips := make([]net.IP, 0, len(allowedIPs))
 	for _, s := range allowedIPs {
 		if ip := net.ParseIP(s); ip != nil {
@@ -69,7 +73,15 @@ func NewWebhook(q WebhookQueue, secret string, allowedIPs []string, r Responder)
 			slog.Error("webhook izin listesinde geçersiz IP — YOK SAYILDI", "value", s)
 		}
 	}
-	return &Webhook{queue: q, secret: secret, allowedIPs: ips, r: r}
+	nets := make([]*net.IPNet, 0, len(trustedProxies))
+	for _, s := range trustedProxies {
+		if _, n, err := net.ParseCIDR(s); err == nil {
+			nets = append(nets, n)
+		} else {
+			slog.Error("güvenilen vekil listesinde geçersiz CIDR — YOK SAYILDI", "value", s)
+		}
+	}
+	return &Webhook{queue: q, secret: secret, allowedIPs: ips, trusted: nets, r: r}
 }
 
 // HeroSMS POST /webhooks/herosms/:secret
@@ -94,11 +106,7 @@ func (h *Webhook) HeroSMS(c *gin.Context) {
 	}
 
 	// (b) KAYNAK IP.
-	//
-	// 🔴 GERÇEK PEER IP kullanılır. `X-Forwarded-For` istemci tarafından
-	// uydurulabilir; ona bakmak izin listesini tamamen anlamsız kılar.
-	// Gin'in ClientIP() de vekil başlıklarına bakar — bu yüzden RemoteAddr.
-	if !h.ipAllowed(c.Request.RemoteAddr) {
+	if !h.ipAllowed(h.clientIP(c)) {
 		slog.Warn("webhook izin listesi dışı IP'den geldi — işlenmedi",
 			"remote", c.Request.RemoteAddr)
 		// Yine 200: saldırgana izin listesinin varlığını sızdırmayız ve
@@ -140,20 +148,71 @@ func (h *Webhook) HeroSMS(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-// ipAllowed kaynak adresin izin listesinde olup olmadığını söyler.
+// clientIP bildirimi GERÇEKTEN gönderen adresi çözer.
 //
-// İzin listesi BOŞSA hiçbir istek kabul edilmez. "Boşsa hepsine izin ver"
-// davranışı, yapılandırma unutulduğunda ucu herkese açardı.
-func (h *Webhook) ipAllowed(remoteAddr string) bool {
-	if len(h.allowedIPs) == 0 {
-		return false
+// 🔴 BAŞLIĞA KOŞULSUZ GÜVENİLMEZ, KOŞULSUZ YOK DA SAYILMAZ. İki uç da yanlış:
+//
+//   - Başlığa her zaman bakmak: `X-Forwarded-For` istemci tarafından
+//     uydurulabilir. Herkes izin listesindeki bir IP'yi yazıp geçerdi.
+//   - Hiç bakmamak: ters vekil arkasında peer HER ZAMAN vekildir (Docker'da
+//     Caddy ayrı bir konteyner). Sağlayıcının gerçek IP'si görülemez ve
+//     her meşru bildirim elenir — sistem "çalışıyor" görünür, kod hiç gelmez.
+//
+// Doğru kural: başlığa YALNIZ bağlantı güvenilen bir vekilden geliyorsa bakılır.
+// Vekil zincirinde sağdan sola yürünür ve güvenilmeyen İLK adres alınır;
+// saldırganın gövdeye eklediği sahte adresler o noktanın solunda kalır.
+//
+// test: webhook_test.go#TestForwardedForHeaderIsIgnored
+// test: webhook_test.go#TestTrustedProxyHeaderIsHonored
+// test: webhook_test.go#TestForgedChainStopsAtFirstUntrusted
+func (h *Webhook) clientIP(c *gin.Context) net.IP {
+	peer := parseHost(c.Request.RemoteAddr)
+	if peer == nil || !h.isTrustedProxy(peer) {
+		return peer
 	}
+	// Sağdan sola: en sağdaki, güvenilen vekilin kendi eklediği adrestir.
+	chain := c.Request.Header.Values("X-Forwarded-For")
+	var parts []string
+	for _, v := range chain {
+		for _, p := range strings.Split(v, ",") {
+			parts = append(parts, strings.TrimSpace(p))
+		}
+	}
+	for i := len(parts) - 1; i >= 0; i-- {
+		if ip := net.ParseIP(parts[i]); ip != nil && !h.isTrustedProxy(ip) {
+			return ip
+		}
+	}
+	// Zincir yoksa vekilin yazdığı tek adres.
+	if ip := net.ParseIP(strings.TrimSpace(c.Request.Header.Get("X-Real-IP"))); ip != nil {
+		return ip
+	}
+	return peer
+}
+
+func (h *Webhook) isTrustedProxy(ip net.IP) bool {
+	for _, n := range h.trusted {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseHost(remoteAddr string) net.IP {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		host = remoteAddr
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
+	return net.ParseIP(host)
+}
+
+// ipAllowed kaynak adresin izin listesinde olup olmadığını söyler.
+//
+// İzin listesi BOŞSA hiçbir istek kabul edilmez. "Boşsa hepsine izin ver"
+// davranışı, yapılandırma unutulduğunda ucu herkese açardı.
+func (h *Webhook) ipAllowed(ip net.IP) bool {
+	if len(h.allowedIPs) == 0 || ip == nil {
 		return false
 	}
 	for _, allowed := range h.allowedIPs {

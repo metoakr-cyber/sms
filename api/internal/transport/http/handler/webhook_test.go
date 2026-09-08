@@ -36,9 +36,14 @@ func (q *fakeQueue) Enqueue(ctx context.Context, raw []byte) error {
 }
 
 func newTestRouter(q *fakeQueue, secret string, ips []string) *gin.Engine {
+	return newTestRouterWithProxies(q, secret, ips, nil)
+}
+
+// newTestRouterWithProxies güvenilen vekil listesini de verir.
+func newTestRouterWithProxies(q *fakeQueue, secret string, ips, trusted []string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := NewWebhook(q, secret, ips, Responder{
+	h := NewWebhook(q, secret, ips, trusted, Responder{
 		OK:        func(c *gin.Context, b any) { c.JSON(200, b) },
 		NoContent: func(c *gin.Context) { c.Status(204) },
 		Fail:      func(c *gin.Context, err error) { c.Status(500) },
@@ -126,25 +131,103 @@ func TestWrongSecretIsNotFound(t *testing.T) {
 	}
 }
 
-// TestForwardedForHeaderIsIgnored
-//
-// 🔴 `X-Forwarded-For` istemci tarafından UYDURULABİLİR. Ona bakmak izin
-// listesini tamamen anlamsız kılar: saldırgan başlığa izinli bir IP yazıp
-// geçer.
-func TestForwardedForHeaderIsIgnored(t *testing.T) {
-	q := &fakeQueue{}
-	r := newTestRouter(q, "sirr", []string{"1.2.3.4"})
-
+// postHdr başlıklarla istek atar.
+func postHdr(r *gin.Engine, remoteAddr string, hdr map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/herosms/sirr",
 		strings.NewReader(`{"activationId":1}`))
-	req.RemoteAddr = "9.9.9.9:1234"              // GERÇEK kaynak: izinli değil
-	req.Header.Set("X-Forwarded-For", "1.2.3.4") // uydurulmuş
-	req.Header.Set("X-Real-IP", "1.2.3.4")
+	req.RemoteAddr = remoteAddr
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestForwardedForHeaderIsIgnored
+//
+// 🔴 `X-Forwarded-For` istemci tarafından UYDURULABİLİR. GÜVENİLMEYEN bir
+// bağlantıdan gelen başlığa bakmak izin listesini tamamen anlamsız kılar:
+// saldırgan başlığa izinli bir IP yazıp geçer.
+func TestForwardedForHeaderIsIgnored(t *testing.T) {
+	q := &fakeQueue{}
+	// Vekil olarak yalnız 10.0.0.1 güveniliyor; saldırgan orada değil.
+	r := newTestRouterWithProxies(q, "sirr", []string{"1.2.3.4"}, []string{"10.0.0.1/32"})
+
+	postHdr(r, "9.9.9.9:1234", map[string]string{
+		"X-Forwarded-For": "1.2.3.4", // uydurulmuş
+		"X-Real-IP":       "1.2.3.4", // uydurulmuş
+	})
 
 	if n := q.calls.Load(); n != 0 {
-		t.Fatal("X-Forwarded-For başlığına bakılmış — izin listesi atlanabilir")
+		t.Fatal("güvenilmeyen kaynağın X-Forwarded-For başlığına bakılmış — izin listesi atlanabilir")
+	}
+}
+
+// TestTrustedProxyHeaderIsHonored
+//
+// 🔴 DİĞER UÇ HATA. Başlığa HİÇ bakmamak da yanlıştır: ters vekil arkasında
+// peer HER ZAMAN vekildir (Docker'da Caddy ayrı bir konteyner). O durumda
+// sağlayıcının gerçek IP'si hiç görülmez ve HER meşru bildirim elenir —
+// sistem "çalışıyor" görünür, kod hiç gelmez, her sipariş iadeyle biter.
+func TestTrustedProxyHeaderIsHonored(t *testing.T) {
+	q := &fakeQueue{}
+	r := newTestRouterWithProxies(q, "sirr", []string{"1.2.3.4"}, []string{"172.16.0.0/12"})
+
+	postHdr(r, "172.20.0.5:44321", map[string]string{"X-Forwarded-For": "1.2.3.4"})
+	if n := q.calls.Load(); n != 1 {
+		t.Fatalf("güvenilen vekilin bildirdiği gerçek IP yok sayıldı (kuyruk: %d) — "+
+			"ters vekil arkasında hiçbir webhook işlenmezdi", n)
+	}
+
+	// Caddy X-Real-IP gönderiyor; o da kabul edilmeli.
+	q2 := &fakeQueue{}
+	r2 := newTestRouterWithProxies(q2, "sirr", []string{"1.2.3.4"}, []string{"172.16.0.0/12"})
+	postHdr(r2, "172.20.0.5:44321", map[string]string{"X-Real-IP": "1.2.3.4"})
+	if n := q2.calls.Load(); n != 1 {
+		t.Fatalf("X-Real-IP yok sayıldı (kuyruk: %d)", n)
+	}
+}
+
+// TestForgedChainStopsAtFirstUntrusted
+//
+// Saldırgan zincirin BAŞINA sahte adres ekleyebilir; vekil kendi gördüğünü
+// SONA ekler. Bu yüzden sağdan sola yürünür ve güvenilmeyen İLK adres alınır.
+func TestForgedChainStopsAtFirstUntrusted(t *testing.T) {
+	q := &fakeQueue{}
+	r := newTestRouterWithProxies(q, "sirr", []string{"1.2.3.4"}, []string{"172.16.0.0/12"})
+
+	// Saldırgan 6.6.6.6'dan bağlanıp zincire "1.2.3.4" uydurmuş.
+	postHdr(r, "172.20.0.5:1", map[string]string{"X-Forwarded-For": "1.2.3.4, 6.6.6.6"})
+	if n := q.calls.Load(); n != 0 {
+		t.Fatal("zincirin BAŞINDAKİ uydurma adres kullanılmış — izin listesi atlanabilir")
+	}
+
+	q2 := &fakeQueue{}
+	r2 := newTestRouterWithProxies(q2, "sirr", []string{"1.2.3.4"}, []string{"172.16.0.0/12"})
+	postHdr(r2, "172.20.0.5:1", map[string]string{"X-Forwarded-For": "6.6.6.6, 1.2.3.4"})
+	if n := q2.calls.Load(); n != 1 {
+		t.Fatalf("zincirin SONUNDAKİ gerçek adres okunmadı (kuyruk: %d)", n)
+	}
+}
+
+// TestNoTrustedProxiesMeansHeadersNeverRead
+//
+// Vekil listesi boşsa başlıklara HİÇ bakılmaz; doğrudan bağlanan istemci
+// başlık uyduramaz.
+func TestNoTrustedProxiesMeansHeadersNeverRead(t *testing.T) {
+	q := &fakeQueue{}
+	r := newTestRouterWithProxies(q, "sirr", []string{"1.2.3.4"}, nil)
+	postHdr(r, "9.9.9.9:1", map[string]string{"X-Forwarded-For": "1.2.3.4"})
+	if n := q.calls.Load(); n != 0 {
+		t.Fatal("vekil listesi boşken başlık okunmuş")
+	}
+
+	q2 := &fakeQueue{}
+	r2 := newTestRouterWithProxies(q2, "sirr", []string{"1.2.3.4"}, nil)
+	postHdr(r2, "1.2.3.4:1", nil)
+	if n := q2.calls.Load(); n != 1 {
+		t.Fatalf("doğrudan bağlantı çalışmıyor (kuyruk: %d)", n)
 	}
 }
 
