@@ -366,15 +366,23 @@ SELECT
 FROM products p
 JOIN services  s ON s.id = p.service_id
 JOIN countries c ON c.id = p.country_id
-JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN provider_offers o ON o.product_id = p.id
 JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
 WHERE p.is_active AND p.kind = 'SMS_ACTIVATION'
   AND p.verification_type = 'sms'
   AND s.is_visible AND c.is_visible
+  -- STOKSUZ SATIRLAR NORMALDE GİZLENİR (FR-306): kullanıcıyı parasının
+  -- çekileceği ama numara gelmeyeceği bir akışa sokmamak için.
+  --
+  -- TEK İSTİSNA: kullanıcının KENDİ ÜLKESİ. Türkiye'yi listeden tamamen
+  -- çıkarmak, Türkiye'den bakan kullanıcıya "bu site Türk numarası satmıyor"
+  -- dedirtiyor — oysa doğrusu "şu an stok yok". Satır GÖRÜNÜR ama
+  -- ` + "`" + `inStock: false` + "`" + ` gelir ve arayüz onu SEÇİLEMEZ gösterir.
+  AND ((o.is_available AND o.stock > 0) OR c.iso2 = 'TR')
   AND ($1::text IS NULL OR s.code = $1::text)
   AND ($2::text  IS NULL OR c.iso2 = $2::text)
 GROUP BY p.id, s.code, s.name, s.name_tr, s.icon_url, c.iso2, c.name_tr, c.phone_code
-ORDER BY s.code, c.name_tr
+ORDER BY s.code, (c.iso2 = 'TR') DESC, c.name_tr
 `
 
 type ListAvailableProductsForCatalogParams struct {
@@ -396,6 +404,13 @@ type ListAvailableProductsForCatalogRow struct {
 }
 
 // Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
+// TÜRKİYE HER ZAMAN ÖNCE.
+//
+// Kullanıcıların çoğu Türkiye'den ve en çok aradıkları ülke bu. Alfabetik
+// sırada "Türkiye" 190 ülkenin sonlarında kalıyor ve kullanıcı her seferinde
+// listeyi sonuna kadar kaydırıyor. Sıralama SUNUCUDA yapılır: istemcide
+// yapılsaydı her istemci kendi kuralını uygular, mobil ve masaüstü farklı
+// sıralanırdı.
 func (q *Queries) ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error) {
 	rows, err := q.db.Query(ctx, listAvailableProductsForCatalog, arg.ServiceCode, arg.CountryIso)
 	if err != nil {
@@ -522,7 +537,11 @@ func (q *Queries) ListOffersForProduct(ctx context.Context, productID int64) ([]
 const listRentalCountriesForService = `-- name: ListRentalCountriesForService :many
 SELECT DISTINCT
     c.iso2 AS country_iso2, c.name AS country_name, c.name_tr AS country_name_tr,
-    c.phone_code
+    c.phone_code,
+    -- DISTINCT ile ORDER BY ifadeleri seçim listesinde OLMAK ZORUNDA.
+    -- Bu iki sütun yalnız sıralama içindir; DTO'ya taşınmaz.
+    (c.iso2 = 'TR') AS is_home,
+    coalesce(nullif(c.name_tr, ''), c.name) AS sort_name
 FROM products p
 JOIN services  s ON s.id = p.service_id
 JOIN countries c ON c.id = p.country_id
@@ -530,7 +549,7 @@ JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
 JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
 WHERE p.kind = 'SMS_RENTAL' AND p.is_active
   AND s.code = $1 AND s.is_visible AND c.is_visible
-ORDER BY c.name_tr, c.name
+ORDER BY is_home DESC, sort_name
 `
 
 type ListRentalCountriesForServiceRow struct {
@@ -538,6 +557,8 @@ type ListRentalCountriesForServiceRow struct {
 	CountryName   string
 	CountryNameTr string
 	PhoneCode     string
+	IsHome        bool
+	SortName      string
 }
 
 func (q *Queries) ListRentalCountriesForService(ctx context.Context, serviceCode string) ([]ListRentalCountriesForServiceRow, error) {
@@ -554,6 +575,8 @@ func (q *Queries) ListRentalCountriesForService(ctx context.Context, serviceCode
 			&i.CountryName,
 			&i.CountryNameTr,
 			&i.PhoneCode,
+			&i.IsHome,
+			&i.SortName,
 		); err != nil {
 			return nil, err
 		}
@@ -734,7 +757,8 @@ func (q *Queries) ListServicesWithStock(ctx context.Context) ([]ListServicesWith
 }
 
 const listVisibleCountries = `-- name: ListVisibleCountries :many
-SELECT id, iso2, name, name_tr, phone_code, is_visible, supports_rent, created_at, updated_at FROM countries WHERE is_visible ORDER BY name_tr, name
+SELECT id, iso2, name, name_tr, phone_code, is_visible, supports_rent, created_at, updated_at FROM countries WHERE is_visible
+ORDER BY (iso2 = 'TR') DESC, coalesce(nullif(name_tr, ''), name)
 `
 
 func (q *Queries) ListVisibleCountries(ctx context.Context) ([]Country, error) {

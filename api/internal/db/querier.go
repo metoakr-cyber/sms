@@ -114,6 +114,13 @@ type Querier interface {
 	ListApplicableRules(ctx context.Context, arg ListApplicableRulesParams) ([]PricingRule, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	// Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
+	// TÜRKİYE HER ZAMAN ÖNCE.
+	//
+	// Kullanıcıların çoğu Türkiye'den ve en çok aradıkları ülke bu. Alfabetik
+	// sırada "Türkiye" 190 ülkenin sonlarında kalıyor ve kullanıcı her seferinde
+	// listeyi sonuna kadar kaydırıyor. Sıralama SUNUCUDA yapılır: istemcide
+	// yapılsaydı her istemci kendi kuralını uygular, mobil ve masaüstü farklı
+	// sıralanırdı.
 	ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error)
 	ListDimensionMaps(ctx context.Context, arg ListDimensionMapsParams) ([]ProviderDimensionMap, error)
 	// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan siparişler.

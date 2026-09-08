@@ -226,21 +226,53 @@ func TestSyncOffersPopulatesCatalog(t *testing.T) {
 		t.Fatal("katalog boş")
 	}
 
-	// WhatsApp/TR STOKSUZ olmalı: FakeProvider gerçek gözlemi taklit ediyor
-	// (canlıda count=56964 ama physicalCount=0). Stoksuz ürün katalogda
-	// GÖRÜNMEMELİ, yoksa kullanıcıdan para çekip boş döneriz.
+	// STOKSUZ ÜRÜN KATALOGDA GÖRÜNMEZ — TEK İSTİSNA: kullanıcının kendi ülkesi.
+	//
+	// Kural (FR-306): stoksuz bir kombinasyonu göstermek, kullanıcıyı parasının
+	// çekileceği ama numara gelmeyeceği bir akışa sokar. FakeProvider bu durumu
+	// taklit ediyor (canlıda WhatsApp/TR: count=56964, physicalCount=0).
+	//
+	// İSTİSNANIN GEREKÇESİ: Türkiye'yi listeden tamamen çıkarmak, Türkiye'den
+	// bakan kullanıcıya "bu site Türk numarası satmıyor" dedirtiyor — oysa
+	// doğrusu "şu an stok yok". Satır GÖRÜNÜR ama `total_stock = 0` gelir ve
+	// arayüz onu SEÇİLEMEZ gösterir; satın alma akışına giriş YOKTUR.
+	//
+	// İstisna YALNIZ TR içindir: başka bir ülkenin stoksuz satırı hâlâ hatadır.
+	var sawHomeOutOfStock bool
 	for _, r := range rows {
-		if r.ServiceCode == "wa" && r.CountryIso2 == "TR" {
-			t.Fatalf("stoksuz kombinasyon katalogda göründü: stok=%d", r.TotalStock)
+		if r.CountryIso2 == "TR" {
+			if r.TotalStock <= 0 {
+				sawHomeOutOfStock = true
+			}
+			continue
 		}
 		if r.TotalStock <= 0 {
-			t.Fatalf("stoksuz ürün katalogda: %s/%s", r.ServiceCode, r.CountryIso2)
+			t.Fatalf("stoksuz ürün katalogda: %s/%s — yalnız TR istisnadır",
+				r.ServiceCode, r.CountryIso2)
 		}
 		if r.MinCostMicro <= 0 {
 			t.Fatalf("maliyetsiz ürün: %s/%s", r.ServiceCode, r.CountryIso2)
 		}
 	}
-	t.Logf("katalogda %d ürün, wa/TR yok (stoksuz)", len(rows))
+	if !sawHomeOutOfStock {
+		t.Fatal("stoksuz TR satırı katalogda YOK — kullanıcı kendi ülkesini hiç göremez")
+	}
+
+	// TR EN BAŞTA olmalı: kullanıcıların çoğu Türkiye'den ve alfabetik sırada
+	// "Türkiye" 190 ülkenin sonlarında kalıyor.
+	// Sıra SERVİS BAZINDA kontrol edilir: sorgu önce servise, sonra ülkeye
+	// göre sıralıyor. Tüm listedeki mutlak indekse bakmak yanlış olur.
+	var waOrder []string
+	for _, r := range rows {
+		if r.ServiceCode == "wa" {
+			waOrder = append(waOrder, r.CountryIso2)
+		}
+	}
+	if len(waOrder) == 0 || waOrder[0] != "TR" {
+		t.Errorf("wa için ilk ülke TR değil — sıra: %v", waOrder)
+	}
+
+	t.Logf("katalogda %d ürün; TR stoksuz ama görünür ve ilk sırada", len(rows))
 }
 
 // Sağlayıcı bir kombinasyonu listeden çıkarırsa o teklif "yok" olmalı.

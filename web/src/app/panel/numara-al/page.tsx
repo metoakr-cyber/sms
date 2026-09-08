@@ -206,12 +206,22 @@ function BuyModal({
       const d = await apiFetch<{ items: Array<CatalogItem | { iso2: string; name: string; phoneCode: string }> }>(path);
       // İki uç iki farklı şekil döndürüyor; tek biçime indiriyoruz ki
       // aşağıdaki liste her iki modda aynı kodla çizilsin.
+      // SUNUCUNUN SIRASI KORUNUR — burada yeniden sıralanmaz.
+      //
+      // Sunucu Türkiye'yi başa alıyor (kullanıcıların çoğu Türkiye'den).
+      // İstemcide alfabetik sıralamak o kararı sessizce geri alırdı ve
+      // "neden sıra değişti?" sorusunun cevabı iki dosyada aranırdı.
+      // STOKSUZ SATIR ELENMEZ, DEVRE DIŞI GÖSTERİLİR.
+      //
+      // Sunucu stoksuz kombinasyonları zaten gizliyor; tek istisna kullanıcının
+      // kendi ülkesi (Türkiye). Onu da listeden atarsak kullanıcı "bu site Türk
+      // numarası satmıyor" diye düşünür. Seçilemez göstermek doğruyu söyler:
+      // "satıyoruz, şu an stok yok."
       return d.items.map((x) =>
         'countryIso2' in x
           ? { iso: x.countryIso2, name: x.countryName, phone: x.phoneCode, ok: x.inStock }
           : { iso: x.iso2, name: x.name, phone: x.phoneCode, ok: true },
-      ).filter((x) => x.ok)
-       .sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+      );
     },
     enabled: !!service,
   });
@@ -318,8 +328,8 @@ function BuyModal({
                   : 'Ülke seçiniz…'}
               </option>
               {(countries.data ?? []).map((c) => (
-                <option key={c.iso} value={c.iso}>
-                  {c.name} (+{c.phone})
+                <option key={c.iso} value={c.iso} disabled={!c.ok}>
+                  {c.name} (+{c.phone}){c.ok ? '' : ' — şu an stok yok'}
                 </option>
               ))}
             </select>
