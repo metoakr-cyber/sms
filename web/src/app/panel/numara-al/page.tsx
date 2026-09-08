@@ -331,15 +331,25 @@ function BuyModal({
             </div>
           )}
 
-          <label className="flex flex-col gap-1.5">
+          <label className="relative flex flex-col gap-1.5">
             <span className="text-sm font-medium">Ülke Seçin</span>
+            <svg className="pointer-events-none absolute right-3 top-[2.35rem] size-4 text-[var(--muted)]"
+                 viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
             <select
               data-autofocus
               value={countryIso}
               onChange={(e) => pickCountry(e.target.value)}
               disabled={countries.isLoading || countries.isError}
-              className="raised min-h-12 w-full rounded-xl border px-3 text-base outline-none
-                         focus:border-brand-400 disabled:opacity-60"
+              /* 🔴 appearance-none ZORUNLU: WebKit'te yerel `menulist`
+                 görünümü min-h-12'yi YOK SAYAR ve kutu 25 px'e düşer —
+                 44 px dokunma hedefinin çok altında. iOS'ta tüm tarayıcılar
+                 WebKit olduğu için bu gerçek bir ihlaldir ve Chromium'da
+                 GÖRÜNMEZ. Görünüm kapatılınca ok elle çizilir (pr-10). */
+              className="raised min-h-12 w-full appearance-none rounded-xl border px-3 pr-10 text-base
+                         outline-none focus:border-brand-400 disabled:opacity-60"
             >
               <option value="">
                 {countries.isLoading ? 'Ülkeler yükleniyor…'

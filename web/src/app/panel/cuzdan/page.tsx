@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { formatMoney, formatDateTime } from '@/lib/format';
@@ -29,21 +30,20 @@ export default function WalletPage() {
     <div className="mx-auto flex max-w-5xl flex-col gap-5">
       <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Cüzdan</h1>
 
+      {/* Bakiye ve yükleme TEK KARTTA: "param ne kadar" ile "nasıl artırırım"
+          arasına başka içerik girmesi, en sık yapılan işi aşağı iter.
+          Alt menüye yedinci bir sekme eklemek yerine yükleme buradan açılır —
+          320 px'te altı sekme zaten 44 px dokunma hedefinin sınırında. */}
       <Card>
         <p className="text-xs font-medium uppercase tracking-wide text-muted">Kullanılabilir bakiye</p>
         <p className="mt-1.5 text-3xl font-bold md:text-4xl">{formatMoney(user?.balance)}</p>
-      </Card>
-
-      <Card>
-        <h2 className="text-lg font-semibold">Bakiye yükleme</h2>
-        <p className="mt-1.5 text-sm leading-relaxed text-muted">
+        <Link href="/panel/bakiye-yukle" className="mt-4 block sm:inline-block">
+          <Button fullWidth className="sm:w-auto">Bakiye yükle</Button>
+        </Link>
+        <p className="mt-3 text-sm leading-relaxed text-muted">
           Banka havalesi/EFT veya USDT ile yükleme yapabilirsiniz. Ödemeniz
           kontrol edildikten sonra bakiyeniz hesabınıza tanımlanır.
         </p>
-        <Alert tone="info" className="mt-4">
-          Yükleme ekranı hazırlanıyor. Bu sürümde bakiye yüklemesi yönetici
-          tarafından elle tanımlanmaktadır.
-        </Alert>
       </Card>
 
       <Card>

@@ -79,6 +79,10 @@ gen-check:
 dev: up
 	cd $(API) && go run ./cmd/server
 
+## web: Next.js geliştirme sunucusu (ayrı terminal)
+web:
+	cd $(WEB) && npm run dev
+
 ## worker: arka plan işçilerini başlat
 worker:
 	cd $(API) && go run ./cmd/worker

@@ -8,9 +8,17 @@ import { Logo } from './logo';
 import { Spinner, Card, Button, Badge, cx } from './ui';
 import { ThemeToggle } from './theme';
 
+// Sekmeler mobilde yatay kaydırılır; sıra EN SIK KULLANILANDAN başlar,
+// çünkü kaydırma çubuğunun sağında kalan sekmeler pratikte görülmez.
 const NAV = [
-  { href: '/yonetim',        label: 'Genel bakış' },
-  { href: '/yonetim/bakiye', label: 'Bakiye düzeltme' },
+  { href: '/yonetim',                  label: 'Genel bakış' },
+  { href: '/yonetim/talepler',         label: 'Bakiye talepleri' },
+  { href: '/yonetim/kullanicilar',     label: 'Kullanıcılar' },
+  { href: '/yonetim/bakiye',           label: 'Bakiye düzeltme' },
+  { href: '/yonetim/fiyatlar',         label: 'Fiyat kuralları' },
+  { href: '/yonetim/odeme-yontemleri', label: 'Ödeme yöntemleri' },
+  { href: '/yonetim/saglayicilar',     label: 'Sağlayıcılar' },
+  { href: '/yonetim/denetim',          label: 'Denetim kaydı' },
 ];
 
 export function AdminShell({ children }: { children: React.ReactNode }) {

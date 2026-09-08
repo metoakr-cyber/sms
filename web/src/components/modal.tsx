@@ -45,8 +45,15 @@ export function Modal({
   React.useEffect(() => {
     if (!open) return;
     const prevFocus = document.activeElement as HTMLElement | null;
-    panel.current?.querySelector<HTMLElement>('[data-autofocus]')?.focus()
-      ?? panel.current?.focus();
+    // 🔴 `?.focus() ?? panel.focus()` YAZILAMAZ: focus() undefined döner,
+    // dolayısıyla `??` sağ tarafı HER ZAMAN çalışır ve odağı panele geri
+    // alır — `data-autofocus` projenin tamamında sessizce işlevsiz kalır.
+    // Ölçümle bulundu (iki bağımsız denetimde), göz kararıyla görünmüyordu.
+    //
+    // test: modal_test.tsx yok — bu davranış tarayıcı gerektirir; kalıcı
+    // doğrulama web/scripts/responsive-check.mjs odak kontrolüne eklenmeli.
+    const ilk = panel.current?.querySelector<HTMLElement>('[data-autofocus]');
+    (ilk ?? panel.current)?.focus();
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { onClose(); return; }

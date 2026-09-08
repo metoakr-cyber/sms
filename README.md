@@ -37,9 +37,18 @@ make up
 set -a && source .env && set +a
 make migrate-up
 
-# 5. Çalıştır
-make dev            # API      → http://localhost:8080
-make worker         # işçiler  (ayrı terminal)
+# 5. Çalıştır — ÜÇ AYRI TERMİNAL
+make dev            # API   → http://localhost:8091
+make web            # Web   → http://localhost:3000   (asıl arayüz burası)
+make worker         # işçiler
+
+# NOT: `make dev` yalnız API'yi başlatır. Arayüzü görmek için `make web` de
+# gerekir; Next.js /api isteklerini API'ye kendisi taşır (tek alan adı
+# topolojisi üretimle aynı, bkz. web/next.config.ts).
+#
+# WORKERS_IN_PROCESS=true (varsayılan) iken işler API sürecinde koşar ve
+# `make worker` hata verip çıkar — bu kasıtlıdır, aynı iş iki süreçte
+# koşmasın diye. Ayrı işçi süreci istiyorsanız .env'de false yapın.
 ```
 
 ## Sık kullanılan komutlar
@@ -64,6 +73,8 @@ make migrate-new name=add_x
 | [docs/frontend-contract.md](docs/frontend-contract.md) | Responsive, tarayıcı uyumluluğu, SSE |
 | [docs/roadmap.md](docs/roadmap.md) | Yapım sırası ve çıkış kriterleri |
 | [docs/memory.md](docs/memory.md) | Karar günlüğü, tuzaklar, açık sorular |
+| [docs/runbook.md](docs/runbook.md) | **Arıza anında**: sağlayıcı çöktü, mutabakat sapması, disk doldu |
+| [deploy/README.md](deploy/README.md) | Üretime alma: sıfırdan kurulum, yedek, geri alma |
 | [CLAUDE.md](CLAUDE.md) | Çalışma kuralları ve değişmezler |
 
 ## Durum

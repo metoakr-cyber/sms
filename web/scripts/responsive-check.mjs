@@ -12,13 +12,19 @@ import { chromium } from 'playwright';
 
 const BASE = process.argv[2] ?? 'http://localhost:3000';
 const WIDTHS = [320, 390, 430, 768, 1440];
-const PUBLIC_PAGES = ['/', '/fiyatlar', '/sss', '/giris', '/kayit', '/sifremi-unuttum'];
+const PUBLIC_PAGES = ['/', '/fiyatlar', '/sss', '/giris', '/kayit', '/sifremi-unuttum',
+                      '/kiralama', '/gizlilik', '/kullanim-sartlari'];
 
 // Oturum gerektiren sayfalar. Denetimin dışında bırakmak, arayüzün ASIL
 // kısmını denetlenmemiş bırakmak olurdu — kullanıcı zamanının çoğunu burada
 // geçirir. Kimlik bilgileri ortamdan gelir; betiğe gömülmez.
-const PRIVATE_PAGES = ['/panel', '/panel/numara-al', '/panel/cuzdan', '/panel/hesap',
-                       '/yonetim', '/yonetim/bakiye'];
+const PRIVATE_PAGES = [
+  '/panel', '/panel/numara-al', '/panel/siparisler', '/panel/cuzdan',
+  '/panel/bakiye-yukle', '/panel/hesap',
+  '/yonetim', '/yonetim/talepler', '/yonetim/kullanicilar', '/yonetim/bakiye',
+  '/yonetim/fiyatlar', '/yonetim/odeme-yontemleri', '/yonetim/saglayicilar',
+  '/yonetim/denetim',
+];
 const EMAIL = process.env.AUDIT_EMAIL ?? '';
 const PASSWORD = process.env.AUDIT_PASSWORD ?? '';
 

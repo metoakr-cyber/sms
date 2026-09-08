@@ -100,18 +100,24 @@ export async function apiFetch<T>(path: string, init: ApiInit = {}): Promise<T> 
   const method = init.method ?? 'GET';
   const hasBody = init.body !== undefined && init.body !== null;
 
+  // (4b) DOSYA YÜKLEME. Dekont `multipart/form-data` ile gider ve bir FormData
+  //      JSON'a çevrilemez. Content-Type'ı BİZ YAZMAYIZ: sınır dizesini
+  //      (boundary) tarayıcı üretir, elle yazılan bir `multipart/form-data`
+  //      başlığı sınırsız kalır ve sunucu gövdeyi ayrıştıramaz.
+  const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData;
+
   try {
     const res = await fetch(`/api/v1${path}`, {
       ...init,
       method,
-      body: hasBody ? JSON.stringify(init.body) : undefined,
+      body: hasBody ? (isForm ? (init.body as FormData) : JSON.stringify(init.body)) : undefined,
       signal: controller.signal,
       // (3) Aynı alan adı olsa bile AÇIKÇA belirt — Safari ITP belirsizliğini kaldırır.
       credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
         // (4) Content-Type YALNIZ gövde varsa; gövdesiz POST'ta bazı WAF'ları tetikler.
-        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(hasBody && !isForm ? { 'Content-Type': 'application/json' } : {}),
         ...(isMutating(method) ? { 'X-CSRF-Token': readCsrfCookie() } : {}),
         // (6) Para harcayan isteklerde çift harcamayı önler.
         ...(init.idempotencyKey ? { 'Idempotency-Key': init.idempotencyKey } : {}),
@@ -175,4 +181,80 @@ export function isRetryable(err: unknown): boolean {
   if (!(err instanceof ApiError)) return false;
   if (err.code === 'NETWORK' || err.code === 'TIMEOUT' || err.code === 'GATEWAY_ERROR') return true;
   return err.status === 429 || err.status >= 500;
+}
+
+/* ─────────────── İkili (binary) yanıtlar ─────────────── */
+
+export interface BlobResult {
+  /**
+   * 🔴 Object URL. Kullanan taraf işi bitince `URL.revokeObjectURL(url)`
+   * çağırmak ZORUNDADIR — blob, sekme kapanana kadar bellekte kalır.
+   */
+  url: string;
+  /** Sunucunun belirlediği tip (`image/jpeg`, `application/pdf`). */
+  mime: string;
+  size: number;
+}
+
+/**
+ * Dosya indiren uçlar için (dekont: GET /admin/deposits/:id/receipt).
+ *
+ * `apiFetch` her yanıtı JSON bekler ve dosya uçlarında patlar. Ayrı bir
+ * fonksiyon YAZILDI ama çağrı yine BU DOSYADAN geçer (değişmez #15):
+ * zaman aşımı, çerez politikası ve hata normalizasyonu tek yerde kalsın —
+ * bileşenin içinde çıplak bir `fetch` bunların üçünü de kaybederdi.
+ *
+ * Yalnız okuma uçları içindir: gövde göndermez, durum değiştirmez.
+ */
+export async function apiBlob(path: string, init: ApiInit = {}): Promise<BlobResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const onOuterAbort = () => controller.abort();
+  init.signal?.addEventListener('abort', onOuterAbort, { once: true });
+
+  try {
+    const res = await fetch(`/api/v1${path}`, {
+      ...init,
+      method: 'GET',
+      body: undefined,
+      signal: controller.signal,
+      credentials: 'same-origin',
+      headers: { ...init.headers },
+      // Dekont `Cache-Control: no-store` ile gelir; istemcide de saklamayız.
+      cache: 'no-store',
+    });
+
+    const retryAfterMs = parseRetryAfter(res.headers.get('retry-after'));
+    const ct = res.headers.get('content-type') ?? '';
+
+    if (!res.ok) {
+      // Hata gövdesi JSON'dur; dosya değil. Aynı ApiError'a normalize edilir.
+      if (ct.includes('application/json')) {
+        throw ApiError.fromBody(await res.json(), res.status, retryAfterMs);
+      }
+      throw new ApiError({
+        code: 'GATEWAY_ERROR',
+        message: 'Dosya alınamadı. Lütfen tekrar deneyin.',
+        status: res.status,
+        retryAfterMs,
+      });
+    }
+
+    const blob = await res.blob();
+    // Tip kararı SUNUCUNUNDUR (nosniff). `blob.type` bazı tarayıcılarda boş
+    // gelir; başlıktan okurken `; charset=` kuyruğu atılır.
+    const mime = (blob.type || ct.split(';')[0] || '').trim();
+    return { url: URL.createObjectURL(blob), mime, size: blob.size };
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    if (isAbortError(err)) {
+      return Promise.reject(new ApiError({ code: 'TIMEOUT', message: 'İstek zaman aşımına uğradı.' }));
+    }
+    return Promise.reject(new ApiError({
+      code: 'NETWORK', message: 'Bağlantı kurulamadı. İnternetinizi kontrol edin.',
+    }));
+  } finally {
+    clearTimeout(timer);
+    init.signal?.removeEventListener('abort', onOuterAbort);
+  }
 }
