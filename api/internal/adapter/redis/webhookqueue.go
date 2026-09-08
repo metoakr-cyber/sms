@@ -57,7 +57,12 @@ func (q *WebhookQueue) Enqueue(ctx context.Context, raw []byte) error {
 // saniyede bir Redis'e gider ve gelen bildirimi ortalama yarım tur geciktirir.
 // Kod bekleyen kullanıcı için o gecikme doğrudan görünür.
 func (q *WebhookQueue) Dequeue(ctx context.Context, timeout time.Duration) ([]byte, error) {
-	res, err := q.client.BRPop(ctx, timeout, webhookKey).Result()
+	// 🔴 REDIS'İN EN KÜÇÜK BLOKLAMA SÜRESİ 1 SANİYEDİR. Daha kısa bir değer
+	// sessizce yuvarlanmaz: istemci HER ÇAĞRIDA uyarı basar. Saniyede bir
+	// koşan bir tüketicide bu, günde ~86 bin satır gürültü demek ve gerçek
+	// olayları boğar. Sınırı arka ucun sahibi olan katman korur.
+	// test: webhookqueue_test.go#TestDequeueRespectsRedisMinimumTimeout
+	res, err := q.client.BRPop(ctx, clampBlock(timeout), webhookKey).Result()
 	if err != nil {
 		if err == goredis.Nil {
 			return nil, nil // zaman aşımı — kuyruk boş, hata değil
@@ -68,6 +73,14 @@ func (q *WebhookQueue) Dequeue(ctx context.Context, timeout time.Duration) ([]by
 		return nil, nil
 	}
 	return []byte(res[1]), nil
+}
+
+// clampBlock bloklama süresini Redis'in alt sınırına çeker.
+func clampBlock(d time.Duration) time.Duration {
+	if d < time.Second {
+		return time.Second
+	}
+	return d
 }
 
 // Len kuyruk uzunluğu — izleme için.

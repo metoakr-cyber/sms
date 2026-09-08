@@ -258,6 +258,13 @@ type WebhookDequeuer interface {
 //
 // Tur başına SINIRLI sayıda bildirim işlenir: bir birikim tek turu
 // dakikalarca sürdürmemeli.
+// blockingRead kuyruktan bloklayan okumanın süresi.
+//
+// Redis'in alt sınırı 1 saniye. 2 saniye seçildi: bildirim geldiği anda okuma
+// zaten döner, bekleme yalnız kuyruk BOŞKEN yaşanır — uzun tutmak gecikme
+// eklemez, tur sayısını (ve log gürültüsünü) yarıya indirir.
+const blockingRead = 2 * time.Second
+
 func webhookIngest(d Deps, q WebhookDequeuer, providerName string) Job {
 	if q == nil || d.Orders == nil {
 		return Job{Name: "webhook-ingest", Every: 0}
@@ -271,7 +278,7 @@ func webhookIngest(d Deps, q WebhookDequeuer, providerName string) Job {
 				return nil
 			}
 			for i := 0; i < 50; i++ {
-				raw, err := q.Dequeue(ctx, 900*time.Millisecond)
+				raw, err := q.Dequeue(ctx, blockingRead)
 				if err != nil {
 					return err
 				}
