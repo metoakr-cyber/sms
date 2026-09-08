@@ -82,7 +82,18 @@ func setup(t *testing.T, fxRate string, maxAge time.Duration) *env {
 			t.Fatalf("temizlik (%s): %v", s, err)
 		}
 	}
-	// GLOBAL kural her zaman %40 olmalı (migration varsayılanı).
+	// GLOBAL kuralı VAR OLDUĞUNDAN EMİN OL, yalnız korumakla yetinme.
+	//
+	// Test yalnız "koru" deseydi, kuralı silen herhangi bir olay (bozuk bir
+	// temizlik betiği, elle müdahale) veritabanını kalıcı olarak bozuk
+	// bırakır ve sonraki tüm koşular gizemli bir NO_PRICING_RULE ile düşerdi.
+	// Testler kendi ön koşullarını KURMALIDIR.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO pricing_rules (scope, margin_percent, note)
+		SELECT 'GLOBAL', 40.00, 'test tohumu'
+		WHERE NOT EXISTS (SELECT 1 FROM pricing_rules WHERE scope='GLOBAL' AND is_active)`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx,
 		`UPDATE pricing_rules SET margin_percent = 40, fixed_fee_minor = 0, min_price_minor = 0
 		 WHERE scope = 'GLOBAL'`); err != nil {

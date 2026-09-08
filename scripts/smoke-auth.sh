@@ -83,8 +83,12 @@ clean_test_data() {
 clean_test_data
 
 # Tohum verisi KORUNMUŞ olmalı — cascade kazası olmadığının kanıtı.
+# Eksikse geri koyarız: bir betik hatası veritabanını kalıcı bozuk bırakmamalı.
+psql -q -c "INSERT INTO pricing_rules (scope, margin_percent, note)
+            SELECT 'GLOBAL', 40.00, 'duman testi tohumu'
+            WHERE NOT EXISTS (SELECT 1 FROM pricing_rules WHERE scope='GLOBAL' AND is_active);" >/dev/null
 SEED=$(psql -c "SELECT count(*) FROM pricing_rules WHERE scope='GLOBAL' AND is_active;")
-[ "$SEED" = "1" ] || { echo "✗ GLOBAL fiyat kuralı kayboldu (temizlik tohum verisini sildi)"; exit 1; }
+[ "$SEED" = "1" ] || { echo "✗ GLOBAL fiyat kuralı kurulamadı (adet=$SEED)"; exit 1; }
 ROLES=$(psql -c "SELECT count(*) FROM roles;")
 [ "$ROLES" -ge 2 ] || { echo "✗ rol tohumu kayboldu"; exit 1; }
 

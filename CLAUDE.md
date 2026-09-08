@@ -322,6 +322,11 @@ SSE davranışı ayrıca **gerçek cihazda** doğrulanır; simülatör arka plan
 
 ## Commit ve dal
 
+> 🔴 **Commit `./scripts/commit.sh "mesaj"` ile atılır.** Doğrudan `git commit`
+> kullanılmaz. Bu depoda üç kez başarısız kontrollerle commit atıldı; her
+> seferinde sebep doğrulama ile commit'in aynı kabuk komutunda olmasıydı.
+> Kapı artık kodda: check.sh düşerse commit yapılmaz.
+
 - Dal: `feat/...`, `fix/...`, `chore/...`
 - Commit: `<tip>(<kapsam>): <ne yapıldı>` — örn. `feat(wallet): idempotent ledger girişi ekle`
 - **`"fix"` gibi anlamsız commit mesajı yazılmaz.** *(Eski repoda 127 commit'in tamamı böyleydi.)*

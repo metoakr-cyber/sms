@@ -78,8 +78,12 @@ smoke:
 lint:
 	cd $(API) && go vet ./... && golangci-lint run
 
+## commit: kontroller geçerse commit eder (make commit m="mesaj")
+commit:
+	./scripts/commit.sh "$(m)"
+
 ## check: birleştirmeden önce çalıştır
 check:
 	./scripts/check.sh
 
-.PHONY: help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover test-integration smoke lint check
+.PHONY: commit help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover test-integration smoke lint check
