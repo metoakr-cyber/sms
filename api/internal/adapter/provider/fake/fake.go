@@ -23,9 +23,9 @@ type Provider struct {
 	clock port.Clock
 	seq   int64
 
-	catalog map[key]*entry            // fiyat/stok
-	orders  map[string]*fakeOrder     // remoteID -> sipariş
-	faults  Faults                    // hata enjeksiyonu
+	catalog map[key]*entry        // fiyat/stok
+	orders  map[string]*fakeOrder // remoteID -> sipariş
+	faults  Faults                // hata enjeksiyonu
 
 	// SMSDelay kodun gelmesi için geçen süre. 0 ise kod ANINDA gelir.
 	SMSDelay time.Duration

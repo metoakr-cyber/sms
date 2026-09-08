@@ -63,7 +63,9 @@ type Querier interface {
 	// SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7).
 	// Ayrı bir `if order.UserID != userID` kontrolü yazılmaz: unutulabilir.
 	GetOrderForUser(ctx context.Context, arg GetOrderForUserParams) (Order, error)
+	GetProductByID(ctx context.Context, id int64) (Product, error)
 	GetProductForActivation(ctx context.Context, arg GetProductForActivationParams) (Product, error)
+	GetProductForRental(ctx context.Context, arg GetProductForRentalParams) (Product, error)
 	GetProvider(ctx context.Context, id int64) (Provider, error)
 	GetProviderByName(ctx context.Context, name string) (Provider, error)
 	// Bir ürünün, BELİRLİ BİR SAĞLAYICIDAKİ karşılıklarını verir.
@@ -140,6 +142,14 @@ type Querier interface {
 	ListReconciliationDrift(ctx context.Context, limit int32) ([]ListReconciliationDriftRow, error)
 	// `provider-refund-retry` için: sağlayıcıdan iade beklenen siparişler.
 	ListRefundRetryOrders(ctx context.Context, arg ListRefundRetryOrdersParams) ([]Order, error)
+	ListRentalCountriesForService(ctx context.Context, serviceCode string) ([]ListRentalCountriesForServiceRow, error)
+	// Bir servis × ülke için kiralanabilir süreler ve en düşük maliyet.
+	//
+	// Fiyat BURADA DÖNMEZ: kullanıcıya gösterilen fiyat teklif (quote) ile
+	// verilir. Buradaki maliyet yalnız SIRALAMA içindir ve dışa açılmaz.
+	ListRentalDurationsForCatalog(ctx context.Context, arg ListRentalDurationsForCatalogParams) ([]ListRentalDurationsForCatalogRow, error)
+	// Kiralık ızgarası: en az bir ülke×sürede stoklu servisler.
+	ListRentalServicesWithStock(ctx context.Context) ([]ListRentalServicesWithStockRow, error)
 	// Servis IZGARASI için özet: yalnız en az bir ülkede STOKLU olan servisler,
 	// her biri için stoklu ülke sayısı.
 	//
@@ -214,6 +224,10 @@ type Querier interface {
 	UpsertPermission(ctx context.Context, arg UpsertPermissionParams) (Permission, error)
 	// ─────────────────────── Ürün ───────────────────────
 	UpsertProduct(ctx context.Context, arg UpsertProductParams) (Product, error)
+	// Kiralık ürün. Aktivasyondan TEK FARKI süre boyutunun dolu olması —
+	// ama o fark benzersizlik anahtarının parçası olduğu için aynı servis×ülke
+	// için sekiz ayrı ürün (sekiz süre) yan yana durabilir.
+	UpsertRentalProduct(ctx context.Context, arg UpsertRentalProductParams) (Product, error)
 	UpsertRole(ctx context.Context, arg UpsertRoleParams) (Role, error)
 	// ─────────────────────── Boyutlar ───────────────────────
 	UpsertService(ctx context.Context, arg UpsertServiceParams) (Service, error)

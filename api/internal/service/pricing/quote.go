@@ -72,6 +72,13 @@ type QuoteRequest struct {
 	UserID      int64
 	ServiceCode string
 	CountryISO  string
+
+	// DurationMinutes > 0 ise KİRALIK ürün istenir.
+	//
+	// Ayrı bir alan, ayrı bir uç nokta DEĞİL: fiyatlandırma mantığı (kur,
+	// marj, tampon, yuvarlama) ikisinde de birebir aynı. İki uç nokta yazmak,
+	// birinde düzeltilen bir yuvarlama hatasının diğerinde kalması demekti.
+	DurationMinutes int32
 }
 
 // Quote istemciye dönen teklif.
@@ -113,15 +120,25 @@ func (s *QuoteService) Create(ctx context.Context, req QuoteRequest) (Quote, err
 	if err != nil {
 		return Quote{}, apperr.ErrNotFound.WithMessage("Ülke bulunamadı.")
 	}
-	prod, err := q.GetProductForActivation(ctx, db.GetProductForActivationParams{
-		ServiceID: &svc.ID, CountryID: &ctry.ID, VerificationType: db.VerificationTypeSms,
-	})
+	var prod db.Product
+	if req.DurationMinutes > 0 {
+		d := req.DurationMinutes
+		prod, err = q.GetProductForRental(ctx, db.GetProductForRentalParams{
+			ServiceID: &svc.ID, CountryID: &ctry.ID, DurationMinutes: &d,
+		})
+	} else {
+		prod, err = q.GetProductForActivation(ctx, db.GetProductForActivationParams{
+			ServiceID: &svc.ID, CountryID: &ctry.ID, VerificationType: db.VerificationTypeSms,
+		})
+	}
 	if err != nil {
 		return Quote{}, apperr.ErrOutOfStock
 	}
 
 	// ── 3-4. Sağlayıcı seçimi ──
-	best, err := s.cheapestOffer(ctx, prod.ID)
+	// Canlı fiyat doğrulaması YALNIZ aktivasyonda: sağlayıcının canlı ucu
+	// kiralık fiyatı bilmiyor (aşağıdaki gerekçe).
+	best, err := s.cheapestOffer(ctx, prod.ID, prod.Kind != db.ProductKindSMSRENTAL)
 	if err != nil {
 		return Quote{}, err
 	}
@@ -207,13 +224,33 @@ type offer struct {
 // Yavaş sağlayıcı BEKLENMEZ: 3 saniyede yanıt vermeyen elenir. Tek bir yavaş
 // sağlayıcının tüm teklifi geciktirmesi, kullanıcı için hizmetin çökmesiyle
 // aynı şeydir (docs/trd.md KK-306).
-func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64) (offer, error) {
+func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64, live bool) (offer, error) {
 	rows, err := s.tx.Queries().ListOffersForProduct(ctx, productID)
 	if err != nil {
 		return offer{}, apperr.Internal(err)
 	}
 	if len(rows) == 0 {
 		return offer{}, apperr.ErrOutOfStock
+	}
+
+	// KİRALIK ÜRÜNDE CANLI FİYAT SORULMAZ.
+	//
+	// Sağlayıcının canlı fiyat ucu (`offers/{sms|call}`) YALNIZ AKTİVASYON
+	// fiyatını bilir; süre boyutu o şemada YOK. Kiralık bir ürün için onu
+	// çağırmak, 1 günlük ve 180 günlük kiralamaya AYNI aktivasyon fiyatını
+	// yazar — canlıda tam olarak bu görüldü: sekiz süre de 31,15 ₺ döndü.
+	//
+	// Kiralık fiyatı yalnız `serviceCountRent` biliyor ve o uç servis başına
+	// TÜM ülkeleri döndürüyor; tek bir teklif için çağırmak orantısız.
+	// Bu yüzden kiralıkta önbellekteki maliyet kullanılır — tazeliği son
+	// `catalog:rentals` turuna bağlıdır.
+	//
+	// GÜVENLİK AĞI: satın almada `maxPrice` yine teklifteki maliyettir. Fiyat
+	// yükselmişse sağlayıcı satın almayı REDDEDER; sessizce fazla ödemeyiz.
+	//
+	// test: rental_quote_integration_test.go#TestRentalDurationsHaveDifferentPrices
+	if !live {
+		return cheapestCached(rows)
 	}
 
 	results := make([]offer, len(rows))
@@ -398,3 +435,41 @@ func (s *QuoteService) Consume(ctx context.Context, q *db.Queries, userID int64,
 }
 
 var _ = fmt.Sprintf
+
+// cheapestCached canlı sorgu yapmadan, önbellekteki tekliflerden en ucuzunu seçer.
+//
+// Sıralama canlı yoldakiyle AYNI ölçüte dayanır: maliyet × çarpan, eşitlikte
+// öncelik. İki farklı sıralama yazmak, aynı ürünün iki yolda farklı sağlayıcıya
+// düşmesi demekti.
+func cheapestCached(rows []db.ListOffersForProductRow) (offer, error) {
+	valid := make([]offer, 0, len(rows))
+	for _, r := range rows {
+		if r.Stock <= 0 {
+			continue
+		}
+		cost := money.New(r.CostMicro, money.USD)
+		mult, err := numericToRate(r.CostMultiplier)
+		if err != nil {
+			mult = money.RateOne()
+		}
+		adj, err := cost.MulRate(mult, money.RoundUp)
+		if err != nil {
+			continue
+		}
+		valid = append(valid, offer{
+			ProviderID: r.ProviderID, ProviderName: r.ProviderName,
+			Cost: cost, Stock: int(r.Stock), Priority: r.Priority,
+			CostMultiplier: r.CostMultiplier, adjusted: adj.Minor(),
+		})
+	}
+	if len(valid) == 0 {
+		return offer{}, apperr.ErrOutOfStock
+	}
+	sort.SliceStable(valid, func(a, b int) bool {
+		if valid[a].adjusted != valid[b].adjusted {
+			return valid[a].adjusted < valid[b].adjusted
+		}
+		return valid[a].Priority < valid[b].Priority
+	})
+	return valid[0], nil
+}

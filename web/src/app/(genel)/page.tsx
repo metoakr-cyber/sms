@@ -8,8 +8,8 @@ import type { ServiceSummary, Country } from '@/lib/types';
 export const metadata: Metadata = {
   title: 'Sanal Numara ile Anında SMS Onay Kodu',
   description:
-    'WhatsApp, Telegram, Instagram ve yüzlerce servis için sanal numara kiralayın. ' +
-    'Kod saniyeler içinde ekranınıza düşer. Kod gelmezse ücret otomatik iade edilir.',
+    'WhatsApp, Telegram, Instagram ve yüzlerce servis için geçici numara ile SMS onayı. ' +
+    'Tek kullanımlık kod veya 1 gün – 6 ay numara kiralama. Kod gelmezse ücret iade edilir.',
   alternates: { canonical: '/' },
 };
 
@@ -80,7 +80,7 @@ export default async function HomePage() {
               { k: 'Servis', v: services ? `${services.items.length}+` : '—' },
               { k: 'Ülke', v: countryCount ? `${countryCount}` : '—' },
               { k: 'Ortalama kod süresi', v: '~20 sn' },
-              { k: 'Kod gelmezse', v: 'İade' },
+              { k: 'Kiralama', v: '1 gün–6 ay' },
             ].map((s) => (
               <Card key={s.k} className="p-4 md:p-5">
                 <dt className="text-xs font-medium uppercase tracking-wide text-muted">{s.k}</dt>
@@ -149,6 +149,28 @@ export default async function HomePage() {
               </li>
             ))}
           </ol>
+        </div>
+      </section>
+
+      {/* ─── Kiralama ─── */}
+      <section className="px-4 py-12 md:px-6 md:py-16" aria-labelledby="kiralama">
+        <div className="mx-auto max-w-6xl">
+          <Badge tone="brand">Yeni</Badge>
+          <h2 id="kiralama" className="mt-3 text-2xl font-bold tracking-tight md:text-3xl">
+            Numara kiralama
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted md:text-base">
+            Tek bir kod yerine numaranın kendisini kiralayın. 1 günden 6 aya kadar süre
+            seçin; numara sizde kalsın, gelen <strong className="text-[var(--text)]">tüm
+            mesajları</strong> görün. Aylık kiralama en çok tercih edilen model.
+          </p>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <Link href="/kiralama" className="sm:w-auto">
+              <Button variant="outline" fullWidth className="sm:w-auto sm:px-7">
+                Kiralama modellerini gör
+              </Button>
+            </Link>
+          </div>
         </div>
       </section>
 

@@ -96,6 +96,29 @@ func (q *Queries) GetCountryByISO(ctx context.Context, iso2 string) (Country, er
 	return i, err
 }
 
+const getProductByID = `-- name: GetProductByID :one
+SELECT id, kind, service_id, country_id, operator_id, verification_type, duration_minutes, dimension_a_id, attributes, is_active, created_at FROM products WHERE id = $1
+`
+
+func (q *Queries) GetProductByID(ctx context.Context, id int64) (Product, error) {
+	row := q.db.QueryRow(ctx, getProductByID, id)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.ServiceID,
+		&i.CountryID,
+		&i.OperatorID,
+		&i.VerificationType,
+		&i.DurationMinutes,
+		&i.DimensionAID,
+		&i.Attributes,
+		&i.IsActive,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getProductForActivation = `-- name: GetProductForActivation :one
 SELECT p.id, p.kind, p.service_id, p.country_id, p.operator_id, p.verification_type, p.duration_minutes, p.dimension_a_id, p.attributes, p.is_active, p.created_at FROM products p
 WHERE p.kind = 'SMS_ACTIVATION'
@@ -113,6 +136,40 @@ type GetProductForActivationParams struct {
 
 func (q *Queries) GetProductForActivation(ctx context.Context, arg GetProductForActivationParams) (Product, error) {
 	row := q.db.QueryRow(ctx, getProductForActivation, arg.ServiceID, arg.CountryID, arg.VerificationType)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.ServiceID,
+		&i.CountryID,
+		&i.OperatorID,
+		&i.VerificationType,
+		&i.DurationMinutes,
+		&i.DimensionAID,
+		&i.Attributes,
+		&i.IsActive,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getProductForRental = `-- name: GetProductForRental :one
+SELECT p.id, p.kind, p.service_id, p.country_id, p.operator_id, p.verification_type, p.duration_minutes, p.dimension_a_id, p.attributes, p.is_active, p.created_at FROM products p
+WHERE p.kind = 'SMS_RENTAL'
+  AND p.service_id = $1 AND p.country_id = $2
+  AND p.duration_minutes = $3
+  AND p.operator_id IS NULL
+  AND p.is_active
+`
+
+type GetProductForRentalParams struct {
+	ServiceID       *int64
+	CountryID       *int64
+	DurationMinutes *int32
+}
+
+func (q *Queries) GetProductForRental(ctx context.Context, arg GetProductForRentalParams) (Product, error) {
+	row := q.db.QueryRow(ctx, getProductForRental, arg.ServiceID, arg.CountryID, arg.DurationMinutes)
 	var i Product
 	err := row.Scan(
 		&i.ID,
@@ -451,6 +508,157 @@ func (q *Queries) ListOffersForProduct(ctx context.Context, productID int64) ([]
 			&i.Protocol,
 			&i.Priority,
 			&i.CostMultiplier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRentalCountriesForService = `-- name: ListRentalCountriesForService :many
+SELECT DISTINCT
+    c.iso2 AS country_iso2, c.name AS country_name, c.name_tr AS country_name_tr,
+    c.phone_code
+FROM products p
+JOIN services  s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+WHERE p.kind = 'SMS_RENTAL' AND p.is_active
+  AND s.code = $1 AND s.is_visible AND c.is_visible
+ORDER BY c.name_tr, c.name
+`
+
+type ListRentalCountriesForServiceRow struct {
+	CountryIso2   string
+	CountryName   string
+	CountryNameTr string
+	PhoneCode     string
+}
+
+func (q *Queries) ListRentalCountriesForService(ctx context.Context, serviceCode string) ([]ListRentalCountriesForServiceRow, error) {
+	rows, err := q.db.Query(ctx, listRentalCountriesForService, serviceCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRentalCountriesForServiceRow{}
+	for rows.Next() {
+		var i ListRentalCountriesForServiceRow
+		if err := rows.Scan(
+			&i.CountryIso2,
+			&i.CountryName,
+			&i.CountryNameTr,
+			&i.PhoneCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRentalDurationsForCatalog = `-- name: ListRentalDurationsForCatalog :many
+SELECT
+    p.duration_minutes,
+    min(o.cost_micro)::bigint AS min_cost_micro,
+    sum(o.stock)::bigint      AS total_stock
+FROM products p
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+JOIN services s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+WHERE p.kind = 'SMS_RENTAL' AND p.is_active
+  AND s.code = $1 AND c.iso2 = $2
+GROUP BY p.duration_minutes
+ORDER BY p.duration_minutes
+`
+
+type ListRentalDurationsForCatalogParams struct {
+	ServiceCode string
+	CountryIso  string
+}
+
+type ListRentalDurationsForCatalogRow struct {
+	DurationMinutes *int32
+	MinCostMicro    int64
+	TotalStock      int64
+}
+
+// Bir servis × ülke için kiralanabilir süreler ve en düşük maliyet.
+//
+// Fiyat BURADA DÖNMEZ: kullanıcıya gösterilen fiyat teklif (quote) ile
+// verilir. Buradaki maliyet yalnız SIRALAMA içindir ve dışa açılmaz.
+func (q *Queries) ListRentalDurationsForCatalog(ctx context.Context, arg ListRentalDurationsForCatalogParams) ([]ListRentalDurationsForCatalogRow, error) {
+	rows, err := q.db.Query(ctx, listRentalDurationsForCatalog, arg.ServiceCode, arg.CountryIso)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRentalDurationsForCatalogRow{}
+	for rows.Next() {
+		var i ListRentalDurationsForCatalogRow
+		if err := rows.Scan(&i.DurationMinutes, &i.MinCostMicro, &i.TotalStock); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRentalServicesWithStock = `-- name: ListRentalServicesWithStock :many
+SELECT
+    s.code AS service_code, s.name AS service_name, s.name_tr AS service_name_tr,
+    s.icon_url,
+    count(DISTINCT c.id)::bigint AS country_count,
+    count(DISTINCT p.duration_minutes)::bigint AS duration_count
+FROM products p
+JOIN services  s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+WHERE p.kind = 'SMS_RENTAL' AND p.is_active
+  AND s.is_visible AND c.is_visible
+GROUP BY s.code, s.name, s.name_tr, s.icon_url
+ORDER BY s.name
+`
+
+type ListRentalServicesWithStockRow struct {
+	ServiceCode   string
+	ServiceName   string
+	ServiceNameTr string
+	IconUrl       string
+	CountryCount  int64
+	DurationCount int64
+}
+
+// Kiralık ızgarası: en az bir ülke×sürede stoklu servisler.
+func (q *Queries) ListRentalServicesWithStock(ctx context.Context) ([]ListRentalServicesWithStockRow, error) {
+	rows, err := q.db.Query(ctx, listRentalServicesWithStock)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRentalServicesWithStockRow{}
+	for rows.Next() {
+		var i ListRentalServicesWithStockRow
+		if err := rows.Scan(
+			&i.ServiceCode,
+			&i.ServiceName,
+			&i.ServiceNameTr,
+			&i.IconUrl,
+			&i.CountryCount,
+			&i.DurationCount,
 		); err != nil {
 			return nil, err
 		}
@@ -840,6 +1048,43 @@ func (q *Queries) UpsertProduct(ctx context.Context, arg UpsertProductParams) (P
 		arg.CountryID,
 		arg.VerificationType,
 	)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.ServiceID,
+		&i.CountryID,
+		&i.OperatorID,
+		&i.VerificationType,
+		&i.DurationMinutes,
+		&i.DimensionAID,
+		&i.Attributes,
+		&i.IsActive,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const upsertRentalProduct = `-- name: UpsertRentalProduct :one
+INSERT INTO products (kind, service_id, country_id, verification_type, duration_minutes)
+VALUES ('SMS_RENTAL', $1, $2, 'sms', $3)
+ON CONFLICT (kind, service_id, country_id, operator_id, verification_type,
+             duration_minutes, dimension_a_id)
+DO UPDATE SET is_active = true
+RETURNING id, kind, service_id, country_id, operator_id, verification_type, duration_minutes, dimension_a_id, attributes, is_active, created_at
+`
+
+type UpsertRentalProductParams struct {
+	ServiceID       *int64
+	CountryID       *int64
+	DurationMinutes *int32
+}
+
+// Kiralık ürün. Aktivasyondan TEK FARKI süre boyutunun dolu olması —
+// ama o fark benzersizlik anahtarının parçası olduğu için aynı servis×ülke
+// için sekiz ayrı ürün (sekiz süre) yan yana durabilir.
+func (q *Queries) UpsertRentalProduct(ctx context.Context, arg UpsertRentalProductParams) (Product, error) {
+	row := q.db.QueryRow(ctx, upsertRentalProduct, arg.ServiceID, arg.CountryID, arg.DurationMinutes)
 	var i Product
 	err := row.Scan(
 		&i.ID,

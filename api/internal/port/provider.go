@@ -193,6 +193,28 @@ type RentalProvider interface {
 	// Extend süreyi uzatır. time.Duration DEĞİL: sağlayıcılar SABİT süre
 	// kümesi kabul ediyor (HeroSMS: 24|72|168|336|720|1440|2160|4320 saat).
 	Extend(ctx context.Context, c Creds, remoteOrderID string, hours int) error
+
 	// AllowedDurations desteklenen süreler (saat).
+	//
+	// SAĞLAYICIDAN ÖĞRENİLİR, koda gömülmez: HeroSMS spec'i süreler konusunda
+	// ÜÇ YERDE kendiyle çelişiyor (RentDuration enum'u bir şey, BAD_DURATION
+	// yanıtı başka, serviceCountRent örneği bambaşka). Sabit bir liste
+	// yazmak, sağlayıcı listeyi değiştirdiğinde sessizce yanlış olur.
 	AllowedDurations(ctx context.Context, c Creds) ([]int, error)
+
+	// ListRentOffers bir servisin kiralık fiyat ve stoklarını döner.
+	//
+	// SERVİS BAZINDA çağrılır çünkü sağlayıcı toplu bir kiralık katalog
+	// sunmuyor: `getRentServicesAndCountries` servis listesini BOŞ döndürüyor.
+	// Aktivasyon tarafındaki tek istekli toplu uç burada YOK.
+	ListRentOffers(ctx context.Context, c Creds, serviceCode string) ([]RentOffer, error)
+}
+
+// RentOffer kiralık fiyat/stok anlık görüntüsü.
+type RentOffer struct {
+	ServiceCode   string
+	CountryCode   string
+	DurationHours int
+	Cost          money.Money
+	Stock         int
 }

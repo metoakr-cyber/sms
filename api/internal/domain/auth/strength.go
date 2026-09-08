@@ -18,7 +18,7 @@ const (
 	PasswordOK PasswordProblem = iota
 	PasswordTooShort
 	PasswordTooCommon
-	PasswordTooSimple      // tek karakter tekrarı veya ardışık dizi
+	PasswordTooSimple        // tek karakter tekrarı veya ardışık dizi
 	PasswordContainsIdentity // e-posta veya kullanıcı adını içeriyor
 )
 

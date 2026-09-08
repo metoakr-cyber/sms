@@ -19,7 +19,7 @@ func (p *Provider) seedCatalog() {
 		costMicro int64
 		stock     int
 	}{
-		{"wa", "TR", 1_440_000, 0},    // WhatsApp/TR: pahalı, STOKSUZ (gerçek gözlem)
+		{"wa", "TR", 1_440_000, 0}, // WhatsApp/TR: pahalı, STOKSUZ (gerçek gözlem)
 		{"wa", "RU", 420_000, 1_240},
 		{"wa", "UA", 380_000, 860},
 		{"tg", "TR", 180_000, 3_412},

@@ -180,6 +180,10 @@ type hold struct {
 	CostMicro      int64
 	FXRate         string
 
+	// DurationHours > 0 ise KİRALIK sipariş. Sağlayıcıya `duration` olarak
+	// gider ve yanıtta `subtype: 2` bekleriz.
+	DurationHours int
+
 	ServiceCode, ServiceName string
 	CountryISO2, CountryName string
 	PhoneCode                string
@@ -260,6 +264,13 @@ func (s *Service) reserve(ctx context.Context, in CreateInput) (hold, error) {
 			RemoteServiceCode: codes.ServiceRemoteCode,
 			RemoteCountryCode: codes.CountryRemoteCode,
 		}
+		// Ürün kiralıksa süreyi taşırız. Dakikadan saate çevrim TEK YERDE:
+		// iki birim arasında gidip gelmek er geç 60 kat hataya yol açar.
+		if prodRow, err := q.GetProductByID(ctx, quote.ProductID); err == nil {
+			if prodRow.Kind == db.ProductKindSMSRENTAL && prodRow.DurationMinutes != nil {
+				h.DurationHours = int(*prodRow.DurationMinutes / 60)
+			}
+		}
 		return nil
 	})
 	return h, err
@@ -293,6 +304,7 @@ func (s *Service) callProvider(ctx context.Context, h hold) (*port.PurchaseResul
 		CountryCode:      h.RemoteCountryCode,
 		OperatorCode:     "any",
 		VerificationType: port.VerifySMS,
+		DurationHours:    h.DurationHours,
 		MaxCost:          money.New(h.CostMicro, money.USD),
 		ClientRef:        h.QuotePublicID.String(),
 	})

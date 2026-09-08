@@ -105,6 +105,13 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		cat.GET("/services-in-stock", catalogH.ServicesWithStock)
 		cat.GET("/countries", catalogH.Countries)
 		cat.GET("/availability", catalogH.Availability)
+
+		// Kiralık katalog. Aktivasyondan AYRI uçlar: kiralıkta bir SÜRE
+		// boyutu var ve onu aktivasyon yanıtına sıkıştırmak, her iki tarafı
+		// da anlaşılmaz yapardı.
+		cat.GET("/rental/services", catalogH.RentalServices)
+		cat.GET("/rental/countries", catalogH.RentalCountries)
+		cat.GET("/rental/durations", catalogH.RentalDurations)
 	}
 
 	// ─── Oturum gerektiren ───

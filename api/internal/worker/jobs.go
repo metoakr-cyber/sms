@@ -12,6 +12,7 @@ import (
 
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
+	catalogsvc "github.com/ikmetrik/sms-platform/api/internal/service/catalog"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
@@ -35,6 +36,7 @@ type Deps struct {
 	Orders   *ordersvc.Service
 	FX       *pricingsvc.FXService
 	Wallet   *walletsvc.Service
+	Catalog  *catalogsvc.Service
 	Clock    interface{ Now() time.Time }
 }
 
@@ -45,6 +47,47 @@ func All(d Deps) []Job {
 		orderExpirer(d),
 		activationReaper(d),
 		orphanHoldReaper(d),
+		rentalSync(d),
+	}
+}
+
+/* ═══════════════════════ Kiralık katalog ═══════════════════════ */
+
+// rentalSync kiralık fiyat ve stoklarını tazeler.
+//
+// SIKLIK: 6 saat. Aktivasyon senkronundan ÇOK DAHA SEYREK, çünkü sağlayıcı
+// toplu kiralık katalog sunmuyor: her tur 810 ayrı istek demek. Kiralık
+// fiyatlar da aktivasyon kadar oynak değil — bir numara 30 gün kiralanıyorsa
+// fiyatı dakikalık değişmiyor.
+//
+// AÇILIŞTA ÇALIŞMAZ: 810 istek, sunucunun ilk saniyelerinde atılacak en kötü
+// şeydir. İlk tur altı saat sonra; o zamana kadar önceki turun verisi geçerli.
+func rentalSync(d Deps) Job {
+	if d.Catalog == nil {
+		// Katalog servisi verilmemişse iş hiç kurulmaz — sessizce çalışmayan
+		// bir iş, çalıştığını sandığımız bir iştir.
+		return Job{Name: "rental-sync", Every: 0}
+	}
+	return Job{
+		Name: "rental-sync", Every: 6 * time.Hour,
+		Run: func(ctx context.Context) error {
+			provs, err := d.TxRunner.Queries().ListActiveProviders(ctx)
+			if err != nil {
+				return err
+			}
+			for _, p := range provs {
+				rep, err := d.Catalog.SyncRentals(ctx, p.ID)
+				if err != nil {
+					slog.Error("kiralık senkronu başarısız", "provider", p.Name, "err", err)
+					continue
+				}
+				if len(rep.Errors) > 0 {
+					slog.Warn("kiralık senkronu uyarılarla bitti",
+						"provider", p.Name, "errors", rep.Errors)
+				}
+			}
+			return nil
+		},
 	}
 }
 

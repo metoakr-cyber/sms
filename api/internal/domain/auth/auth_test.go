@@ -55,10 +55,10 @@ func TestHashIsSaltedUniquely(t *testing.T) {
 func TestVerifyRejectsMalformedHash(t *testing.T) {
 	bad := []string{
 		"", "duz-metin", "$argon2id$", "$bcrypt$v=19$m=1,t=1,p=1$c2FsdA$aGFzaA",
-		"$argon2id$v=99$m=65536,t=3,p=4$c2FsdA$aGFzaA",  // yanlış sürüm
-		"$argon2id$v=19$m=0,t=0,p=0$c2FsdA$aGFzaA",      // sıfır parametre
-		"$argon2id$v=19$m=65536,t=3,p=4$!!!$aGFzaA",     // bozuk base64
-		"$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$",        // boş özet
+		"$argon2id$v=99$m=65536,t=3,p=4$c2FsdA$aGFzaA", // yanlış sürüm
+		"$argon2id$v=19$m=0,t=0,p=0$c2FsdA$aGFzaA",     // sıfır parametre
+		"$argon2id$v=19$m=65536,t=3,p=4$!!!$aGFzaA",    // bozuk base64
+		"$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$",       // boş özet
 	}
 	for _, h := range bad {
 		if ok, err := auth.VerifyPassword("herhangi", h); err == nil && ok {

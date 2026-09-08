@@ -42,7 +42,7 @@ func mustNumeric(s string) pgtype.Numeric {
 		// Buraya düşmek bir programlama hatasıdır: değer veritabanından
 		// okunmuş bir NUMERIC'ten geliyor. Yine de geçersiz işaretleriz;
 		// NOT NULL kısıtı yazımı reddeder ve hata görünür olur.
-	// test: order_integration_test.go#TestPurchaseDeductsExactlyOnce (kur sipariş satırına yazılıyor)
+		// test: order_integration_test.go#TestPurchaseDeductsExactlyOnce (kur sipariş satırına yazılıyor)
 		return pgtype.Numeric{}
 	}
 	return n

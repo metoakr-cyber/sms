@@ -105,11 +105,11 @@ type Input struct {
 // Ara değerler DÖNDÜRÜLÜR çünkü kâr raporu, denetim ve destek için
 // "bu fiyat nasıl oluştu" sorusunun cevaplanabilir olması gerekir.
 type Result struct {
-	SellPrice      money.Money // TRY kuruş — SÖZLEŞME
-	CostInTRY      money.Money // maliyetin TRY karşılığı (rapor için)
-	AppliedRule    Rule
-	MarginApplied  string
-	HitMinimum     bool // taban fiyata takıldı mı
+	SellPrice     money.Money // TRY kuruş — SÖZLEŞME
+	CostInTRY     money.Money // maliyetin TRY karşılığı (rapor için)
+	AppliedRule   Rule
+	MarginApplied string
+	HitMinimum    bool // taban fiyata takıldı mı
 }
 
 // Calculate satış fiyatını hesaplar.

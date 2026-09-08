@@ -352,3 +352,26 @@ type OrderListResponse struct {
 	Limit  int32           `json:"limit"`
 	Offset int32           `json:"offset"`
 }
+
+// ─────────────────────────── Kiralama ───────────────────────────
+
+// RentalServiceResponse kiralık ızgarası için servis özeti.
+type RentalServiceResponse struct {
+	Code          string `json:"code"`
+	Name          string `json:"name"`
+	IconURL       string `json:"iconUrl,omitempty"`
+	CountryCount  int64  `json:"countryCount"`
+	DurationCount int64  `json:"durationCount"`
+}
+
+// RentalDurationResponse bir servis × ülke için kiralanabilir süre.
+//
+// FİYAT BURADA YOKTUR: fiyat kullanıcıya ÖZELDİR ve yalnız teklif ile verilir.
+// Listede bir fiyat göstermek, teklifle uyuşmadığında güven kaybettirir.
+type RentalDurationResponse struct {
+	Minutes int32  `json:"minutes"`
+	Hours   int32  `json:"hours"`
+	Days    int32  `json:"days"`
+	Label   string `json:"label"`
+	InStock bool   `json:"inStock"`
+}

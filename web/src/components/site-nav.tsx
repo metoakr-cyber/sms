@@ -8,6 +8,7 @@ import { ThemeToggle } from './theme';
 
 const LINKS = [
   { href: '/', label: 'Ana Sayfa' },
+  { href: '/kiralama', label: 'Kiralama' },
   { href: '/fiyatlar', label: 'Fiyatlar' },
   { href: '/sss', label: 'Sık Sorulanlar' },
 ];
@@ -123,6 +124,7 @@ export function SiteFooter() {
           </p>
         </div>
         <div className="grid grid-cols-2 gap-x-10 gap-y-2 text-sm">
+          <Link href="/kiralama" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Kiralama</Link>
           <Link href="/fiyatlar" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Fiyatlar</Link>
           <Link href="/sss" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Sık Sorulanlar</Link>
           <Link href="/kullanim-sartlari" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Kullanım Şartları</Link>

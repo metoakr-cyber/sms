@@ -11,13 +11,18 @@ import { Button, Badge, Alert, Skeleton, Empty, cx } from '@/components/ui';
 import { ServiceIcon } from '@/components/service-icon';
 import { Modal } from '@/components/modal';
 import { CodeWaiter } from '@/components/code-waiter';
-import type { CatalogItem, Quote, ServiceSummary, Order } from '@/lib/types';
+import type { CatalogItem, Quote, ServiceSummary, Order,
+  RentalService, RentalDuration } from '@/lib/types';
 
 
+
+/** Satın alma modu. */
+type Mode = 'activation' | 'rental';
 
 export default function BuyPage() {
   const { user } = useSession();
   const [search, setSearch] = React.useState('');
+  const [mode, setMode] = React.useState<Mode>('activation');
   const [openService, setOpenService] = React.useState<ServiceSummary | null>(null);
 
   // Izgara YALNIZ servis özetini çeker (~35 KB).
@@ -29,9 +34,26 @@ export default function BuyPage() {
   const catalog = useQuery({
     queryKey: ['services-in-stock'],
     queryFn: () => apiFetch<{ items: ServiceSummary[] }>('/catalog/services-in-stock'),
+    enabled: mode === 'activation',
   });
 
-  const services = catalog.data?.items ?? [];
+  // Kiralık katalog AYRI çekilir: aktivasyonda stoklu bir servis kiralıkta
+  // olmayabilir (495 kiralık / 712 aktivasyon). Tek listeyi ikisine de
+  // kullanmak, kullanıcıyı seçtiği servis için boş bir ülke listesine götürür.
+  const rentalCatalog = useQuery({
+    queryKey: ['rental-services'],
+    queryFn: () => apiFetch<{ items: RentalService[] }>('/catalog/rental/services'),
+    enabled: mode === 'rental',
+  });
+
+  const services: ServiceSummary[] = mode === 'rental'
+    ? (rentalCatalog.data?.items ?? []).map((r) => ({
+        code: r.code, name: r.name, iconUrl: r.iconUrl, countryCount: r.countryCount,
+      }))
+    : (catalog.data?.items ?? []);
+
+  const loading = mode === 'rental' ? rentalCatalog.isLoading : catalog.isLoading;
+  const failed = mode === 'rental' ? rentalCatalog.isError : catalog.isError;
 
   const filtered = React.useMemo(() => {
     // localeCompare/toLocaleLowerCase'de 'tr' ZORUNLU: varsayılan yerelde
@@ -57,6 +79,40 @@ export default function BuyPage() {
         </Alert>
       )}
 
+      {/*
+        MOD ANAHTARI — sekme değil, segment.
+        İki farklı ÜRÜN var: tek kullanımlık kod ve süreli numara kiralama.
+        Aynı ızgarada karıştırmak, kullanıcının 30 günlük bir numarayı tek
+        kod sanıp almasına yol açardı.
+      */}
+      <div role="tablist" aria-label="Ürün türü"
+           className="raised flex gap-1 rounded-2xl border p-1">
+        {([
+          ['activation', 'Tek kullanımlık', 'Bir kod al, kullan'],
+          ['rental', 'Numara kirala', '1 gün – 6 ay'],
+        ] as const).map(([m, label, hint]) => (
+          <button
+            key={m}
+            type="button"
+            role="tab"
+            aria-selected={mode === m}
+            onClick={() => { setMode(m); setSearch(''); setOpenService(null); }}
+            className={cx(
+              'flex min-h-14 flex-1 flex-col items-center justify-center rounded-xl',
+              'px-3 py-2 text-sm transition-colors',
+              mode === m
+                ? 'bg-brand-500 font-semibold text-white'
+                : 'text-muted hover:bg-[var(--raised)] hover:text-[var(--text)]',
+            )}
+          >
+            <span>{label}</span>
+            <span className={cx('text-[11px]', mode === m ? 'text-white/75' : 'text-muted')}>
+              {hint}
+            </span>
+          </button>
+        ))}
+      </div>
+
       {/* Arama HER ZAMAN görünür. Yüzlerce servis arasında kaydırarak aramak,
           mobilde kullanıcıyı listeyi terk etmeye iter. */}
       <label className="relative block">
@@ -75,11 +131,11 @@ export default function BuyPage() {
         />
       </label>
 
-      {catalog.isLoading ? (
+      {loading ? (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
           {Array.from({ length: 12 }, (_, i) => <Skeleton key={i} className="h-20" />)}
         </div>
-      ) : catalog.isError ? (
+      ) : failed ? (
         <Alert>Servis listesi yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.</Alert>
       ) : filtered.length === 0 ? (
         <Empty
@@ -104,7 +160,9 @@ export default function BuyPage() {
                   </span>
                 </span>
                 <span className="flex items-baseline gap-1.5">
-                  <span className="text-xs font-semibold text-[var(--color-ok)]">Fiyat seçin</span>
+                  <span className="text-xs font-semibold text-[var(--color-ok)]">
+                    {mode === 'rental' ? 'Süre seçin' : 'Fiyat seçin'}
+                  </span>
                   <span className="text-[11px] text-muted">· {s.countryCount} ülke</span>
                 </span>
               </button>
@@ -115,6 +173,7 @@ export default function BuyPage() {
 
       <BuyModal
         service={openService}
+        mode={mode}
         onClose={() => setOpenService(null)}
         emailVerified={!!user?.emailVerified}
       />
@@ -125,29 +184,54 @@ export default function BuyPage() {
 /* ─────────────────────────────────────────────────────────────── */
 
 function BuyModal({
-  service, onClose, emailVerified,
-}: { service: ServiceSummary | null; onClose: () => void; emailVerified: boolean }) {
+  service, mode, onClose, emailVerified,
+}: {
+  service: ServiceSummary | null; mode: Mode;
+  onClose: () => void; emailVerified: boolean;
+}) {
   const [countryIso, setCountryIso] = React.useState('');
+  const [durationMinutes, setDurationMinutes] = React.useState(0);
   const [order, setOrder] = React.useState<Order | null>(null);
   const qc = useQueryClient();
+  const rental = mode === 'rental';
 
   // Ülkeler YALNIZ modal açıkken ve YALNIZ seçilen servis için çekilir (~6 KB).
   // `enabled` olmadan, modal kapalıyken de istek giderdi.
   const countries = useQuery({
-    queryKey: ['availability', service?.code],
-    queryFn: () => apiFetch<{ items: CatalogItem[] }>(
-      `/catalog/availability?serviceCode=${encodeURIComponent(service!.code)}`),
+    queryKey: ['availability', mode, service?.code],
+    queryFn: async () => {
+      const path = rental
+        ? `/catalog/rental/countries?serviceCode=${encodeURIComponent(service!.code)}`
+        : `/catalog/availability?serviceCode=${encodeURIComponent(service!.code)}`;
+      const d = await apiFetch<{ items: Array<CatalogItem | { iso2: string; name: string; phoneCode: string }> }>(path);
+      // İki uç iki farklı şekil döndürüyor; tek biçime indiriyoruz ki
+      // aşağıdaki liste her iki modda aynı kodla çizilsin.
+      return d.items.map((x) =>
+        'countryIso2' in x
+          ? { iso: x.countryIso2, name: x.countryName, phone: x.phoneCode, ok: x.inStock }
+          : { iso: x.iso2, name: x.name, phone: x.phoneCode, ok: true },
+      ).filter((x) => x.ok)
+       .sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+    },
     enabled: !!service,
-    select: (d) => [...d.items]
-      .filter((i) => i.inStock)
-      .sort((a, b) => a.countryName.localeCompare(b.countryName, 'tr')),
+  });
+
+  // Kiralık süreler — ülke seçilince çekilir.
+  const durations = useQuery({
+    queryKey: ['rental-durations', service?.code, countryIso],
+    queryFn: () => apiFetch<{ items: RentalDuration[] }>(
+      `/catalog/rental/durations?serviceCode=${encodeURIComponent(service!.code)}` +
+      `&countryIso=${encodeURIComponent(countryIso)}`),
+    enabled: rental && !!service && !!countryIso,
+    select: (d) => d.items.filter((x) => x.inStock),
   });
 
   const quote = useMutation({
-    mutationFn: (v: { service: string; country: string }) =>
+    mutationFn: (v: { service: string; country: string; minutes?: number }) =>
       apiFetch<Quote>(
         `/catalog/quote?serviceCode=${encodeURIComponent(v.service)}` +
-        `&countryIso=${encodeURIComponent(v.country)}`,
+        `&countryIso=${encodeURIComponent(v.country)}` +
+        (v.minutes ? `&durationMinutes=${v.minutes}` : ''),
       ),
   });
 
@@ -156,11 +240,12 @@ function BuyModal({
   // güvenerek satın alır.
   React.useEffect(() => {
     setCountryIso('');
+    setDurationMinutes(0);
     setOrder(null);
     quote.reset();
     purchase.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [service?.code]);
+  }, [service?.code, mode]);
 
   /*
     SATIN ALMA — MUTASYON ASLA OTOMATİK TEKRARLANMAZ.
@@ -187,7 +272,20 @@ function BuyModal({
 
   function pickCountry(iso: string) {
     setCountryIso(iso);
-    if (iso && service) quote.mutate({ service: service.code, country: iso });
+    setDurationMinutes(0);
+    quote.reset();
+    // KİRALIKTA ülke seçmek teklif ALMAZ: önce süre seçilmeli, çünkü fiyat
+    // süreye göre değişiyor. Aktivasyonda süre yok, doğrudan teklif alınır.
+    if (iso && service && !rental) {
+      quote.mutate({ service: service.code, country: iso });
+    }
+  }
+
+  function pickDuration(minutes: number) {
+    setDurationMinutes(minutes);
+    if (service && countryIso) {
+      quote.mutate({ service: service.code, country: countryIso, minutes });
+    }
   }
 
   // Sipariş verildiyse modal KOD BEKLEME ekranına döner. Ayrı bir sayfaya
@@ -220,14 +318,50 @@ function BuyModal({
                   : 'Ülke seçiniz…'}
               </option>
               {(countries.data ?? []).map((c) => (
-                <option key={c.countryIso2} value={c.countryIso2}>
-                  {c.countryName} (+{c.phoneCode})
+                <option key={c.iso} value={c.iso}>
+                  {c.name} (+{c.phone})
                 </option>
               ))}
             </select>
           </label>
 
-          {countryIso && (
+          {/* ── Kiralama süresi ── */}
+          {rental && countryIso && (
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium">Kiralama Süresi</span>
+              {durations.isLoading ? (
+                <Skeleton className="h-24" />
+              ) : durations.isError ? (
+                <Alert>Süreler yüklenemedi.</Alert>
+              ) : (durations.data ?? []).length === 0 ? (
+                <Alert tone="warn">Bu ülke için kiralanabilir süre kalmadı.</Alert>
+              ) : (
+                <ul className="grid grid-cols-2 gap-2">
+                  {(durations.data ?? []).map((d) => (
+                    <li key={d.minutes}>
+                      <button
+                        type="button"
+                        onClick={() => pickDuration(d.minutes)}
+                        aria-pressed={durationMinutes === d.minutes}
+                        className={cx(
+                          'flex min-h-12 w-full items-center justify-center rounded-xl',
+                          'border px-3 py-2 text-sm transition-colors',
+                          durationMinutes === d.minutes
+                            ? 'border-brand-500 bg-brand-500/12 font-semibold'
+                            : 'raised hover:border-[var(--color-ink-500)]',
+                        )}
+                      >
+                        {d.label}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Teklif: aktivasyonda ülke yeter, kiralıkta süre de gerekir. */}
+          {(rental ? !!durationMinutes : !!countryIso) && (
             <QuoteBox
               quote={quote.data ?? null}
               error={quote.error}
@@ -236,7 +370,10 @@ function BuyModal({
               buying={purchase.isPending}
               buyError={purchase.error}
               onBuy={() => quote.data && purchase.mutate(quote.data.quoteId)}
-              onRefresh={() => quote.mutate({ service: service.code, country: countryIso })}
+              onRefresh={() => quote.mutate({
+                service: service.code, country: countryIso,
+                minutes: rental ? durationMinutes : undefined,
+              })}
             />
           )}
         </div>

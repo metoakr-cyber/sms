@@ -25,6 +25,13 @@ const QA: Array<[string, string]> = [
   ['Bakiyemi nasıl yüklerim?',
    'Banka havalesi/EFT veya USDT ile yükleme yapabilirsiniz. Ödemeniz onaylandıktan ' +
    'sonra bakiyeniz hesabınıza tanımlanır.'],
+  ['Numara kiralama nedir?',
+   'Tek kullanımlık numara yalnız bir doğrulama kodu için verilir. Kiralamada ise ' +
+   'numara seçtiğiniz süre boyunca (1 gün ile 6 ay arası) size aittir ve o süre içinde ' +
+   'gelen tüm SMS mesajlarını görürsünüz.'],
+  ['Aylık numara kiralayabilir miyim?',
+   'Evet. 30 günlük kiralama en çok tercih edilen modeldir; 60, 90 ve 180 günlük ' +
+   'seçenekler de mevcuttur.'],
   ['Numarayı iptal edebilir miyim?',
    'Evet. Numara alındıktan kısa bir süre sonra iptal düğmesi aktifleşir. Kod ' +
    'gelmemişse iptal ettiğinizde ücret bakiyenize döner.'],

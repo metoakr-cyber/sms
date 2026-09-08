@@ -69,6 +69,8 @@ func main() {
 		err = app.catalogSync(args)
 	case "fx:sync":
 		err = app.fxSync()
+	case "catalog:rentals":
+		err = app.catalogRentals(args)
 	case "catalog:icon":
 		err = app.catalogIcon(args)
 	case "admin:grant":
@@ -248,6 +250,44 @@ func (a *appCtx) adminGrant(args []string) error {
 	return nil
 }
 
+// catalogRentals kiralık fiyat ve stoklarını senkronlar.
+//
+// AKTİVASYON SENKRONUNDAN AYRI: sağlayıcı toplu kiralık katalog sunmuyor,
+// servis başına bir istek gerekiyor. Her aktivasyon senkronuna eklemek
+// yüzlerce ek istek demekti.
+func (a *appCtx) catalogRentals(args []string) error {
+	fs := flag.NewFlagSet("catalog:rentals", flag.ExitOnError)
+	name := fs.String("provider", "", "sağlayıcı adı")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return fmt.Errorf("--provider zorunlu")
+	}
+	prov, err := a.q.GetProviderByName(a.ctx, *name)
+	if err != nil {
+		return fmt.Errorf("sağlayıcı bulunamadı: %s", *name)
+	}
+
+	reg := provider.NewRegistry()
+	reg.Register(fake.New(port.RealClock{}))
+	reg.Register(herosms.New())
+	svc := catalog.New(catalog.Deps{
+		TxRunner: a.tx, Registry: reg, Secrets: a.box, Clock: port.RealClock{},
+	})
+
+	rep, err := svc.SyncRentals(a.ctx, prov.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✓ kiralık: %d ürün, %d teklif (%.1fs)\n",
+		rep.Products, rep.Offers, rep.Duration.Seconds())
+	for _, e := range rep.Errors {
+		fmt.Printf("  ! %s\n", e)
+	}
+	return nil
+}
+
 // fxSync döviz kurunu sağlayıcıdan çeker ve kaydeder.
 //
 // NEDEN CLI'DA VAR: kuru periyodik tazeleyen işçi henüz yazılmadı (M5).
@@ -323,6 +363,7 @@ Komutlar:
   provider:list      Etkin sağlayıcıları listele
   catalog:sync       Katalog senkronu   --provider [--offers-only]
   fx:sync            Döviz kurunu tazele (işçi yazılana kadar elle)
+  catalog:rentals    Kiralık katalog senkronu  --provider
   catalog:icon       Servis logosu ayarla  --service --url
   admin:grant        Rol ata            --email --role
   wallet:reconcile   Defter mutabakatı

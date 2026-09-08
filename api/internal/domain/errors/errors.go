@@ -20,12 +20,12 @@ import (
 type Kind int
 
 const (
-	KindDomain Kind = iota + 1 // iş kuralı ihlali        → 400/409
-	KindAuth                   // kimlik/yetki            → 401/403
-	KindNotFound               // kaynak yok              → 404
-	KindRateLimit              // hız limiti              → 429
-	KindInfra                  // altyapı / dış servis    → 502/503
-	KindInternal               // beklenmeyen             → 500
+	KindDomain    Kind = iota + 1 // iş kuralı ihlali        → 400/409
+	KindAuth                      // kimlik/yetki            → 401/403
+	KindNotFound                  // kaynak yok              → 404
+	KindRateLimit                 // hız limiti              → 429
+	KindInfra                     // altyapı / dış servis    → 502/503
+	KindInternal                  // beklenmeyen             → 500
 )
 
 // Error uygulamanın taşıdığı tek hata tipidir.

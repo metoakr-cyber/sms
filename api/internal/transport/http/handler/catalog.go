@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -60,6 +62,96 @@ func (h *Catalog) ServicesWithStock(c *gin.Context) {
 		})
 	}
 	h.r.OK(c, gin.H{"items": out})
+}
+
+// RentalServices GET /catalog/rental/services
+func (h *Catalog) RentalServices(c *gin.Context) {
+	rows, err := h.queries.ListRentalServicesWithStock(c.Request.Context())
+	if err != nil {
+		h.r.Fail(c, apperr.Internal(err))
+		return
+	}
+	out := make([]dto.RentalServiceResponse, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, dto.RentalServiceResponse{
+			Code: s.ServiceCode, Name: displayName(s.ServiceNameTr, s.ServiceName),
+			IconURL: s.IconUrl, CountryCount: s.CountryCount, DurationCount: s.DurationCount,
+		})
+	}
+	h.r.OK(c, gin.H{"items": out})
+}
+
+// RentalCountries GET /catalog/rental/countries?serviceCode=
+func (h *Catalog) RentalCountries(c *gin.Context) {
+	code := c.Query("serviceCode")
+	if code == "" {
+		h.r.FailField(c, []dto.FieldError{{Field: "serviceCode", Message: "Servis seçilmelidir."}})
+		return
+	}
+	rows, err := h.queries.ListRentalCountriesForService(c.Request.Context(), code)
+	if err != nil {
+		h.r.Fail(c, apperr.Internal(err))
+		return
+	}
+	out := make([]dto.CountryResponse, 0, len(rows))
+	for _, x := range rows {
+		out = append(out, dto.CountryResponse{
+			ISO2: x.CountryIso2, Name: displayName(x.CountryNameTr, x.CountryName),
+			PhoneCode: x.PhoneCode,
+		})
+	}
+	h.r.OK(c, gin.H{"items": out})
+}
+
+// RentalDurations GET /catalog/rental/durations?serviceCode=&countryIso=
+func (h *Catalog) RentalDurations(c *gin.Context) {
+	svc, ctry := c.Query("serviceCode"), c.Query("countryIso")
+	if svc == "" || ctry == "" {
+		h.r.FailField(c, []dto.FieldError{
+			{Field: "serviceCode", Message: "Servis ve ülke seçilmelidir."}})
+		return
+	}
+	rows, err := h.queries.ListRentalDurationsForCatalog(c.Request.Context(),
+		db.ListRentalDurationsForCatalogParams{ServiceCode: svc, CountryIso: ctry})
+	if err != nil {
+		h.r.Fail(c, apperr.Internal(err))
+		return
+	}
+	out := make([]dto.RentalDurationResponse, 0, len(rows))
+	for _, r := range rows {
+		if r.DurationMinutes == nil {
+			continue
+		}
+		m := *r.DurationMinutes
+		out = append(out, dto.RentalDurationResponse{
+			Minutes: m, Hours: m / 60, Days: m / 1440,
+			Label:   durationLabel(m),
+			InStock: r.TotalStock > 0,
+		})
+	}
+	h.r.OK(c, gin.H{"items": out})
+}
+
+// durationLabel süreyi Türkçe, okunur bir etikete çevirir.
+//
+// "720 dakika" demek kullanıcıya hiçbir şey ifade etmez; "30 gün (1 ay)" eder.
+func durationLabel(minutes int32) string {
+	days := minutes / 1440
+	switch {
+	case days >= 30 && days%30 == 0:
+		months := days / 30
+		if months == 1 {
+			return "30 gün (1 ay)"
+		}
+		return fmt.Sprintf("%d gün (%d ay)", days, months)
+	case days >= 7 && days%7 == 0:
+		weeks := days / 7
+		return fmt.Sprintf("%d gün (%d hafta)", days, weeks)
+	case days >= 1:
+		return fmt.Sprintf("%d gün", days)
+	default:
+		return fmt.Sprintf("%d saat", minutes/60)
+	}
 }
 
 // Countries GET /catalog/countries
@@ -139,8 +231,23 @@ func (h *Catalog) Quote(c *gin.Context) {
 		return
 	}
 
+	// Süre verilmişse KİRALIK teklif. Doğrulama katı: uydurma bir süre
+	// sessizce aktivasyon teklifi döndürmemeli — kullanıcı 30 günlük numara
+	// sanıp 20 dakikalık alırdı.
+	var durationMinutes int32
+	if v := c.Query("durationMinutes"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			h.r.FailField(c, []dto.FieldError{
+				{Field: "durationMinutes", Message: "Geçersiz kiralama süresi."}})
+			return
+		}
+		durationMinutes = int32(n)
+	}
+
 	q, err := h.quotes.Create(c.Request.Context(), pricingsvc.QuoteRequest{
 		UserID: userID, ServiceCode: serviceCode, CountryISO: countryISO,
+		DurationMinutes: durationMinutes,
 	})
 	if err != nil {
 		h.r.Fail(c, err)

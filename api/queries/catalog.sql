@@ -208,3 +208,74 @@ JOIN provider_dimension_maps ms
 JOIN provider_dimension_maps mc
      ON mc.provider_id = @provider_id AND mc.dimension = 'country' AND mc.local_id = p.country_id
 WHERE p.id = @product_id;
+
+-- name: UpsertRentalProduct :one
+-- Kiralık ürün. Aktivasyondan TEK FARKI süre boyutunun dolu olması —
+-- ama o fark benzersizlik anahtarının parçası olduğu için aynı servis×ülke
+-- için sekiz ayrı ürün (sekiz süre) yan yana durabilir.
+INSERT INTO products (kind, service_id, country_id, verification_type, duration_minutes)
+VALUES ('SMS_RENTAL', @service_id, @country_id, 'sms', @duration_minutes)
+ON CONFLICT (kind, service_id, country_id, operator_id, verification_type,
+             duration_minutes, dimension_a_id)
+DO UPDATE SET is_active = true
+RETURNING *;
+
+-- name: GetProductForRental :one
+SELECT p.* FROM products p
+WHERE p.kind = 'SMS_RENTAL'
+  AND p.service_id = @service_id AND p.country_id = @country_id
+  AND p.duration_minutes = @duration_minutes
+  AND p.operator_id IS NULL
+  AND p.is_active;
+
+-- name: ListRentalDurationsForCatalog :many
+-- Bir servis × ülke için kiralanabilir süreler ve en düşük maliyet.
+--
+-- Fiyat BURADA DÖNMEZ: kullanıcıya gösterilen fiyat teklif (quote) ile
+-- verilir. Buradaki maliyet yalnız SIRALAMA içindir ve dışa açılmaz.
+SELECT
+    p.duration_minutes,
+    min(o.cost_micro)::bigint AS min_cost_micro,
+    sum(o.stock)::bigint      AS total_stock
+FROM products p
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+JOIN services s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+WHERE p.kind = 'SMS_RENTAL' AND p.is_active
+  AND s.code = @service_code AND c.iso2 = @country_iso
+GROUP BY p.duration_minutes
+ORDER BY p.duration_minutes;
+
+-- name: ListRentalServicesWithStock :many
+-- Kiralık ızgarası: en az bir ülke×sürede stoklu servisler.
+SELECT
+    s.code AS service_code, s.name AS service_name, s.name_tr AS service_name_tr,
+    s.icon_url,
+    count(DISTINCT c.id)::bigint AS country_count,
+    count(DISTINCT p.duration_minutes)::bigint AS duration_count
+FROM products p
+JOIN services  s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+WHERE p.kind = 'SMS_RENTAL' AND p.is_active
+  AND s.is_visible AND c.is_visible
+GROUP BY s.code, s.name, s.name_tr, s.icon_url
+ORDER BY s.name;
+
+-- name: ListRentalCountriesForService :many
+SELECT DISTINCT
+    c.iso2 AS country_iso2, c.name AS country_name, c.name_tr AS country_name_tr,
+    c.phone_code
+FROM products p
+JOIN services  s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+WHERE p.kind = 'SMS_RENTAL' AND p.is_active
+  AND s.code = @service_code AND s.is_visible AND c.is_visible
+ORDER BY c.name_tr, c.name;
+
+-- name: GetProductByID :one
+SELECT * FROM products WHERE id = @id;

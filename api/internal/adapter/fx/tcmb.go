@@ -42,8 +42,8 @@ type tcmbEnvelope struct {
 }
 
 type tcmbCurrency struct {
-	Code          string `xml:"CurrencyCode,attr"`
-	ForexSelling  string `xml:"ForexSelling"`
+	Code            string `xml:"CurrencyCode,attr"`
+	ForexSelling    string `xml:"ForexSelling"`
 	BanknoteSelling string `xml:"BanknoteSelling"`
 }
 

@@ -23,9 +23,9 @@ import (
 
 // Job periyodik bir iş.
 type Job struct {
-	Name     string
-	Every    time.Duration
-	Run      func(ctx context.Context) error
+	Name  string
+	Every time.Duration
+	Run   func(ctx context.Context) error
 	// RunAtStart açılışta hemen bir kez çalıştırılsın mı.
 	//
 	// Kur senkronu için ZORUNLU: sunucu açıldığında kur bayatsa hizmet

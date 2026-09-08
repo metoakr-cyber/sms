@@ -283,3 +283,130 @@ func TestUnmatchedOffersDoNotWipeCatalog(t *testing.T) {
 		t.Fatalf("katalog silindi: stok=%d mevcut=%v — beklenen 42/true", stok, mevcut)
 	}
 }
+
+// rentalStubProvider kiralık teklif döndüren taklit.
+type rentalStubProvider struct{ numericProvider }
+
+func (rentalStubProvider) Extend(context.Context, port.Creds, string, int) error {
+	return port.ErrUnsupported
+}
+func (rentalStubProvider) AllowedDurations(context.Context, port.Creds) ([]int, error) {
+	return []int{24, 720}, nil
+}
+func (rentalStubProvider) ListRentOffers(_ context.Context, _ port.Creds, serviceCode string) ([]port.RentOffer, error) {
+	if serviceCode != "wa" {
+		return nil, nil
+	}
+	return []port.RentOffer{
+		{ServiceCode: "wa", CountryCode: "62", DurationHours: 24, Cost: money.New(2_000_000, money.USD), Stock: 5},
+		{ServiceCode: "wa", CountryCode: "62", DurationHours: 720, Cost: money.New(25_000_000, money.USD), Stock: 3},
+	}, nil
+}
+
+// TestRentalSyncDoesNotWipeActivationOffers
+//
+// SÖZLEŞME: kiralık senkronu BAYAT İŞARETLEME YAPMAZ.
+//
+// İki senkron turu aynı `provider_offers` tablosunu kullanıyor. Kiralık turu
+// da kendi damgasıyla bayat işaretleseydi, aktivasyon tekliflerini "bu turda
+// görülmedi" sayıp hepsini stok dışı bırakırdı — ve tersi. İki tur birbirinin
+// katalogunu silerdi; site bir turda dolu, diğerinde boş görünürdü.
+func TestRentalSyncDoesNotWipeActivationOffers(t *testing.T) {
+	ctx := context.Background()
+
+	for _, s := range []string{
+		"DELETE FROM price_quotes",
+		"DELETE FROM provider_offers", "DELETE FROM provider_dimension_maps",
+		"DELETE FROM products", "DELETE FROM providers",
+		"DELETE FROM operators", "DELETE FROM countries", "DELETE FROM services",
+	} {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("temizlik (%s): %v", s, err)
+		}
+	}
+
+	box, err := crypto.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &clk{t: time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)}
+	q := db.New(pool)
+	tx := postgres.NewTxRunner(pool)
+
+	reg := provider.NewRegistry()
+	reg.Register(rentalStubProvider{})
+	prov, err := q.CreateProvider(ctx, db.CreateProviderParams{
+		Name: "rental-stub", Protocol: db.ProviderProtocolFAKE, IsActive: true, Priority: 100,
+		CostMultiplier: mustNumeric("1.0"), Capabilities: []byte(`["SMS_ACTIVATION","SMS_RENTAL"]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := catalog.New(catalog.Deps{TxRunner: tx, Registry: reg, Secrets: box, Clock: c})
+	if _, err := svc.SyncDimensions(ctx, prov.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// AKTİVASYON teklifi kur (elle — bu turun konusu değil).
+	var actProductID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO products (kind, service_id, country_id, verification_type)
+		SELECT 'SMS_ACTIVATION', s.id, c.id, 'sms'
+		FROM services s, countries c WHERE s.code='wa' AND c.iso2='TR'
+		RETURNING id`).Scan(&actProductID); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpsertOffer(ctx, db.UpsertOfferParams{
+		ProviderID: prov.ID, ProductID: actProductID,
+		CostMicro: 1_000_000, CostCurrency: db.CurrencyCodeUSD,
+		Stock: 99, IsAvailable: true, SyncedAt: c.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Zaman ilerlesin: kiralık turu FARKLI bir damga kullanacak.
+	c.Advance(time.Hour)
+	rep, err := svc.SyncRentals(ctx, prov.ID)
+	if err != nil {
+		t.Fatalf("SyncRentals: %v", err)
+	}
+	if rep.Offers != 2 {
+		t.Fatalf("kiralık teklif = %d, beklenen 2", rep.Offers)
+	}
+
+	// AKTİVASYON teklifi HÂLÂ stokta olmalı.
+	var stock int32
+	var available bool
+	if err := pool.QueryRow(ctx,
+		`SELECT stock, is_available FROM provider_offers WHERE product_id=$1`,
+		actProductID).Scan(&stock, &available); err != nil {
+		t.Fatal(err)
+	}
+	if !available || stock != 99 {
+		t.Fatalf("kiralık senkronu aktivasyon teklifini bozdu: stok=%d mevcut=%v "+
+			"— iki tur birbirinin katalogunu siliyor", stock, available)
+	}
+
+	// Kiralık ürünler DOĞRU sürelerle oluşmalı (saat → dakika çevrimi).
+	rows, err := pool.Query(ctx,
+		`SELECT duration_minutes FROM products WHERE kind='SMS_RENTAL' ORDER BY duration_minutes`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var mins []int32
+	for rows.Next() {
+		var m *int32
+		if err := rows.Scan(&m); err != nil {
+			t.Fatal(err)
+		}
+		if m != nil {
+			mins = append(mins, *m)
+		}
+	}
+	if len(mins) != 2 || mins[0] != 24*60 || mins[1] != 720*60 {
+		t.Errorf("kiralık süreler (dakika) = %v, beklenen [1440 43200] — "+
+			"saat/dakika çevrimi hatalı", mins)
+	}
+}

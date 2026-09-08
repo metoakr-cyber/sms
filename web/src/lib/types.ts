@@ -75,3 +75,21 @@ export interface OrderList {
   limit: number;
   offset: number;
 }
+
+/** Kiralık ızgarası için servis özeti. */
+export interface RentalService {
+  code: string;
+  name: string;
+  iconUrl?: string;
+  countryCount: number;
+  durationCount: number;
+}
+
+/** Kiralanabilir süre. Fiyat BURADA YOKTUR — teklif ile verilir. */
+export interface RentalDuration {
+  minutes: number;
+  hours: number;
+  days: number;
+  label: string;
+  inStock: boolean;
+}

@@ -581,6 +581,23 @@ gösteriyor: 5sim'de `country` boyutu `"turkey"` gibi bir metin, HeroSMS'te `62`
 
 ---
 
+### H22 — Kiralık `count` gerçek stok mu?
+
+`?action=serviceCountRent` yanıtındaki `count` alanının gerçek envanter mi
+yoksa aktivasyon tarafındaki `total` gibi bir HAVUZ SAYACI mı olduğu spec'te
+BELİRTİLMEMİŞ.
+
+Bu önemli çünkü aktivasyon tarafında tam bu tuzak yaşandı: `counts.total`
+14.048 gösterirken gerçek stok (`counts.physical`) 0'dı ve eski prototip
+kullanıcıdan para çekip boş dönüyordu. Kiralık yanıtında `physical` benzeri
+bir ayrım YOK — yalnız `count` var.
+
+**Bugünkü davranış:** `count` olduğu gibi stok sayılıyor.
+**Nasıl anlaşılır:** stokta göründüğü hâlde `NO_NUMBERS` ile düşen ilk kiralık
+satın alma bunu ortaya çıkarır. O anda `count` bir havuz sayacıdır ve kiralık
+stok gösterimi güvenilmez demektir.
+**Ne yapılmalı:** ilk canlı kiralık satın almadan sonra bu madde kapatılmalı.
+
 ## 7. Bu dokümanı güncelleme kuralı
 
 - **Bir karar verildiğinde** → §1'e tarihiyle ve gerekçesiyle yaz

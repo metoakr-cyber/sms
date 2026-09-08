@@ -103,16 +103,16 @@ func TestAllProblemsReportedAtOnce(t *testing.T) {
 
 func TestInvalidValuesRejected(t *testing.T) {
 	tests := []struct{ key, val, mention string }{
-		{"APP_ENV", "prod", "APP_ENV"},                       // 'production' olmalı
-		{"LOG_LEVEL", "verbose", "LOG_LEVEL"},                // izin verilenler dışında
-		{"DATABASE_URL", "mysql://x/y", "DATABASE_URL"},      // yanlış şema
-		{"REDIS_URL", "http://localhost", "REDIS_URL"},       // yanlış şema
-		{"SESSION_SECRET", "kisa", "SESSION_SECRET"},         // 32 bayt değil
-		{"SESSION_TTL", "bir-saat", "SESSION_TTL"},           // ayrıştırılamaz
-		{"SESSION_TTL", "-5m", "SESSION_TTL"},                // pozitif olmalı
-		{"FX_SAFETY_MARGIN_PCT", "yüzde iki", "FX_SAFETY"},   // ondalık değil
-		{"METRICS_ENABLED", "belki", "METRICS_ENABLED"},      // mantıksal değil
-		{"FX_PROVIDER", "yahoo", "FX_PROVIDER"},              // desteklenmiyor
+		{"APP_ENV", "prod", "APP_ENV"},                     // 'production' olmalı
+		{"LOG_LEVEL", "verbose", "LOG_LEVEL"},              // izin verilenler dışında
+		{"DATABASE_URL", "mysql://x/y", "DATABASE_URL"},    // yanlış şema
+		{"REDIS_URL", "http://localhost", "REDIS_URL"},     // yanlış şema
+		{"SESSION_SECRET", "kisa", "SESSION_SECRET"},       // 32 bayt değil
+		{"SESSION_TTL", "bir-saat", "SESSION_TTL"},         // ayrıştırılamaz
+		{"SESSION_TTL", "-5m", "SESSION_TTL"},              // pozitif olmalı
+		{"FX_SAFETY_MARGIN_PCT", "yüzde iki", "FX_SAFETY"}, // ondalık değil
+		{"METRICS_ENABLED", "belki", "METRICS_ENABLED"},    // mantıksal değil
+		{"FX_PROVIDER", "yahoo", "FX_PROVIDER"},            // desteklenmiyor
 	}
 	for _, tt := range tests {
 		t.Run(tt.key+"="+tt.val, func(t *testing.T) {

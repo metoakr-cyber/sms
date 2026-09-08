@@ -93,7 +93,7 @@ func TestNoRuleIsAnError(t *testing.T) {
 
 func TestFixedFeeAndMinimum(t *testing.T) {
 	base := pricing.Input{
-		Cost: money.New(10_000, money.USD), // 0,01 USD — çok ucuz
+		Cost:               money.New(10_000, money.USD), // 0,01 USD — çok ucuz
 		ProviderMultiplier: money.RateOne(),
 		FXRate:             rate(t, "43.20"),
 		FXSafetyMargin:     money.RateOne(),
@@ -218,11 +218,11 @@ func TestInvalidInputRejected(t *testing.T) {
 		FXRate: rate(t, "43.20"), FXSafetyMargin: money.RateOne(), Rule: globalRule("40"),
 	}
 	tests := map[string]func(*pricing.Input){
-		"TRY maliyet":    func(i *pricing.Input) { i.Cost = money.New(100, money.TRY) },
-		"sıfır maliyet":  func(i *pricing.Input) { i.Cost = money.Zero(money.USD) },
+		"TRY maliyet":     func(i *pricing.Input) { i.Cost = money.New(100, money.TRY) },
+		"sıfır maliyet":   func(i *pricing.Input) { i.Cost = money.Zero(money.USD) },
 		"negatif maliyet": func(i *pricing.Input) { i.Cost = money.New(-100, money.USD) },
-		"sıfır kur":      func(i *pricing.Input) { i.FXRate = money.Rate{} },
-		"bozuk marj":     func(i *pricing.Input) { i.Rule.MarginPercent = "abc" },
+		"sıfır kur":       func(i *pricing.Input) { i.FXRate = money.Rate{} },
+		"bozuk marj":      func(i *pricing.Input) { i.Rule.MarginPercent = "abc" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

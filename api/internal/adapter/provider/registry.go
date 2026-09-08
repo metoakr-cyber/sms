@@ -14,7 +14,7 @@ import (
 // Eski prototip name.toLowerCase().includes('hero') kullanıyordu; sağlayıcının
 // adını panelden düzenlemek sistemi sessizce bozuyordu (docs/design.md ADR-009).
 type Registry struct {
-	mu        sync.RWMutex
+	mu         sync.RWMutex
 	byProtocol map[string]port.ProviderPort
 }
 

@@ -53,9 +53,7 @@ var _ port.ProviderPort = (*Provider)(nil)
 func (p *Provider) Protocol() string { return "HEROSMS_V1" }
 
 func (p *Provider) Capabilities() []port.ProductKind {
-	// Kiralama şeması hazır ama akış v1.1'de. Yeteneği burada ilan etmek,
-	// katalog senkronunun kiralık ürünleri de üretmesine yol açardı.
-	return []port.ProductKind{port.KindSMSActivation}
+	return []port.ProductKind{port.KindSMSActivation, port.KindSMSRental}
 }
 
 /* ─────────────────────────── HTTP yardımcıları ─────────────────────────── */

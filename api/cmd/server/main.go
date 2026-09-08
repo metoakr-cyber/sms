@@ -26,6 +26,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	catalogsvc "github.com/ikmetrik/sms-platform/api/internal/service/catalog"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
@@ -130,6 +131,10 @@ func run() error {
 		FX: fxService, Clock: port.RealClock{}, FXSafetyMargin: safety,
 	})
 
+	catalogService := catalogsvc.New(catalogsvc.Deps{
+		TxRunner: txRunner, Registry: registry, Secrets: secrets, Clock: port.RealClock{},
+	})
+
 	orderService := ordersvc.New(ordersvc.Deps{
 		TxRunner: txRunner, Registry: registry, Secrets: secrets,
 		Wallet: walletService, Publisher: ordersvc.NewBusPublisher(orderBus),
@@ -150,7 +155,7 @@ func run() error {
 	// aksi hâlde iki poller aynı siparişi işler.
 	jobs := worker.New(worker.All(worker.Deps{
 		TxRunner: txRunner, Orders: orderService, FX: fxService,
-		Wallet: walletService, Clock: port.RealClock{},
+		Wallet: walletService, Catalog: catalogService, Clock: port.RealClock{},
 	})...)
 	jobs.Start(ctx)
 
