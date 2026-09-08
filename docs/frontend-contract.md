@@ -535,4 +535,79 @@ Bir ekran "bitti" sayılmadan önce:
 
 ---
 
+## 10. SEO
+
+> **"%100 SEO uyumlu" ölçülebilir bir hedef değildir** — arama motoru sıralaması
+> rakiplere, alan adı otoritesine ve içeriğe bağlıdır ve hiçbiri kod tarafından
+> garanti edilemez. Bu bölüm **teknik SEO**'yu ölçülebilir kriterlere çevirir:
+> aşağıdaki maddeler bizim kontrolümüzdedir ve testle doğrulanır.
+
+### 10.1 En kritik kural: panel indekslenmez
+
+| Alan | Dizin | Neden |
+|---|---|---|
+| `(public)` — ana sayfa, fiyatlar, servis/ülke sayfaları, blog, SSS, yasal metinler | ✅ **İndekslenir** | Trafik buradan gelir |
+| `(auth)` — giriş, kayıt, şifre sıfırlama | ⚠️ `noindex` | Arama sonucunda görünmesi değersiz; kayıt sayfası ana sayfadan yönlendirilir |
+| `(panel)` ve `(admin)` — oturum arkası her şey | 🔴 **`noindex, nofollow` + `robots.txt` engeli** | Kullanıcı verisi ve sipariş ekranları asla indekslenmemeli |
+
+```ts
+// web/src/app/(panel)/layout.tsx
+export const metadata: Metadata = { robots: { index: false, follow: false } }
+```
+
+> Bu ayrım kod incelemesinde kontrol edilir: `(panel)` veya `(admin)` altında
+> `index: true` olan bir sayfa **birleştirilmez**.
+
+### 10.2 Zorunlu teknik gereksinimler
+
+| # | Gereksinim | Doğrulama |
+|---|---|---|
+| S1 | Her genel sayfada benzersiz `<title>` (≤60 karakter) ve `description` (≤160) | Otomatik test: iki sayfa aynı başlığı taşıyamaz |
+| S2 | Tek `<h1>`, hiyerarşik başlık düzeni (h1→h2→h3, atlama yok) | `@axe-core` + özel test |
+| S3 | `canonical` URL her sayfada | Otomatik test |
+| S4 | `sitemap.xml` dinamik üretilir (Next.js `sitemap.ts`), yalnız genel sayfaları içerir | Test: panel yolları sitemap'te YOK |
+| S5 | `robots.txt` (`robots.ts`): `/panel`, `/admin`, `/api` engelli; sitemap bildirilir | Test |
+| S6 | Open Graph + Twitter Card etiketleri, `og:image` 1200×630 | Test |
+| S7 | JSON-LD yapısal veri: `Organization`, `WebSite`, `BreadcrumbList`, fiyat sayfalarında `Product`+`Offer`, SSS'de `FAQPage` | Google Rich Results Test |
+| S8 | `lang="tr"` kök öznitelik; i18n açıldığında `hreflang` + `x-default` | Test |
+| S9 | Genel sayfalar **SSG veya ISR** ile render edilir — istemci tarafı render edilen içerik indekslenmez | Test: JS kapalıyken içerik görünür |
+| S10 | Tüm görsellerde anlamlı `alt`; dekoratif olanlarda `alt=""` | `@axe-core` |
+| S11 | Anlamsal HTML: `<nav>`, `<main>`, `<article>`, `<footer>`; `<div>` yığını değil | Kod incelemesi |
+| S12 | Kırık iç bağlantı yok; yönlendirmeler 301 | Derleme sonrası tarama |
+| S13 | HTTPS zorunlu, `www` ↔ kök tek yöne 301 | Caddy yapılandırması |
+| S14 | Core Web Vitals: LCP < 2,5 sn · INP < 200 ms · CLS < 0,1 (mobil, 4G) | Lighthouse CI (§8) |
+| S15 | **Lighthouse SEO puanı = 100** (mobil ve masaüstü) | CI'da eşik |
+
+### 10.3 Programatik sayfalar — fırsat ve tuzak
+
+Katalogumuzda 195 ülke × 811 servis var. Bunlardan `/sanal-numara/whatsapp/turkiye`
+gibi sayfalar üretmek bu işte **en yüksek getirili SEO hamlesidir**: arama niyeti
+tam olarak böyle ifade ediliyor.
+
+> ⚠️ **Ama tuzağı da var.** 158.000 sayfayı şablonla üretip yalnız servis ve ülke
+> adını değiştirmek Google'ın **"doorway pages"** ve **"thin content"** politikalarına
+> girer; sonuç sıralama değil cezadır.
+
+**Kural:** Bir programatik sayfa ancak şu üçünü sağlarsa üretilir:
+1. **Gerçek veri** — o kombinasyonun canlı fiyatı, stok durumu, teslim süresi
+2. **Özgün içerik** — o servise özgü en az 150 kelime (nasıl kullanılır, sık sorunlar)
+3. **Stok var** — stoksuz kombinasyon için sayfa üretilmez, üretilmişse `noindex`
+
+v1'de yalnız **en çok aranan ~50 kombinasyon** elle içerikle üretilir.
+Tam programatik üretim v1.1 konusudur ve bu kurallara bağlıdır.
+
+### 10.4 Kontrol listesi — her genel sayfa için
+
+- [ ] Benzersiz `title` + `description`
+- [ ] Tek `h1`, hiyerarşik başlıklar
+- [ ] `canonical` var
+- [ ] Open Graph + Twitter Card
+- [ ] İlgiliyse JSON-LD
+- [ ] Sunucu tarafı render (SSG/ISR)
+- [ ] Görsellerde `alt`
+- [ ] `sitemap.xml`'e eklendi
+- [ ] Lighthouse SEO = 100
+
+---
+
 **İlgili:** [design.md](design.md) §14 · [trd.md](trd.md) §8 · [memory.md](memory.md) §5 · [../CLAUDE.md](../CLAUDE.md)

@@ -623,6 +623,33 @@ LCP < 2,5 sn · INP < 200 ms · CLS < 0,1 · ilk JS paketi (gzip) < 150 KB.
 
 > **KK-812:** CI'da Lighthouse bütçe kontrolü; bütçe aşılırsa derleme uyarı verir.
 
+### NFR-813 · Teknik SEO `ZORUNLU`
+Genel (oturumsuz) sayfalar arama motorları için eksiksiz işaretlenir; oturum
+arkasındaki her şey **indekslenmez**.
+
+- `(panel)` ve `(admin)` rota grupları `robots: { index: false, follow: false }`
+  taşır **ve** `robots.txt` ile engellenir
+- Her genel sayfada benzersiz `title` + `description` + `canonical`
+- `sitemap.xml` ve `robots.txt` dinamik üretilir; sitemap **yalnız** genel sayfaları içerir
+- JSON-LD: `Organization`, `WebSite`, `BreadcrumbList`, fiyat sayfalarında `Product`+`Offer`
+- Genel sayfalar **SSG/ISR** ile render edilir (istemci tarafı içerik indekslenmez)
+- Anlamsal HTML, tek `h1`, hiyerarşik başlıklar, görsellerde `alt`
+
+> **KK-813:** Lighthouse SEO puanı **100** (mobil ve masaüstü). Otomatik testler:
+> (a) hiçbir panel yolu `sitemap.xml`'de yok, (b) panel sayfaları `noindex` taşıyor,
+> (c) iki genel sayfa aynı `title`'ı taşımıyor, (d) JS devre dışıyken genel sayfa
+> içeriği görünüyor.
+> Ayrıntılı kurallar: [frontend-contract.md](frontend-contract.md) §10
+
+### NFR-814 · Programatik sayfa kalitesi `ZORUNLU`
+Servis×ülke kombinasyonları için üretilen sayfalar yalnız şu üçü sağlanırsa
+yayınlanır: (1) gerçek fiyat/stok verisi, (2) o kombinasyona özgü en az 150 kelime
+özgün içerik, (3) stok mevcut. Aksi halde sayfa üretilmez veya `noindex` alır.
+
+> **Gerekçe:** Şablonla üretilmiş, yalnız ad değişen binlerce sayfa Google'ın
+> "doorway pages" ve "thin content" politikalarına girer; sonuç sıralama değil
+> **cezadır**. v1'de en çok aranan ~50 kombinasyon elle içerikle üretilir.
+
 ---
 
 ## 9. API sözleşmesi
