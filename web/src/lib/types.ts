@@ -40,3 +40,38 @@ export interface LedgerEntry {
 export interface Statement {
   items: LedgerEntry[]; total: number; limit: number; offset: number;
 }
+
+/** Sipariş mesajı (SMS). */
+export interface OrderMessage {
+  code: string;
+  body: string;
+  sender?: string;
+  receivedAt: string;
+}
+
+/** Sipariş — /orders yanıtı. */
+export interface Order {
+  id: string;
+  status: string;
+  phoneNumber: string;
+  serviceCode: string;
+  serviceName: string;
+  countryIso2: string;
+  countryName: string;
+  phoneCode?: string;
+  price: Money;
+  expiresAt: string;
+  /** Sunucunun hesapladığı kalan saniye — istemci kendi saatiyle hesaplamaz. */
+  expiresIn: number;
+  cancellableAt: string;
+  cancellableIn: number;
+  createdAt: string;
+  messages: OrderMessage[];
+}
+
+export interface OrderList {
+  items: Order[];
+  total: number;
+  limit: number;
+  offset: number;
+}

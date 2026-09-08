@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiFetch } from '@/lib/api';
 import { formatMoney, formatDuration } from '@/lib/format';
 import { useCountdown } from '@/hooks/useCountdown';
@@ -10,7 +10,8 @@ import { useSession } from '@/hooks/useSession';
 import { Button, Badge, Alert, Skeleton, Empty, cx } from '@/components/ui';
 import { ServiceIcon } from '@/components/service-icon';
 import { Modal } from '@/components/modal';
-import type { CatalogItem, Quote, ServiceSummary } from '@/lib/types';
+import { CodeWaiter } from '@/components/code-waiter';
+import type { CatalogItem, Quote, ServiceSummary, Order } from '@/lib/types';
 
 
 
@@ -127,6 +128,8 @@ function BuyModal({
   service, onClose, emailVerified,
 }: { service: ServiceSummary | null; onClose: () => void; emailVerified: boolean }) {
   const [countryIso, setCountryIso] = React.useState('');
+  const [order, setOrder] = React.useState<Order | null>(null);
+  const qc = useQueryClient();
 
   // Ülkeler YALNIZ modal açıkken ve YALNIZ seçilen servis için çekilir (~6 KB).
   // `enabled` olmadan, modal kapalıyken de istek giderdi.
@@ -153,13 +156,48 @@ function BuyModal({
   // güvenerek satın alır.
   React.useEffect(() => {
     setCountryIso('');
+    setOrder(null);
     quote.reset();
+    purchase.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [service?.code]);
+
+  /*
+    SATIN ALMA — MUTASYON ASLA OTOMATİK TEKRARLANMAZ.
+
+    `retry: false` burada bir kez daha yazılıyor (genel yapılandırmada da var):
+    bu çağrının tekrarı İKİ NUMARA alır ve kullanıcıdan iki kez ücret keser.
+    Sağlayıcı tarafı da idempotent değildir — spec'te "idempot" kelimesi hiç
+    geçmiyor.
+
+    Gövdede YALNIZ quoteId var: fiyat, sağlayıcı ve maliyet sunucuda belirlenir.
+  */
+  const purchase = useMutation({
+    retry: false,
+    mutationFn: (quoteId: string) =>
+      apiFetch<Order>('/orders', { method: 'POST', body: { quoteId } }),
+    onSuccess: (o) => {
+      setOrder(o);
+      // Bakiye değişti — panelin her yerinde güncel görünsün.
+      qc.invalidateQueries({ queryKey: ['me'] });
+      qc.invalidateQueries({ queryKey: ['statement'] });
+      qc.invalidateQueries({ queryKey: ['orders'] });
+    },
+  });
 
   function pickCountry(iso: string) {
     setCountryIso(iso);
     if (iso && service) quote.mutate({ service: service.code, country: iso });
+  }
+
+  // Sipariş verildiyse modal KOD BEKLEME ekranına döner. Ayrı bir sayfaya
+  // yönlendirmek, kullanıcıyı parasını verdiği anda tanımadığı bir ekrana atar.
+  if (service && order) {
+    return (
+      <Modal open onClose={onClose} title={service.name}>
+        <CodeWaiter order={order} onClose={onClose} iconUrl={service.iconUrl} />
+      </Modal>
+    );
   }
 
   return (
@@ -195,6 +233,9 @@ function BuyModal({
               error={quote.error}
               pending={quote.isPending}
               emailVerified={emailVerified}
+              buying={purchase.isPending}
+              buyError={purchase.error}
+              onBuy={() => quote.data && purchase.mutate(quote.data.quoteId)}
               onRefresh={() => quote.mutate({ service: service.code, country: countryIso })}
             />
           )}
@@ -205,10 +246,11 @@ function BuyModal({
 }
 
 function QuoteBox({
-  quote, error, pending, emailVerified, onRefresh,
+  quote, error, pending, emailVerified, buying, buyError, onBuy, onRefresh,
 }: {
   quote: Quote | null; error: unknown; pending: boolean;
-  emailVerified: boolean; onRefresh: () => void;
+  emailVerified: boolean; buying: boolean; buyError: unknown;
+  onBuy: () => void; onRefresh: () => void;
 }) {
   const left = useCountdown(quote?.expiresAt);
   const expired = !!quote && left <= 0;
@@ -271,22 +313,25 @@ function QuoteBox({
         {expired ? (
           <Button onClick={onRefresh} fullWidth className="mt-4">Yeni fiyat al</Button>
         ) : (
-          /*
-            POST /orders HENÜZ YOK (M5). Buton bilerek devre dışı.
-            Basılabilir bırakıp 404 aldırmak, kullanıcıya parasının gidip
-            gitmediğini bilmediği bir an yaşatır — eski sistemin
-            "Sunucuya bağlanılamadı." kutusunun yaptığı tam olarak buydu.
-          */
-          <Button fullWidth disabled className="mt-4" title="Sipariş adımı hazırlanıyor">
+          <Button
+            fullWidth
+            className="mt-4"
+            loading={buying}
+            disabled={!emailVerified || quote.stock <= 0}
+            onClick={onBuy}
+          >
             Satın Al ({formatMoney(quote.price)})
           </Button>
         )}
       </div>
 
-      {!expired && (
-        <Alert tone="info">
-          Satın alma adımı hazırlanıyor. Servis, ülke, stok ve fiyatlandırma
-          canlı çalışıyor.
+      {buyError instanceof ApiError && (
+        <Alert>
+          <p>{buyError.message}</p>
+          {/* İstek numarası: kullanıcı destek yazarsa olayı log'da bulabilelim. */}
+          {buyError.requestId && (
+            <p className="mt-2 text-xs opacity-60">İstek no: {buyError.requestId}</p>
+          )}
         </Alert>
       )}
 

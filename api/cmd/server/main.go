@@ -30,6 +30,7 @@ import (
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	httptransport "github.com/ikmetrik/sms-platform/api/internal/transport/http"
+	"github.com/ikmetrik/sms-platform/api/internal/worker"
 )
 
 func main() {
@@ -141,7 +142,19 @@ func run() error {
 		SessionTTL: cfg.SessionTTL, BaseURL: cfg.PublicBaseURL,
 	})
 
-	// 4) Sunucu
+	// 4) Arka plan işleri
+	//
+	// SUNUCU SÜRECİ İÇİNDE çalışırlar. Ayrı bir işçi süreci, tek VPS'te
+	// kazandırdığından fazla operasyon yükü getiriyordu. İkinci bir sunucu
+	// eklendiğinde bu işler Redis kilidiyle tek örneğe indirilmelidir —
+	// aksi hâlde iki poller aynı siparişi işler.
+	jobs := worker.New(worker.All(worker.Deps{
+		TxRunner: txRunner, Orders: orderService, FX: fxService,
+		Wallet: walletService, Clock: port.RealClock{},
+	})...)
+	jobs.Start(ctx)
+
+	// 5) Sunucu
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: httptransport.NewRouter(httptransport.Deps{
