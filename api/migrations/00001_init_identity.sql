@@ -91,6 +91,7 @@ CREATE INDEX sessions_user_id_idx    ON sessions (user_id) WHERE revoked_at IS N
 CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
 
 -- ─────────────────────────── Tek kullanımlık token'lar ───────────────────────────
+-- test: scripts/smoke-auth.sh ("veritabanında ham token yok, yalnız SHA-256 özeti")
 -- E-posta doğrulama ve şifre sıfırlama. Token'ın KENDİSİ saklanmaz, yalnız SHA-256
 -- özeti — veritabanı sızarsa token'lar kullanılamaz olsun.
 

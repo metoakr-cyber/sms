@@ -107,20 +107,39 @@ case "$GUARD" in
   *degistirilemez*) : ;;  # beklenen: tetikleyici engelledi
   *) echo "✗ ledger koruma tetikleyicisi ETKİN DEĞİL — durduruldu"; exit 1 ;;
 esac
-# Kontrol satırını temizle (yalnız izinli yoldan)
-psql -q -c "BEGIN;
-         SET LOCAL app.allow_ledger_truncate = 'on';
-         TRUNCATE ledger_entries, users RESTART IDENTITY CASCADE;
-         COMMIT;" >/dev/null
+# Kontrol satırını temizle (yalnız izinli yoldan).
+#
+# BURADA TRUNCATE ... CASCADE VARDI VE TOHUM VERİSİNİ SİLİYORDU.
+# Betiğin başındaki yorum cascade kullanılmadığını söylüyordu; kod ise tam da
+# onu yapıyordu. Cascade `pricing_rules`a kadar iniyor, varsayılan GLOBAL
+# fiyat kuralı yok oluyor ve uygulama sonraki her teklifte NO_PRICING_RULE ile
+# düşüyordu — testler yeşil, uygulama bozuk.
+#
+# Yorumun iddia ettiği garanti artık koda bağlı: yalnız bu betiğin ürettiği
+# veriyi siliyoruz.
+clean_test_data
 
 REMAIN=$(psql -c "SELECT count(*) FROM users;" 2>/dev/null)
 [ "$REMAIN" = "0" ] || { echo "temizlik başarısız: $REMAIN kullanıcı kaldı"; exit 1; }
+
+# Tohum verisi HÂLÂ yerinde olmalı — cascade'in geri gelmediğinin kanıtı.
+SEED=$(psql -c "SELECT count(*) FROM pricing_rules WHERE scope='GLOBAL' AND is_active;")
+[ "$SEED" = "1" ] || { echo "✗ temizlik GLOBAL fiyat kuralını sildi (adet=$SEED)"; exit 1; }
 rediscli FLUSHDB >/dev/null 2>&1
 SIZE=$(rediscli DBSIZE 2>/dev/null | tr -dc '0-9')
 [ "${SIZE:-1}" = "0" ] || {
   echo "redis temizlenemedi (DBSIZE=${SIZE:-?}) — hız limiti sayaçları koşular arasında birikir"
   exit 1
 }
+
+# Port MEŞGUL MÜ: geliştirme sunucusu ayaktayken duman testi kendi sunucusunu
+# başlatamaz ve "sunucu başlamadı" diye anlamsız bir hatayla düşerdi. Sebebi
+# söylemeyen bir hata, hatanın kendisinden daha çok zaman kaybettirir.
+if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "✗ $PORT portu zaten kullanımda — muhtemelen 'make dev' çalışıyor."
+  echo "  Duman testi kendi sunucusunu başlatır; önce diğerini durdurun."
+  exit 1
+fi
 
 (cd api && go build -o /tmp/smoke-api ./cmd/server) || { echo "derleme başarısız"; exit 1; }
 rm -f "$LOG"; /tmp/smoke-api > "$LOG" 2>&1 &

@@ -529,6 +529,31 @@ func (q *Queries) SetProviderActive(ctx context.Context, arg SetProviderActivePa
 	return err
 }
 
+const setServiceIcon = `-- name: SetServiceIcon :one
+UPDATE services SET icon_url = $1, updated_at = now()
+WHERE code = $2
+RETURNING code, name, icon_url
+`
+
+type SetServiceIconParams struct {
+	IconUrl string
+	Code    string
+}
+
+type SetServiceIconRow struct {
+	Code    string
+	Name    string
+	IconUrl string
+}
+
+// Servis logosunu ayarlar. Yol `web/public/` köküne göredir: /servis-logolari/wa.svg
+func (q *Queries) SetServiceIcon(ctx context.Context, arg SetServiceIconParams) (SetServiceIconRow, error) {
+	row := q.db.QueryRow(ctx, setServiceIcon, arg.IconUrl, arg.Code)
+	var i SetServiceIconRow
+	err := row.Scan(&i.Code, &i.Name, &i.IconUrl)
+	return i, err
+}
+
 const updateProviderBalance = `-- name: UpdateProviderBalance :exec
 UPDATE providers SET account_balance_micro = $2, account_synced_at = now() WHERE id = $1
 `

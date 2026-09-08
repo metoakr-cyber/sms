@@ -34,6 +34,7 @@ func mapLedgerErr(err error) error {
 }
 
 // errDuplicateKey iç sinyaldir; dışarı sızmaz.
+// test: wallet_integration_test.go#TestKK201_IdempotencyUnderConcurrency
 var errDuplicateKey = errors.New("wallet: eşzamanlı tekrar")
 
 // IsDuplicate eşzamanlı tekrar hatasını tanır.

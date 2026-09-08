@@ -69,7 +69,19 @@ func LoadDotEnv(paths ...string) {
 	if len(paths) == 0 {
 		paths = []string{".env", "../.env"}
 	}
-	_ = godotenv.Load(paths...)
+	// Her yol AYRI AYRI denenir.
+	//
+	// godotenv.Load(a, b) dosyaları sırayla açar ve İLK HATADA döner. `api/`
+	// dizininden çalıştırıldığında (Makefile'daki `dev` hedefi tam da bunu
+	// yapar) `.env` yoktur, çağrı orada durur ve kökteki `../.env` HİÇ
+	// OKUNMAZ. Sonuç: "DATABASE_URL: zorunlu ama tanımsız" — dosya oracıkta
+	// dururken.
+	//
+	// Ayrıca sıra ÖNEMLİDİR: godotenv önce tanımlanan değeri korur, bu yüzden
+	// yakındaki .env uzaktakini ezer.
+	for _, p := range paths {
+		_ = godotenv.Load(p)
+	}
 }
 
 // Load ortam değişkenlerini okur ve doğrular.

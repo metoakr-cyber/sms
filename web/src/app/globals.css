@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+/*
+ * Duralux paleti — eski yönetim temasından birebir alındı (theme.min.css).
+ * Değerler tahmin değil, ölçüm: `grep -oE '#[0-9a-fA-F]{6}' theme.min.css | sort | uniq -c`
+ */
+@theme {
+  --color-brand-50:  #eef2ff;
+  --color-brand-100: #dbe3fd;
+  --color-brand-200: #b9c7fa;
+  --color-brand-300: #8ea5f5;
+  --color-brand-400: #5f7ee6;
+  --color-brand-500: #3454d1;   /* Duralux primary */
+  --color-brand-600: #2b45b0;
+  --color-brand-700: #23388f;
+  --color-brand-800: #1b2b6f;
+  --color-brand-900: #142052;
+
+  --color-ink-950: #0b1120;     /* sayfa zemini (koyu) */
+  --color-ink-900: #0f172a;
+  --color-ink-850: #121a2d;     /* kart */
+  --color-ink-800: #1b2436;     /* yükseltilmiş yüzey */
+  --color-ink-700: #283c50;     /* kenarlık */
+  --color-ink-500: #64748b;
+  --color-ink-400: #91a1b6;     /* ikincil metin */
+  --color-ink-300: #b1b4c0;
+  --color-ink-100: #e5e7eb;     /* ana metin (koyu tema) */
+
+  --color-ok:   #17c666;
+  --color-warn: #ffa21d;
+  --color-bad:  #ea4d4d;
+  --color-info: #3dc7be;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+               "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/*
+ * Tema değişkenleri. Koyu VARSAYILANDIR (frontend-contract.md §2.7).
+ * `data-theme` kök öznitelikle açık temaya geçilir ve seçim kalıcıdır.
+ */
+:root {
+  color-scheme: dark;
+  --bg:      var(--color-ink-950);
+  --surface: var(--color-ink-850);
+  --raised:  var(--color-ink-800);
+  --border:  var(--color-ink-700);
+  --text:    var(--color-ink-100);
+  --muted:   var(--color-ink-400);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg:      #f5f7fb;
+  --surface: #ffffff;
+  --raised:  #ffffff;
+  --border:  #e3e7ef;
+  --text:    #1d1f1e;
+  --muted:   #64748b;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    color-scheme: light;
+    --bg:      #f5f7fb;
+    --surface: #ffffff;
+    --raised:  #ffffff;
+    --border:  #e3e7ef;
+    --text:    #1d1f1e;
+    --muted:   #64748b;
+  }
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * iOS Safari: font-size < 16px olan bir alana dokunulduğunda sayfa YAKINLAŞIR.
+   * `maximum-scale=1` ile çözmek erişilebilirliği bozar (§2.4) — asıl çözüm budur.
+   */
+  input, select, textarea { font-size: 16px; }
+
+  /* Dokunmatikte `:hover` YAPIŞIR. Hover stilleri yalnız gerçek fare olan
+     cihazlarda uygulanır (§2.3). */
+  @media (hover: none) {
+    .hover-only:hover { background-color: inherit; }
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand-400);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection { background: var(--color-brand-500); color: #fff; }
+}
+
+@layer utilities {
+  /* Çentik / ev çubuğu güvenli alanı (§2.4) */
+  .pb-safe { padding-bottom: 1rem; }
+  .pt-safe { padding-top: 1rem; }
+  @supports (padding: env(safe-area-inset-bottom)) {
+    .pb-safe { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+    .pt-safe { padding-top: max(1rem, env(safe-area-inset-top)); }
+  }
+
+  /* 100vh iOS'ta adres çubuğunu saymaz → içerik kırpılır. dvh varsa onu kullan. */
+  .h-screen-safe { height: 100vh; }
+  @supports (height: 100dvh) { .h-screen-safe { height: 100dvh; } }
+  .min-h-screen-safe { min-height: 100vh; }
+  @supports (height: 100dvh) { .min-h-screen-safe { min-height: 100dvh; } }
+
+  .surface { background-color: var(--surface); border-color: var(--border); }
+  .raised  { background-color: var(--raised);  border-color: var(--border); }
+  .text-muted { color: var(--muted); }
+
+  /* Kaydırma çubuğu — koyu temada beyaz çubuk göze batıyor */
+  .thin-scroll { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+  /* Uzun kodların/numaraların taşmasını engeller; mobilde kritik */
+  .break-anywhere { overflow-wrap: anywhere; }
+}
+
+/* Hareket azaltma tercihi olan kullanıcıda animasyon yok */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

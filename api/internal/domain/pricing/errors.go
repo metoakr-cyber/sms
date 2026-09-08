@@ -5,7 +5,8 @@ import "errors"
 var (
 	// ErrNoRule hiçbir fiyat kuralı bulunamadı.
 	//
-	// Bu durumda satış YAPILMAZ. "Kural yoksa maliyetine sat" veya
+	// test: quote_integration_test.go#TestNoFXRateStopsSelling
+// Bu durumda satış YAPILMAZ. "Kural yoksa maliyetine sat" veya
 	// "varsayılan %X uygula" davranışı kabul edilemez: ilki zarar ettirir,
 	// ikincisi sessizce yanlış fiyat üretir. Doğru davranış hizmeti
 	// durdurmak ve alarm üretmektir.

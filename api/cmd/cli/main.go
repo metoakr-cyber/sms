@@ -63,6 +63,8 @@ func main() {
 		err = app.providerList()
 	case "catalog:sync":
 		err = app.catalogSync(args)
+	case "catalog:icon":
+		err = app.catalogIcon(args)
 	case "admin:grant":
 		err = app.adminGrant(args)
 	case "wallet:reconcile":
@@ -238,6 +240,32 @@ func (a *appCtx) adminGrant(args []string) error {
 	return nil
 }
 
+// catalogIcon bir servisin logosunu ayarlar.
+//
+// Logo dosyası web/public/servis-logolari/ altında durur; burada yalnız ona
+// işaret eden yol saklanır. Dosyanın varlığı BURADA DOĞRULANMAZ: CLI arka uçta,
+// dosya ön yüzde durur ve ikisi ayrı makinelerde çalışabilir. Dosya eksikse
+// arayüz kırık ikon değil, harf rozeti gösterir (components/service-icon.tsx).
+func (a *appCtx) catalogIcon(args []string) error {
+	fs := flag.NewFlagSet("catalog:icon", flag.ExitOnError)
+	service := fs.String("service", "", "servis kodu (örn. wa)")
+	url := fs.String("url", "", "logo yolu (örn. /servis-logolari/wa.svg)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *service == "" || *url == "" {
+		return fmt.Errorf("--service ve --url zorunlu")
+	}
+	row, err := a.q.SetServiceIcon(a.ctx, db.SetServiceIconParams{
+		Code: *service, IconUrl: *url,
+	})
+	if err != nil {
+		return fmt.Errorf("servis bulunamadı veya güncellenemedi: %s", *service)
+	}
+	fmt.Printf("✓ %s (%s) logosu: %s\n", row.Code, row.Name, row.IconUrl)
+	return nil
+}
+
 func (a *appCtx) walletReconcile() error {
 	rep, err := wallet.New(a.tx).Reconcile(a.ctx, 100)
 	if err != nil {
@@ -265,6 +293,7 @@ Komutlar:
                      satırından değil: argümanlar kabuk geçmişine ve ps çıktısına düşer.
   provider:list      Etkin sağlayıcıları listele
   catalog:sync       Katalog senkronu   --provider [--offers-only]
+  catalog:icon       Servis logosu ayarla  --service --url
   admin:grant        Rol ata            --email --role
   wallet:reconcile   Defter mutabakatı
 

@@ -202,7 +202,8 @@ func (s *Service) SyncOffers(ctx context.Context, providerID int64) (SyncReport,
 		}
 		rep.Products++
 
-		// Stok = GERÇEK stok. Sağlayıcının havuz sayacı kullanılmaz:
+		// test: sync_integration_test.go#TestSyncOffersPopulatesCatalog
+	// Stok = GERÇEK stok. Sağlayıcının havuz sayacı kullanılmaz:
 		// canlı ölçümde WhatsApp/TR için havuz 56964 iken gerçek stok 0'dı.
 		if err := q.UpsertOffer(ctx, db.UpsertOfferParams{
 			ProviderID:   providerID,

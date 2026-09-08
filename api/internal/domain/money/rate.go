@@ -8,6 +8,7 @@ import (
 
 // Rate bir çarpanı TAM olarak temsil eder (kur, kâr marjı, düzeltme katsayısı).
 //
+// test: money_test.go#TestNoFloatDrift
 // float64 kullanılmaz: 1.1 gibi bir değer ikili tabanda tam temsil edilemez ve
 // zincirleme çarpımda hata birikir. big.Rat ile tüm ara hesaplar kayıpsızdır;
 // yuvarlama yalnızca en sonda, açıkça belirtilen yönde bir kez yapılır.

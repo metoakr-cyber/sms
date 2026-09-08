@@ -33,7 +33,7 @@ func NewToken() (Token, error) {
 
 // HashToken bir token'ın saklanacak özetini üretir.
 //
-// Burada argon2 KULLANILMAZ: token zaten 256 bit rastgeledir, kaba kuvvetle
+// Burada argon2 yerine SHA-256 tercih edildi: token zaten 256 bit rastgeledir, kaba kuvvetle
 // tahmin edilemez. Yavaş bir özet yalnız doğrulamayı yavaşlatırdı.
 func HashToken(plain string) []byte {
 	sum := sha256.Sum256([]byte(plain))

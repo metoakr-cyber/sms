@@ -325,6 +325,23 @@ Kaçırılmamış (unescaped) hata mesajı → **yansımalı XSS** + yığın/SQ
 **Yapılacak:** İkisi de **rotate edilmeli** (yeni repoya taşınmayacak olsa bile, eski repo geçmişinde
 kalıyorlar). → `roadmap.md` M0.
 
+### 3.13b AÇIK: katalog entegrasyon testlerinde açıklanamayan bir düşüş
+
+2026-09-08'de `check.sh` bir kez `service/catalog` paketindeki ALTI testin
+tamamıyla düştü (paketin ortak `setup`'ı düşünce olan budur), sonraki iki tam
+koşu ve tekil koşular geçti.
+
+Hipotez kuruldu ve **ÇÜRÜTÜLDÜ:** "kalıntı `price_quotes` satırı
+`DELETE FROM providers`'ı FK ihlaliyle düşürüyor" denildi; elle bir teklif satırı
+bırakılıp test koşuldu, **geçti**. Sebep hâlâ bilinmiyor.
+
+Teşhis edilemedi çünkü `check.sh` yalnız süzülmüş 12 satır basıp gerisini
+atıyordu. Artık her adımın tam çıktısı `.check-logs/` altına yazılıyor. Bu
+düşüş tekrarlanırsa **önce o log okunacak**, tahmin yürütülmeyecek.
+
+Kararsız bir birleştirme kapısı, kapısızlıktan az miktarda daha iyidir: insan
+"yine o hata" deyip yeniden koşmayı öğrenir ve gerçek hatayı da öyle geçer.
+
 ### 3.14 Yönlendirme ve rota tutarsızlıkları
 
 | Yer | Sorun |
@@ -352,6 +369,50 @@ kalıyorlar). → `roadmap.md` M0.
 - 127 commit'in tamamının mesajı `"fix"`
 
 ---
+
+### 3.12 Yorum "kullanılmaz" diyordu, kod tam da onu yapıyordu
+
+`scripts/smoke-auth.sh` başında büyük harfle "TRUNCATE ... CASCADE KULLANILMAZ"
+yazıyordu ve gerekçesi de doğruydu: cascade `pricing_rules`a iniyor, varsayılan
+GLOBAL fiyat kuralı siliniyor. Betiğin 113. satırında ise tam olarak
+`TRUNCATE ledger_entries, users RESTART IDENTITY CASCADE` duruyordu.
+
+Sonuç: testler yeşil geçiyor, ardından uygulama açıldığında her fiyat teklifi
+`NO_PRICING_RULE` ile düşüyordu. Kontrolleri koşan kişi "her şey geçti" görüyor,
+uygulamayı açan kişi bozuk bir sistem buluyordu.
+
+Bu Örüntü A'nın (bkz. §3.11) kendi araçlarımızdaki hâlidir. `check-guarantees.py`
+kabuk betiklerini zaten tarıyordu ama garanti sözcükleri listesinde
+"kullanılmaz/yapılmaz" yoktu — yani denetleyici doğru dosyaya bakıp yanlış
+kelimeyi arıyordu. Liste genişletildi ve 10 yorum daha teste bağlandı.
+
+**Ders:** "X yapılmaz" en az "asla" kadar bağlayıcı bir sözdür. Bir denetleyici
+kurunca, onun NEYİ KAÇIRDIĞINI da düşünmek gerekir; kapsama alanı ile kelime
+listesi ayrı iki eksiktir.
+
+### 3.13 Kontroller geçti ≠ sistem çalışıyor
+
+Aynı turda üç ayrı "testler geçiyor ama uygulama açılmıyor" durumu çıktı:
+
+1. `godotenv.Load(".env", "../.env")` ilk dosya yoksa hemen dönüyor — `make dev`
+   `api/` dizininden koştuğu için kökteki `.env` HİÇ okunmuyordu. Sunucu
+   "DATABASE_URL tanımsız" diyerek ölüyordu, dosya oracıkta dururken.
+2. Duman testi kendi sunucusunu başlatır; geliştirme sunucusu ayaktayken port
+   dolu olduğu için "sunucu başlamadı" diye sebebi söylemeyen bir hata veriyordu.
+3. `check.sh`e eklenen `npm run build`, çalışan `npm run dev` ile aynı `.next`
+   dizinini ezip tarayıcıda `__webpack_modules__[moduleId] is not a function`
+   üretiyordu — kodda hiçbir sorun yokken.
+
+Üçü de aynı kökten: **kontroller, sistemin çalışır hâlinden habersiz koşuyordu.**
+Çözümler sırasıyla: her yolu ayrı yükle, portu önceden kontrol edip açık söyle,
+üretim derlemesini ayrı dizine yap (`NEXT_DIST_DIR`).
+
+### 3.14 Geliştirme veritabanı testlerle paylaşılıyor
+
+`check.sh` koşunca geliştirme hesabınız silinir: entegrasyon testleri ve duman
+testi aynı veritabanını kullanır. Bugün buna katlanıldı (yeniden kayıt olmak
+30 saniye), ama üretim öncesi testler AYRI bir veritabanına alınmalı. Aksi hâlde
+"bir şeyi denerken kontrolleri koştum, verim gitti" düzenli bir sürtünme olur.
 
 ## 4. Sağlayıcı API notları
 

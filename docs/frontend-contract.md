@@ -81,6 +81,11 @@ Tailwind varsayılanları kullanılır, özelleştirilmez:
 - Tıklanabilir her öğe **en az 44×44 CSS px** (Apple HIG) — görsel olarak küçükse `::before` ile
   dokunma alanı genişletilir
 - Dokunma hedefleri arasında en az **8 px** boşluk
+- **İstisna — paragraf içi bağlantılar:** akan metnin içindeki bir bağlantı (`<p>` içinde
+  cümlenin parçası) 44 px kuralından muaftır. Satır yüksekliğini 44 px'e çıkarmak paragrafı
+  okunamaz hale getirir ve bağlantı zaten tek başına duran bir denetim değildir. Kural,
+  **kendi başına duran** denetimler için geçerlidir: butonlar, gezinme bağlantıları,
+  liste öğeleri, ikon butonları.
 - `hover:` durumlarına **asla** güvenilmez; dokunmatikte hover yoktur. Bilgi yalnız hover'da
   gösterilmez (örn. sipariş satırındaki "kopyala" butonu her zaman görünür olmalı)
 - `active:` durumu görsel geri bildirim vermeli (dokunma anında)

@@ -39,7 +39,14 @@ GUARANTEE = re.compile(
     r"reddeder|reddedilir|engellenir|engeller\b|"
     r"log'larız|loglariz|"
     r"okuyamaz|çalınamaz|calinamaz|"
-    r"garanti eder|zorlanır|zorlar\b)",
+    r"garanti eder|zorlanır|zorlar\b|"
+    # YASAK BİLDİREN KALIPLAR. Bunlar listede yoktu ve gerçek bir hatayı
+    # kaçırdılar: smoke-auth.sh "TRUNCATE ... CASCADE KULLANILMAZ" diyordu,
+    # koddaysa tam olarak o vardı; cascade tohum verisini siliyor, uygulama
+    # NO_PRICING_RULE ile düşüyordu. "X yapılmaz" da en az "asla" kadar
+    # bağlayıcı bir sözdür.
+    r"kullanılmaz|kullanilmaz|yapılmaz|yapilmaz|"
+    r"saklanmaz|gönderilmez|gonderilmez|sızmaz|sizmaz|sızamaz|sizamaz)",
     re.IGNORECASE,
 )
 TEST_REF = re.compile(r"test:\s*\S+", re.IGNORECASE)

@@ -168,6 +168,31 @@ katmanlara dokunuyor ama iş mantığı basit.
 
 ---
 
+## M4.5 — Arayüz iskeleti *(tamamlandı)*
+
+Sipariş ucu M5'te açılacağı için arayüz normalde M5'in parçasıydı. Öne alındı:
+arka uç dört kilometre taşı boyunca hiç ekranda görünmemişti ve görünmeyen bir
+sistem doğrulanamıyordu. Nitekim arayüzü bağlamak üç gerçek hatayı ortaya
+çıkardı (bkz. memory.md §3).
+
+- Next.js 15 + React 19 + Tailwind 4, koyu Duralux paleti (eski temadan ölçüldü)
+- Tek alan adı topolojisi geliştirmede de geçerli: `/api` → Go (Next rewrite),
+  ayrı port + CORS ile geliştirilmiyor
+- Genel sayfalar sunucu bileşeni (SEO), panel istemci bileşeni
+- `robots.ts` + `sitemap.ts` + `X-Robots-Tag`: panel ve yönetim indekslenmez
+- reCAPTCHA v2, site anahtarı yoksa hiç çizilmez (sunucu da o durumda kapalı)
+- Kalıcı tema anahtarı, yanıp sönme önleyici satır içi betikle
+- `web/scripts/responsive-check.mjs`: 12 sayfa × 5 genişlik, yatay kaydırma ve
+  44 px dokunma hedefi ölçümü — göz kararı değil
+
+**Bu turda YAPILMADI (bilerek):**
+- `POST /orders` yok, dolayısıyla "Numarayı al" butonu devre dışı. Basılabilir
+  bırakıp 404 aldırmak, kullanıcıya parasının gidip gitmediğini bilmediği bir an
+  yaşatırdı.
+- Bakiye yükleme ekranı yok; yükleme şu an yönetimden elle yapılıyor.
+- Çok dillilik (next-intl) kurulmadı. Türkçe tek dil. M7'ye alındı.
+- Yasal metinler boş yer tutucu — hukuki inceleme öncesi metin uydurulmadı.
+
 ## M5 — Sipariş akışı, webhook, SSE ⭐
 
 **Amaç:** Ürünün kalbi. Para ile dış dünyanın buluştuğu yer.

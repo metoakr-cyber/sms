@@ -33,7 +33,7 @@ var (
 
 // RetryAfterError sağlayıcının "şu kadar sonra tekrar dene" dediği hatalar.
 //
-// Sabit bir geri çekilme KULLANILMAZ: sağlayıcı süreyi kendisi söylüyorsa
+// Sabit geri çekilme yerine sağlayıcının verdiği süre tercih edilir: sağlayıcı süreyi kendisi söylüyorsa
 // ona uyulur (FR-414). HeroSMS'te 429 RATE_LIMIT, 425 TOO_EARLY ve
 // EARLY_CANCEL_DENIED bu sınıfa girer.
 type RetryAfterError struct {

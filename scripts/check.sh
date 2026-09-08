@@ -9,16 +9,28 @@ cd "$(dirname "$0")/.."
 [ -f .env ] && { set -a; source .env; set +a; }
 export PATH="$PATH:$(go env GOPATH)/bin"
 
+# Her adımın TAM çıktısı diske yazılır.
+#
+# Önceden yalnız süzülmüş 12 satır ekrana basılıyordu ve gerisi atılıyordu.
+# Kararsız (bazen düşen) bir adımla karşılaşıldığında geriye bakılacak hiçbir
+# şey kalmıyordu — hata bir daha üretilemezse teşhis de edilemiyor. Kapının
+# kendisi kararsızsa, kanıtı saklamak kapının bir parçasıdır.
+LOGDIR="${CHECK_LOG_DIR:-.check-logs}"
+rm -rf "$LOGDIR"; mkdir -p "$LOGDIR"
+
 FAILED=()
 step() {
   local name="$1"; shift
+  local slug; slug=$(printf '%s' "$name" | tr ' /' '__')
+  local log="$LOGDIR/$slug.log"
   printf '  %-28s ' "$name"
-  if out=$("$@" 2>&1); then
+  if "$@" >"$log" 2>&1; then
     printf '\033[32m✓\033[0m\n'
   else
     printf '\033[31m✗\033[0m\n'
     FAILED+=("$name")
-    printf '%s\n' "$out" | grep -E "FAIL|Error|error|✗|--- FAIL" | head -12 | sed 's/^/       /'
+    grep -E "FAIL|Error|error|✗|--- FAIL" "$log" | head -12 | sed 's/^/       /'
+    printf '       \033[2mtam çıktı: %s\033[0m\n' "$log"
   fi
 }
 
@@ -31,6 +43,14 @@ step "derleme"              bash -c 'cd api && go build ./...'
 step "birim testler"        bash -c 'cd api && go test ./... -race -count=1'
 step "entegrasyon testleri" bash -c 'cd api && go test -tags=integration -p 1 ./... -race -count=1'
 step "duman testi"          ./scripts/smoke-auth.sh
+step "web tip denetimi"     bash -c 'cd web && npx tsc --noEmit'
+step "web derleme"          bash -c 'cd web && NEXT_DIST_DIR=.next-check npm run build >/dev/null'
+step "commit kapısı"        ./scripts/commit_gate_test.sh
+
+# NOT: responsive denetimi (web/scripts/responsive-check.mjs) BURADA DEĞİL.
+# İki sunucunun da ayakta olmasını gerektirir; birleştirme kapısını dış
+# duruma bağımlı kılmak, kapının rastgele düşmesi demektir. Elle:
+#   make responsive
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then

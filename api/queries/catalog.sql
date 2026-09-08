@@ -146,3 +146,9 @@ FROM provider_offers o
 JOIN providers pr ON pr.id = o.provider_id
 WHERE o.product_id = $1 AND o.is_available AND o.stock > 0 AND pr.is_active
 ORDER BY o.cost_micro, pr.priority;
+
+-- name: SetServiceIcon :one
+-- Servis logosunu ayarlar. Yol `web/public/` köküne göredir: /servis-logolari/wa.svg
+UPDATE services SET icon_url = @icon_url, updated_at = now()
+WHERE code = @code
+RETURNING code, name, icon_url;

@@ -134,7 +134,8 @@ func (s *QuoteService) Create(ctx context.Context, req QuoteRequest) (Quote, err
 	}
 	rule, err := selectRule(rules)
 	if err != nil {
-		// Kural yoksa satış YAPILMAZ. Sessizce maliyetine satmak,
+		// test: quote_integration_test.go#TestNoFXRateStopsSelling
+	// Kural yoksa satış YAPILMAZ. Sessizce maliyetine satmak,
 		// eski prototipin hatasıydı.
 		slog.Error("FİYAT KURALI YOK — satış yapılamıyor",
 			"service", svc.Code, "country", ctry.Iso2,

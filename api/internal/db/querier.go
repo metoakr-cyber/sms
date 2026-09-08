@@ -107,6 +107,8 @@ type Querier interface {
 	RevokeRole(ctx context.Context, arg RevokeRoleParams) error
 	RevokeSession(ctx context.Context, id string) error
 	SetProviderActive(ctx context.Context, arg SetProviderActiveParams) error
+	// Servis logosunu ayarlar. Yol `web/public/` köküne göredir: /servis-logolari/wa.svg
+	SetServiceIcon(ctx context.Context, arg SetServiceIconParams) (SetServiceIconRow, error)
 	SetUserBalance(ctx context.Context, arg SetUserBalanceParams) error
 	SetUserStatus(ctx context.Context, arg SetUserStatusParams) error
 	// Kâr raporu ve muhasebe özeti girdisi.

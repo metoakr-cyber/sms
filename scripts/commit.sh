@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Commit KAPISI: check.sh geçmeden commit YAPILMAZ.
+# test: scripts/commit_gate_test.sh
 #
 # NEDEN VAR
 # ─────────
