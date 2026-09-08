@@ -219,6 +219,38 @@ func (q *Queries) SetUserStatus(ctx context.Context, arg SetUserStatusParams) er
 	return err
 }
 
+const setUserStatusByPublicID = `-- name: SetUserStatusByPublicID :one
+UPDATE users SET status = $1, updated_at = now()
+WHERE public_id = $2 AND deleted_at IS NULL
+RETURNING public_id, email, username, status
+`
+
+type SetUserStatusByPublicIDParams struct {
+	Status   UserStatus
+	PublicID uuid.UUID
+}
+
+type SetUserStatusByPublicIDRow struct {
+	PublicID uuid.UUID
+	Email    string
+	Username string
+	Status   UserStatus
+}
+
+// Yönetim: kullanıcı durumunu değiştirir.
+// public_id ile çalışır — sayısal id dışarı verilmez (değişmez #10).
+func (q *Queries) SetUserStatusByPublicID(ctx context.Context, arg SetUserStatusByPublicIDParams) (SetUserStatusByPublicIDRow, error) {
+	row := q.db.QueryRow(ctx, setUserStatusByPublicID, arg.Status, arg.PublicID)
+	var i SetUserStatusByPublicIDRow
+	err := row.Scan(
+		&i.PublicID,
+		&i.Email,
+		&i.Username,
+		&i.Status,
+	)
+	return i, err
+}
+
 const updatePasswordHash = `-- name: UpdatePasswordHash :exec
 UPDATE users SET password_hash = $2 WHERE id = $1 AND deleted_at IS NULL
 `

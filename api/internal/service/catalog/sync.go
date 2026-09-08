@@ -334,7 +334,7 @@ func (s *Service) SyncProviderBalance(ctx context.Context, providerID int64) err
 // ISO2 artık `country_reference` tablosundan, İNGİLİZCE ADA göre çözülür.
 // Çözülemezse boş dönülür ve çağıran ülkeyi ATLAR — uydurma bir kod yazmaz.
 //
-// test: sync_integration_test.go#TestCountryIsoComesFromReferenceNotProviderCode
+// test: country_ref_integration_test.go#TestCountryIsoComesFromReferenceNotProviderCode
 func (s *Service) interpretCountry(
 	ctx context.Context, q *db.Queries, rc port.RemoteDimension,
 ) (iso, nameTR, phone string, rent bool) {

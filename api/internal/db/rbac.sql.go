@@ -7,6 +7,9 @@ package db
 
 import (
 	"context"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 const assignRole = `-- name: AssignRole :exec
@@ -22,6 +25,26 @@ type AssignRoleParams struct {
 func (q *Queries) AssignRole(ctx context.Context, arg AssignRoleParams) error {
 	_, err := q.db.Exec(ctx, assignRole, arg.UserID, arg.RoleID)
 	return err
+}
+
+const countUsersForAdmin = `-- name: CountUsersForAdmin :one
+SELECT count(*) FROM users u
+WHERE ($1::text IS NULL
+       OR u.email ILIKE '%' || $1 || '%'
+       OR u.username ILIKE '%' || $1 || '%')
+  AND ($2::user_status IS NULL OR u.status = $2)
+`
+
+type CountUsersForAdminParams struct {
+	Q      *string
+	Status *UserStatus
+}
+
+func (q *Queries) CountUsersForAdmin(ctx context.Context, arg CountUsersForAdminParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsersForAdmin, arg.Q, arg.Status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const getRoleByName = `-- name: GetRoleByName :one
@@ -116,6 +139,84 @@ type GrantPermissionToRoleParams struct {
 func (q *Queries) GrantPermissionToRole(ctx context.Context, arg GrantPermissionToRoleParams) error {
 	_, err := q.db.Exec(ctx, grantPermissionToRole, arg.RoleID, arg.PermissionID)
 	return err
+}
+
+const listUsersForAdmin = `-- name: ListUsersForAdmin :many
+SELECT
+    u.public_id, u.email, u.username, u.status,
+    u.email_verified_at, u.balance_minor, u.created_at,
+    coalesce(string_agg(DISTINCT r.name, ','), '')::text AS roles,
+    (SELECT count(*) FROM orders o WHERE o.user_id = u.id)::bigint AS order_count
+FROM users u
+LEFT JOIN user_roles ur ON ur.user_id = u.id
+LEFT JOIN roles r ON r.id = ur.role_id
+WHERE ($1::text IS NULL
+       OR u.email ILIKE '%' || $1 || '%'
+       OR u.username ILIKE '%' || $1 || '%')
+  AND ($2::user_status IS NULL OR u.status = $2)
+GROUP BY u.id
+ORDER BY u.created_at DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListUsersForAdminParams struct {
+	Q      *string
+	Status *UserStatus
+	Off    int32
+	Lim    int32
+}
+
+type ListUsersForAdminRow struct {
+	PublicID        uuid.UUID
+	Email           string
+	Username        string
+	Status          UserStatus
+	EmailVerifiedAt *time.Time
+	BalanceMinor    int64
+	CreatedAt       time.Time
+	Roles           string
+	OrderCount      int64
+}
+
+// Yönetim kullanıcı listesi.
+//
+// 🔴 password_hash SEÇİLMEZ. Yönetim panelinde bile: bir sızıntıda parola
+// özetleri offline kırma denemelerine açık olur ve hiçbir yönetim işlevi
+// onlara ihtiyaç duymaz.
+// test: internal/transport/http/handler/admin_integration_test.go#TestListUsersNeverReturnsPasswordHash
+func (q *Queries) ListUsersForAdmin(ctx context.Context, arg ListUsersForAdminParams) ([]ListUsersForAdminRow, error) {
+	rows, err := q.db.Query(ctx, listUsersForAdmin,
+		arg.Q,
+		arg.Status,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUsersForAdminRow{}
+	for rows.Next() {
+		var i ListUsersForAdminRow
+		if err := rows.Scan(
+			&i.PublicID,
+			&i.Email,
+			&i.Username,
+			&i.Status,
+			&i.EmailVerifiedAt,
+			&i.BalanceMinor,
+			&i.CreatedAt,
+			&i.Roles,
+			&i.OrderCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const replaceUserRoles = `-- name: ReplaceUserRoles :exec

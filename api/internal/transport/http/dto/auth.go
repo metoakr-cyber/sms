@@ -375,3 +375,135 @@ type RentalDurationResponse struct {
 	Label   string `json:"label"`
 	InStock bool   `json:"inStock"`
 }
+
+// ─────────────────────────── Yönetim ───────────────────────────
+
+// AdminUserResponse yönetim kullanıcı listesi satırı.
+//
+// 🔴 password_hash BURADA YOKTUR ve olmayacaktır.
+type AdminUserResponse struct {
+	ID            string   `json:"id"`
+	Email         string   `json:"email"`
+	Username      string   `json:"username"`
+	Status        string   `json:"status"`
+	EmailVerified bool     `json:"emailVerified"`
+	Balance       Money    `json:"balance"`
+	Roles         []string `json:"roles"`
+	OrderCount    int64    `json:"orderCount"`
+	CreatedAt     string   `json:"createdAt"`
+}
+
+type AdminUserListResponse struct {
+	Items  []AdminUserResponse `json:"items"`
+	Total  int64               `json:"total"`
+	Limit  int32               `json:"limit"`
+	Offset int32               `json:"offset"`
+}
+
+type SetUserStatusRequest struct {
+	Status string `json:"status"`
+}
+
+// AdminProviderResponse sağlayıcı — API ANAHTARI YOK.
+//
+// Anahtarın şifreli hâli bile dönmez: panelde gösterilecek bir şey değil ve
+// varlığı/uzunluğu bilgi sızdırır. Yöneticinin bilmesi gereken tek şey
+// anahtarın TANIMLI OLUP OLMADIĞI.
+type AdminProviderResponse struct {
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Protocol       string   `json:"protocol"`
+	BaseURL        string   `json:"baseUrl"`
+	IsActive       bool     `json:"isActive"`
+	Priority       int32    `json:"priority"`
+	HasAPIKey      bool     `json:"hasApiKey"`
+	CostMultiplier string   `json:"costMultiplier"`
+	Capabilities   []string `json:"capabilities"`
+	Balance        Money    `json:"balance"`
+}
+
+type UpdateProviderRequest struct {
+	BaseURL        string `json:"baseUrl"`
+	IsActive       bool   `json:"isActive"`
+	Priority       int32  `json:"priority"`
+	CostMultiplier string `json:"costMultiplier"`
+}
+
+func (r *UpdateProviderRequest) Validate() []FieldError {
+	var errs []FieldError
+	if r.Priority < 0 || r.Priority > 10000 {
+		errs = append(errs, FieldError{"priority", "Öncelik 0-10000 arasında olmalıdır."})
+	}
+	if strings.TrimSpace(r.CostMultiplier) == "" {
+		errs = append(errs, FieldError{"costMultiplier", "Çarpan zorunludur."})
+	}
+	return errs
+}
+
+// SetAPIKeyRequest sağlayıcı API anahtarı.
+//
+// AYRI BİR İSTEK: diğer ayarlarla birlikte gönderilseydi, ayar değiştiren
+// her kayıt anahtarı da yazardı ve boş bir alan onu SİLERDİ.
+type SetAPIKeyRequest struct {
+	APIKey string `json:"apiKey"`
+}
+
+type SetActiveRequest struct {
+	IsActive bool `json:"isActive"`
+}
+
+// DepositMethodResponse ödeme yöntemi.
+type DepositMethodResponse struct {
+	ID           string            `json:"id"`
+	Code         string            `json:"code"`
+	Kind         string            `json:"kind"`
+	Name         string            `json:"name"`
+	Instructions string            `json:"instructions"`
+	Config       map[string]string `json:"config"`
+	MinAmount    Money             `json:"minAmount"`
+	MaxAmount    Money             `json:"maxAmount"`
+	IsActive     bool              `json:"isActive"`
+	SortOrder    int32             `json:"sortOrder"`
+	// MissingFields aktifleştirmeyi engelleyen boş alanlar. Yöneticiye
+	// "neden aktifleştiremiyorum?" sorusunu sordurmadan cevap verir.
+	MissingFields []string `json:"missingFields,omitempty"`
+}
+
+type DepositMethodRequest struct {
+	Code           string            `json:"code"`
+	Kind           string            `json:"kind"`
+	Name           string            `json:"name"`
+	Instructions   string            `json:"instructions"`
+	Config         map[string]string `json:"config"`
+	MinAmountMinor int64             `json:"minAmountMinor"`
+	MaxAmountMinor int64             `json:"maxAmountMinor"`
+	SortOrder      int32             `json:"sortOrder"`
+}
+
+func (r *DepositMethodRequest) Validate(isCreate bool) []FieldError {
+	var errs []FieldError
+	if isCreate {
+		code := strings.TrimSpace(r.Code)
+		if code == "" {
+			errs = append(errs, FieldError{"code", "Kod zorunludur."})
+		} else if len(code) > 40 {
+			errs = append(errs, FieldError{"code", "Kod en fazla 40 karakter olabilir."})
+		}
+		if r.Kind != "BANK_TRANSFER" && r.Kind != "CRYPTO" {
+			errs = append(errs, FieldError{"kind", "Yöntem tipi BANK_TRANSFER veya CRYPTO olmalıdır."})
+		}
+	}
+	if strings.TrimSpace(r.Name) == "" {
+		errs = append(errs, FieldError{"name", "Ad zorunludur."})
+	}
+	if r.MinAmountMinor < 0 {
+		errs = append(errs, FieldError{"minAmountMinor", "En az tutar negatif olamaz."})
+	}
+	if r.MaxAmountMinor < 0 {
+		errs = append(errs, FieldError{"maxAmountMinor", "En çok tutar negatif olamaz."})
+	}
+	if r.MaxAmountMinor > 0 && r.MaxAmountMinor < r.MinAmountMinor {
+		errs = append(errs, FieldError{"maxAmountMinor", "En çok tutar, en az tutardan küçük olamaz."})
+	}
+	return errs
+}

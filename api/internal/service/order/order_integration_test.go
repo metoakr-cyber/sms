@@ -70,8 +70,11 @@ type stubProvider struct {
 	maxPrices    []int64 // her çağrıdaki maxPrice (mikro-USD)
 	cancels      atomic.Int32
 	finishes     atomic.Int32
-	expiresIn    time.Duration
-	now          func() time.Time
+	// statusMessages GetStatus'un döndüreceği mesajlar. Boşken sağlayıcı
+	// "kod yok" der — sahte webhook testinin dayanağı budur.
+	statusMessages []port.RemoteMessage
+	expiresIn      time.Duration
+	now            func() time.Time
 }
 
 func newStub(now func() time.Time) *stubProvider {
@@ -118,7 +121,13 @@ func (p *stubProvider) Purchase(_ context.Context, _ port.Creds, cmd port.Purcha
 }
 
 func (p *stubProvider) GetStatus(context.Context, port.Creds, string) (*port.RemoteStatus, error) {
-	return &port.RemoteStatus{State: port.StateWaiting}, nil
+	p.mu.Lock()
+	msgs := append([]port.RemoteMessage(nil), p.statusMessages...)
+	p.mu.Unlock()
+	if len(msgs) == 0 {
+		return &port.RemoteStatus{State: port.StateWaiting}, nil
+	}
+	return &port.RemoteStatus{State: port.StateCompleted, Messages: msgs}, nil
 }
 func (p *stubProvider) Cancel(context.Context, port.Creds, string) error {
 	p.cancels.Add(1)

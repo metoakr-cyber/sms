@@ -76,6 +76,10 @@ export function Modal({
         ref={panel} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
         className={cx(
           'surface relative z-10 flex max-h-[92dvh] w-full flex-col overflow-hidden border',
+          // ASGARİ YÜKSEKLİK: içerik azken (henüz seçim yapılmamışken) sayfa
+          // altında ince bir şerit gibi kalıyordu — yarım açılmış, bozuk bir
+          // görüntü. Alttan yükselen bir sayfa, "sayfa" gibi durmalı.
+          'min-h-[52dvh] sm:min-h-0',
           // mobil: alttan yükselen sayfa, tam genişlik, üstü yuvarlak
           'rounded-t-2xl',
           // masaüstü: ortada diyalog

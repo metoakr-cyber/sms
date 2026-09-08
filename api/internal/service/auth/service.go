@@ -426,7 +426,7 @@ func (s *Service) ListSessions(ctx context.Context, userID int64) ([]db.Session,
 //
 // Handle tek yönlüdür: listelemeye ve iptale yeter, kimlik doğrulamaya yetmez.
 //
-// test: handler/auth_integration_test.go#TestSessionListDoesNotLeakToken
+// test: handler/auth_wallet_integration_test.go#TestSessionListDoesNotLeakToken
 func SessionHandle(sessionID string) string {
 	sum := sha256.Sum256([]byte("session-handle:" + sessionID))
 	return hex.EncodeToString(sum[:8])

@@ -534,6 +534,76 @@ func (q *Queries) ListOffersForProduct(ctx context.Context, productID int64) ([]
 	return items, nil
 }
 
+const listProvidersForAdmin = `-- name: ListProvidersForAdmin :many
+SELECT
+    p.id, p.name, p.protocol, p.base_url, p.is_active, p.priority,
+    p.cost_multiplier, p.capabilities,
+    -- COALESCE ZORUNLU: api_key_enc NULL ise length() de NULL döner ve
+    -- ` + "`" + `bool` + "`" + ` alana tarama "cannot scan NULL into *bool" ile ÇÖKER — yani
+    -- anahtarı henüz kurulmamış TEK bir sağlayıcı, tüm listeyi 500 yapardı.
+    -- test: internal/transport/http/handler/admin_integration_test.go#TestListProvidersNeverReturnsAPIKey
+    COALESCE(length(p.api_key_enc) > 0, false)::bool AS has_api_key,
+    p.account_balance_micro, p.account_synced_at,
+    p.created_at, p.updated_at
+FROM providers p
+ORDER BY p.priority, p.name
+`
+
+type ListProvidersForAdminRow struct {
+	ID                  int64
+	Name                string
+	Protocol            ProviderProtocol
+	BaseUrl             string
+	IsActive            bool
+	Priority            int32
+	CostMultiplier      pgtype.Numeric
+	Capabilities        []byte
+	HasApiKey           bool
+	AccountBalanceMicro int64
+	AccountSyncedAt     *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// Yönetim sağlayıcı listesi.
+//
+// 🔴 api_key_enc SEÇİLMEZ. Şifreli hâli bile dışarı verilmez: panelde
+// gösterilecek bir şey değil ve varlığı/uzunluğu bilgi sızdırır.
+// Anahtarın TANIMLI OLUP OLMADIĞI yeterli bilgidir.
+func (q *Queries) ListProvidersForAdmin(ctx context.Context) ([]ListProvidersForAdminRow, error) {
+	rows, err := q.db.Query(ctx, listProvidersForAdmin)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProvidersForAdminRow{}
+	for rows.Next() {
+		var i ListProvidersForAdminRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Protocol,
+			&i.BaseUrl,
+			&i.IsActive,
+			&i.Priority,
+			&i.CostMultiplier,
+			&i.Capabilities,
+			&i.HasApiKey,
+			&i.AccountBalanceMicro,
+			&i.AccountSyncedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRentalCountriesForService = `-- name: ListRentalCountriesForService :many
 SELECT DISTINCT
     c.iso2 AS country_iso2, c.name AS country_name, c.name_tr AS country_name_tr,
@@ -925,6 +995,26 @@ func (q *Queries) SetServiceIcon(ctx context.Context, arg SetServiceIconParams) 
 	return i, err
 }
 
+const updateProviderAPIKey = `-- name: UpdateProviderAPIKey :exec
+UPDATE providers SET api_key_enc = $1, updated_at = now() WHERE id = $2
+`
+
+type UpdateProviderAPIKeyParams struct {
+	ApiKeyEnc []byte
+	ID        int64
+}
+
+// API anahtarı güncelleme — AYRI bir sorgu.
+//
+// Diğer ayarlarla aynı UPDATE'e konsaydı, ayar değiştiren her istek anahtarı
+// da yazardı ve boş bir alan anahtarı SİLERDİ. Ayrı tutmak, "kaydet"e basmanın
+// anahtarı yanlışlıkla silmesini imkânsız kılar.
+// test: internal/transport/http/handler/admin_integration_test.go#TestSavingProviderSettingsDoesNotEraseAPIKey
+func (q *Queries) UpdateProviderAPIKey(ctx context.Context, arg UpdateProviderAPIKeyParams) error {
+	_, err := q.db.Exec(ctx, updateProviderAPIKey, arg.ApiKeyEnc, arg.ID)
+	return err
+}
+
 const updateProviderBalance = `-- name: UpdateProviderBalance :exec
 UPDATE providers SET account_balance_micro = $2, account_synced_at = now() WHERE id = $1
 `
@@ -937,6 +1027,57 @@ type UpdateProviderBalanceParams struct {
 func (q *Queries) UpdateProviderBalance(ctx context.Context, arg UpdateProviderBalanceParams) error {
 	_, err := q.db.Exec(ctx, updateProviderBalance, arg.ID, arg.AccountBalanceMicro)
 	return err
+}
+
+const updateProviderSettings = `-- name: UpdateProviderSettings :one
+UPDATE providers SET
+    base_url        = $1,
+    is_active       = $2,
+    priority        = $3,
+    cost_multiplier = $4,
+    updated_at      = now()
+WHERE id = $5
+RETURNING id, name, protocol, base_url, is_active, priority, cost_multiplier
+`
+
+type UpdateProviderSettingsParams struct {
+	BaseUrl        string
+	IsActive       bool
+	Priority       int32
+	CostMultiplier pgtype.Numeric
+	ID             int64
+}
+
+type UpdateProviderSettingsRow struct {
+	ID             int64
+	Name           string
+	Protocol       ProviderProtocol
+	BaseUrl        string
+	IsActive       bool
+	Priority       int32
+	CostMultiplier pgtype.Numeric
+}
+
+// Sağlayıcı ayarları. API ANAHTARI BURADAN GÜNCELLENMEZ — ayrı bir yol var.
+func (q *Queries) UpdateProviderSettings(ctx context.Context, arg UpdateProviderSettingsParams) (UpdateProviderSettingsRow, error) {
+	row := q.db.QueryRow(ctx, updateProviderSettings,
+		arg.BaseUrl,
+		arg.IsActive,
+		arg.Priority,
+		arg.CostMultiplier,
+		arg.ID,
+	)
+	var i UpdateProviderSettingsRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Protocol,
+		&i.BaseUrl,
+		&i.IsActive,
+		&i.Priority,
+		&i.CostMultiplier,
+	)
+	return i, err
 }
 
 const upsertCountry = `-- name: UpsertCountry :one

@@ -51,6 +51,15 @@ GUARANTEE = re.compile(
 )
 TEST_REF = re.compile(r"test:\s*\S+", re.IGNORECASE)
 
+# Referansın parçaları:  test: yol/dosya_test.go#TestAdi   (yol isteğe bağlı)
+TEST_REF_PARTS = re.compile(r"test:\s*([^\s#]+)?(?:#(\w+))?", re.IGNORECASE)
+
+# Go test fonksiyonu tanımı.
+GO_TEST_DEF = re.compile(r"^func\s+(Test\w+)\s*\(", re.MULTILINE)
+
+# Kabuk betiklerinde test fonksiyonu / etiketi.
+SH_TEST_DEF = re.compile(r"^(?:function\s+)?(\w+)\s*\(\)", re.MULTILINE)
+
 # Bu dosyalar taranmaz: üretilen kod, testin kendisi, bu betik.
 SKIP = ("internal/db/", "_test.go", "check-guarantees.py", "/node_modules/", "/.git/")
 
@@ -74,25 +83,94 @@ def comment_blocks(path: Path):
         yield start, "\n".join(block)
 
 
+def index_tests():
+    """Depodaki tüm test adlarını ve hangi dosyada tanımlı olduklarını çıkarır."""
+    by_name: dict[str, set[str]] = {}
+    files: set[str] = set()
+    for pattern in ("api/**/*_test.go", "scripts/*_test.sh", "web/**/*.spec.ts",
+                    "web/**/*.test.ts"):
+        for f in ROOT.glob(pattern):
+            if "/node_modules/" in str(f):
+                continue
+            rel = str(f.relative_to(ROOT))
+            files.add(rel)
+            body = f.read_text(encoding="utf-8", errors="replace")
+            pat = GO_TEST_DEF if f.suffix == ".go" else SH_TEST_DEF
+            for name in pat.findall(body):
+                by_name.setdefault(name, set()).add(rel)
+            # Playwright/vitest:  test("ad") / it("ad")
+            for name in re.findall(r"""(?:^|\s)(?:test|it)\(\s*['"`]([^'"`]+)""", body):
+                by_name.setdefault(name, set()).add(rel)
+    return by_name, files
+
+
+def check_ref(ref: str, by_name, files) -> str | None:
+    """Referans gerçek bir teste işaret ediyor mu? Hata metnini ya da None döner."""
+    m = TEST_REF_PARTS.search(ref)
+    if not m:
+        return None
+    path, name = m.group(1), m.group(2)
+    if name:
+        where = by_name.get(name)
+        if not where:
+            return f"'{name}' adında bir test YOK"
+        if path:
+            tail = path.lstrip("./").replace("../", "")
+            if tail and not any(w.endswith(tail) or tail.endswith(w) for w in where):
+                return (f"'{name}' testi {path} içinde değil "
+                        f"(bulunduğu yer: {', '.join(sorted(where))})")
+        return None
+    if path and path.endswith((".go", ".sh", ".ts")):
+        tail = path.lstrip("./").replace("../", "")
+        if any(f.endswith(tail) for f in files):
+            return None
+        # Test indeksinde değil ama diskte olabilir: duman betikleri
+        # (smoke-*.sh) ve sözleşme testi yardımcıları (contract.go) test
+        # adı taşımaz ama gerçek doğrulama dosyalarıdır.
+        if any(ROOT.glob("**/" + tail)):
+            return None
+        return f"'{path}' diye bir dosya YOK"
+    return None
+
+
 def main() -> int:
+    by_name, test_files = index_tests()
     targets = []
     for pattern in ("api/**/*.go", "scripts/*.sh", "api/**/*.sql"):
         targets.extend(ROOT.glob(pattern))
 
     violations = []
+    # 🔴 SAHTE REFERANSLAR. Yalnız "test:" yazısının VARLIĞINI aramak yeterli
+    # değildi: var olmayan bir teste işaret eden bir referans, denetimi
+    # geçerken garantiyi dayanaksız bırakır — denetleyicinin önlemek için
+    # yazıldığı hatanın ta kendisi.
+    dangling = []
     for f in sorted(set(targets)):
         rel = str(f.relative_to(ROOT))
         if any(s in rel for s in SKIP):
             continue
         for line, text in comment_blocks(f):
+            for ref in TEST_REF.findall(text):
+                if problem := check_ref(ref, by_name, test_files):
+                    dangling.append((rel, line, problem))
             if GUARANTEE.search(text) and not TEST_REF.search(text):
                 first = next(
                     (l for l in text.splitlines() if GUARANTEE.search(l)), text
                 )
                 violations.append((rel, line, first.strip()))
 
+    if dangling:
+        print(f"  ✗ {len(dangling)} test referansı GERÇEK OLMAYAN bir teste işaret ediyor:\n")
+        for rel, line, problem in dangling:
+            print(f"    {rel}:{line}")
+            print(f"      {problem}")
+        print("\n  Var olmayan bir teste yapılan atıf, garantiyi dayanaksız bırakır\n"
+              "  ve denetimi sessizce geçer. Testi yazın ya da atfı düzeltin.")
+        return 1
+
     if not violations:
-        print(f"  ✓ garanti yorumlarının tümü teste bağlı ({len(set(targets))} dosya tarandı)")
+        print(f"  ✓ garanti yorumları teste bağlı ve atıflar gerçek "
+              f"({len(set(targets))} dosya, {len(by_name)} test)")
         return 0
 
     print(f"  ✗ {len(violations)} garanti yorumu teste bağlı değil:\n")

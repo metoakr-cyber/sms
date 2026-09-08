@@ -22,7 +22,6 @@ type Mode = 'activation' | 'rental';
 export default function BuyPage() {
   const { user } = useSession();
   const [search, setSearch] = React.useState('');
-  const [mode, setMode] = React.useState<Mode>('activation');
   const [openService, setOpenService] = React.useState<ServiceSummary | null>(null);
 
   // Izgara YALNIZ servis özetini çeker (~35 KB).
@@ -34,26 +33,26 @@ export default function BuyPage() {
   const catalog = useQuery({
     queryKey: ['services-in-stock'],
     queryFn: () => apiFetch<{ items: ServiceSummary[] }>('/catalog/services-in-stock'),
-    enabled: mode === 'activation',
   });
 
   // Kiralık katalog AYRI çekilir: aktivasyonda stoklu bir servis kiralıkta
   // olmayabilir (495 kiralık / 712 aktivasyon). Tek listeyi ikisine de
   // kullanmak, kullanıcıyı seçtiği servis için boş bir ülke listesine götürür.
+  // Kiralık servis kümesi: ızgarada rozet göstermek ve modalda kiralık
+  // seçeneğini sunup sunmamak için. Ayrı çekilir çünkü 495 kiralık servis
+  // 712 aktivasyon servisinin ALT KÜMESİ DEĞİL — bazıları yalnız kiralık.
   const rentalCatalog = useQuery({
     queryKey: ['rental-services'],
     queryFn: () => apiFetch<{ items: RentalService[] }>('/catalog/rental/services'),
-    enabled: mode === 'rental',
   });
+  const rentalCodes = React.useMemo(
+    () => new Set((rentalCatalog.data?.items ?? []).map((r) => r.code)),
+    [rentalCatalog.data],
+  );
 
-  const services: ServiceSummary[] = mode === 'rental'
-    ? (rentalCatalog.data?.items ?? []).map((r) => ({
-        code: r.code, name: r.name, iconUrl: r.iconUrl, countryCount: r.countryCount,
-      }))
-    : (catalog.data?.items ?? []);
-
-  const loading = mode === 'rental' ? rentalCatalog.isLoading : catalog.isLoading;
-  const failed = mode === 'rental' ? rentalCatalog.isError : catalog.isError;
+  const services: ServiceSummary[] = catalog.data?.items ?? [];
+  const loading = catalog.isLoading;
+  const failed = catalog.isError;
 
   const filtered = React.useMemo(() => {
     // localeCompare/toLocaleLowerCase'de 'tr' ZORUNLU: varsayılan yerelde
@@ -69,7 +68,7 @@ export default function BuyPage() {
       <div className="text-center">
         <h1 className="text-2xl font-bold uppercase tracking-wide md:text-3xl">Numara Al</h1>
         <p className="mt-1.5 text-sm text-muted">
-          Servisi seçin, ülke ve fiyatı bir sonraki adımda görün.
+          Servisi seçin; ülke, süre ve fiyat bir sonraki adımda.
         </p>
       </div>
 
@@ -78,40 +77,6 @@ export default function BuyPage() {
           Numara alabilmek için önce e-posta adresinizi doğrulamanız gerekiyor.
         </Alert>
       )}
-
-      {/*
-        MOD ANAHTARI — sekme değil, segment.
-        İki farklı ÜRÜN var: tek kullanımlık kod ve süreli numara kiralama.
-        Aynı ızgarada karıştırmak, kullanıcının 30 günlük bir numarayı tek
-        kod sanıp almasına yol açardı.
-      */}
-      <div role="tablist" aria-label="Ürün türü"
-           className="raised flex gap-1 rounded-2xl border p-1">
-        {([
-          ['activation', 'Tek kullanımlık', 'Bir kod al, kullan'],
-          ['rental', 'Numara kirala', '1 gün – 6 ay'],
-        ] as const).map(([m, label, hint]) => (
-          <button
-            key={m}
-            type="button"
-            role="tab"
-            aria-selected={mode === m}
-            onClick={() => { setMode(m); setSearch(''); setOpenService(null); }}
-            className={cx(
-              'flex min-h-14 flex-1 flex-col items-center justify-center rounded-xl',
-              'px-3 py-2 text-sm transition-colors',
-              mode === m
-                ? 'bg-brand-500 font-semibold text-white'
-                : 'text-muted hover:bg-[var(--raised)] hover:text-[var(--text)]',
-            )}
-          >
-            <span>{label}</span>
-            <span className={cx('text-[11px]', mode === m ? 'text-white/75' : 'text-muted')}>
-              {hint}
-            </span>
-          </button>
-        ))}
-      </div>
 
       {/* Arama HER ZAMAN görünür. Yüzlerce servis arasında kaydırarak aramak,
           mobilde kullanıcıyı listeyi terk etmeye iter. */}
@@ -160,10 +125,10 @@ export default function BuyPage() {
                   </span>
                 </span>
                 <span className="flex items-baseline gap-1.5">
-                  <span className="text-xs font-semibold text-[var(--color-ok)]">
-                    {mode === 'rental' ? 'Süre seçin' : 'Fiyat seçin'}
-                  </span>
-                  <span className="text-[11px] text-muted">· {s.countryCount} ülke</span>
+                  <span className="text-xs font-semibold text-[var(--color-ok)]">Fiyat seçin</span>
+                  {rentalCodes.has(s.code) && (
+                    <span className="text-[11px] text-brand-300">· kiralık</span>
+                  )}
                 </span>
               </button>
             </li>
@@ -173,7 +138,7 @@ export default function BuyPage() {
 
       <BuyModal
         service={openService}
-        mode={mode}
+        rentalAvailable={openService ? rentalCodes.has(openService.code) : false}
         onClose={() => setOpenService(null)}
         emailVerified={!!user?.emailVerified}
       />
@@ -184,11 +149,18 @@ export default function BuyPage() {
 /* ─────────────────────────────────────────────────────────────── */
 
 function BuyModal({
-  service, mode, onClose, emailVerified,
+  service, rentalAvailable, onClose, emailVerified,
 }: {
-  service: ServiceSummary | null; mode: Mode;
+  service: ServiceSummary | null; rentalAvailable: boolean;
   onClose: () => void; emailVerified: boolean;
 }) {
+  // MOD ARTIK MODALIN İÇİNDE.
+  //
+  // Sayfanın tepesinde iki satırlık bir anahtar olarak duruyordu ve ızgaradan
+  // önce karar vermeyi zorluyordu — kullanıcı henüz hangi servisi alacağını
+  // bilmeden "kiralık mı?" sorusuna cevap veriyordu. Karar, bağlamın olduğu
+  // yerde: servis seçildikten sonra.
+  const [mode, setMode] = React.useState<Mode>('activation');
   const [countryIso, setCountryIso] = React.useState('');
   const [durationMinutes, setDurationMinutes] = React.useState(0);
   const [order, setOrder] = React.useState<Order | null>(null);
@@ -257,6 +229,12 @@ function BuyModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [service?.code, mode]);
 
+  // Servis değişince mod da sıfırlanır: önceki serviste kiralık seçilmişken
+  // kiralığı olmayan bir servise geçmek boş bir ekran bırakırdı.
+  React.useEffect(() => {
+    setMode('activation');
+  }, [service?.code]);
+
   /*
     SATIN ALMA — MUTASYON ASLA OTOMATİK TEKRARLANMAZ.
 
@@ -312,6 +290,47 @@ function BuyModal({
     <Modal open={!!service} onClose={onClose} title={service?.name ?? ''}>
       {!service ? null : (
         <div className="flex flex-col gap-4">
+          {/* Servis başlığı: modal açıldığı anda boş durmasın, kullanıcı
+              hangi servisi seçtiğini görsün. */}
+          <div className="raised flex items-center gap-3 rounded-xl border p-3">
+            <ServiceIcon name={service.name} iconUrl={service.iconUrl} size={36} />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold">{service.name}</p>
+              <p className="text-xs text-muted">
+                {service.countryCount} ülkede mevcut
+              </p>
+            </div>
+          </div>
+
+          {/* Ürün türü — YALNIZ kiralık varsa gösterilir.
+              Tek seçeneği olan bir anahtar, karar veriyormuş gibi yapan
+              gereksiz bir tıklamadır. */}
+          {rentalAvailable && (
+            <div role="tablist" aria-label="Ürün türü"
+                 className="raised flex gap-1 rounded-xl border p-1">
+              {([
+                ['activation', 'Tek kullanımlık'],
+                ['rental', 'Kiralama'],
+              ] as const).map(([m, label]) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === m}
+                  onClick={() => setMode(m)}
+                  className={cx(
+                    'min-h-11 flex-1 rounded-lg px-3 text-sm transition-colors',
+                    mode === m
+                      ? 'bg-brand-500 font-semibold text-white'
+                      : 'text-muted hover:text-[var(--text)]',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
           <label className="flex flex-col gap-1.5">
             <span className="text-sm font-medium">Ülke Seçin</span>
             <select

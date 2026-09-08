@@ -105,6 +105,7 @@ func run() error {
 
 	walletService := walletsvc.New(txRunner)
 	orderBus := redis.NewOrderBus(rdb)
+	webhookQueue := redis.NewWebhookQueue(rdb)
 
 	secrets, err := crypto.New(cfg.EncryptionKey)
 	if err != nil {
@@ -153,10 +154,10 @@ func run() error {
 	// kazandırdığından fazla operasyon yükü getiriyordu. İkinci bir sunucu
 	// eklendiğinde bu işler Redis kilidiyle tek örneğe indirilmelidir —
 	// aksi hâlde iki poller aynı siparişi işler.
-	jobs := worker.New(worker.All(worker.Deps{
+	jobs := worker.New(worker.AllWithWebhook(worker.Deps{
 		TxRunner: txRunner, Orders: orderService, FX: fxService,
 		Wallet: walletService, Catalog: catalogService, Clock: port.RealClock{},
-	})...)
+	}, webhookQueue, "herosms")...)
 	jobs.Start(ctx)
 
 	// 5) Sunucu
@@ -164,9 +165,10 @@ func run() error {
 		Addr: cfg.HTTPAddr,
 		Handler: httptransport.NewRouter(httptransport.Deps{
 			Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
-			Sessions: sessions, Limiter: limiter,
+			Sessions: sessions, Limiter: limiter, Secrets: secrets,
 			AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
 			OrderSvc: orderService, OrderBus: orderBus,
+			WebhookQueue: webhookQueue,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

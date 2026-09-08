@@ -37,7 +37,7 @@ func RateLimit(limiter port.RateLimiter, name string, cfg RateLimitConfig, fail 
 			// Fark bilinçlidir: hız limiti bir koruma, oturum bir kimliktir.
 			// docs/design.md §12'de tablo halinde kayıtlı.
 			//
-			// test: ratelimit_test.go#TestFailOpenIsLogged
+			// test: middleware_test.go#TestFailOpenIsLogged
 			slog.Error("HIZ LİMİTİ ÇALIŞMIYOR — koruma devre dışı",
 				"limiter", name, "path", c.FullPath(), "err", err)
 			c.Next()

@@ -39,3 +39,10 @@ WHERE deleted_at IS NULL
        OR username::text ILIKE '%' || sqlc.narg('search')::text || '%')
 ORDER BY id DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
+
+-- name: SetUserStatusByPublicID :one
+-- Yönetim: kullanıcı durumunu değiştirir.
+-- public_id ile çalışır — sayısal id dışarı verilmez (değişmez #10).
+UPDATE users SET status = @status, updated_at = now()
+WHERE public_id = @public_id AND deleted_at IS NULL
+RETURNING public_id, email, username, status;

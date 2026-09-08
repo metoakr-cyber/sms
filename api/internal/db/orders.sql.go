@@ -57,6 +57,55 @@ func (q *Queries) CountUserOrders(ctx context.Context, userID int64) (int64, err
 	return count, err
 }
 
+const createDepositMethod = `-- name: CreateDepositMethod :one
+INSERT INTO deposit_methods (code, kind, name, instructions, config,
+                             min_amount_minor, max_amount_minor, sort_order)
+VALUES ($1, $2, $3, $4, $5,
+        $6, $7, $8)
+RETURNING id, public_id, code, kind, name, instructions, config, min_amount_minor, max_amount_minor, is_active, sort_order, created_at, updated_at
+`
+
+type CreateDepositMethodParams struct {
+	Code           string
+	Kind           DepositMethodKind
+	Name           string
+	Instructions   string
+	Config         []byte
+	MinAmountMinor int64
+	MaxAmountMinor int64
+	SortOrder      int32
+}
+
+func (q *Queries) CreateDepositMethod(ctx context.Context, arg CreateDepositMethodParams) (DepositMethod, error) {
+	row := q.db.QueryRow(ctx, createDepositMethod,
+		arg.Code,
+		arg.Kind,
+		arg.Name,
+		arg.Instructions,
+		arg.Config,
+		arg.MinAmountMinor,
+		arg.MaxAmountMinor,
+		arg.SortOrder,
+	)
+	var i DepositMethod
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.Code,
+		&i.Kind,
+		&i.Name,
+		&i.Instructions,
+		&i.Config,
+		&i.MinAmountMinor,
+		&i.MaxAmountMinor,
+		&i.IsActive,
+		&i.SortOrder,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createOrder = `-- name: CreateOrder :one
 INSERT INTO orders (
     user_id, provider_id, remote_order_id, provider_activation_id,
@@ -154,6 +203,42 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.RefundAttempts,
 		&i.RefundNextAttemptAt,
 		&i.CancelReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteDepositMethod = `-- name: DeleteDepositMethod :exec
+DELETE FROM deposit_methods WHERE public_id = $1
+`
+
+// Yöntem SİLİNİR ama geçmiş yükleme kayıtları KALIR: deposits.method_id
+// ON DELETE SET NULL ve method_name anlık görüntü olarak saklanıyor.
+func (q *Queries) DeleteDepositMethod(ctx context.Context, publicID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDepositMethod, publicID)
+	return err
+}
+
+const getDepositMethod = `-- name: GetDepositMethod :one
+SELECT id, public_id, code, kind, name, instructions, config, min_amount_minor, max_amount_minor, is_active, sort_order, created_at, updated_at FROM deposit_methods WHERE public_id = $1
+`
+
+func (q *Queries) GetDepositMethod(ctx context.Context, publicID uuid.UUID) (DepositMethod, error) {
+	row := q.db.QueryRow(ctx, getDepositMethod, publicID)
+	var i DepositMethod
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.Code,
+		&i.Kind,
+		&i.Name,
+		&i.Instructions,
+		&i.Config,
+		&i.MinAmountMinor,
+		&i.MaxAmountMinor,
+		&i.IsActive,
+		&i.SortOrder,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -399,6 +484,45 @@ func (q *Queries) InsertOrderMessage(ctx context.Context, arg InsertOrderMessage
 	return i, err
 }
 
+const listActiveDepositMethods = `-- name: ListActiveDepositMethods :many
+SELECT id, public_id, code, kind, name, instructions, config, min_amount_minor, max_amount_minor, is_active, sort_order, created_at, updated_at FROM deposit_methods WHERE is_active ORDER BY sort_order, name
+`
+
+// Kullanıcı: yalnız aktif yöntemler.
+func (q *Queries) ListActiveDepositMethods(ctx context.Context) ([]DepositMethod, error) {
+	rows, err := q.db.Query(ctx, listActiveDepositMethods)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DepositMethod{}
+	for rows.Next() {
+		var i DepositMethod
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.Code,
+			&i.Kind,
+			&i.Name,
+			&i.Instructions,
+			&i.Config,
+			&i.MinAmountMinor,
+			&i.MaxAmountMinor,
+			&i.IsActive,
+			&i.SortOrder,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllOrders = `-- name: ListAllOrders :many
 
 SELECT o.id, o.public_id, o.user_id, o.provider_id, o.remote_order_id, o.provider_activation_id, o.phone_number, o.verification_type, o.product_id, o.service_code, o.service_name, o.country_iso2, o.country_name, o.phone_code, o.quote_id, o.price_paid_minor, o.cost_micro, o.fx_rate, o.status, o.expires_at, o.cancellable_at, o.completed_at, o.cancelled_at, o.refunded_at, o.provider_closed_at, o.close_attempts, o.close_last_error, o.provider_refund_status, o.provider_refund_amount_minor, o.refund_attempts, o.refund_next_attempt_at, o.cancel_reason, o.created_at, o.updated_at, u.username, u.email
@@ -512,6 +636,47 @@ func (q *Queries) ListAllOrders(ctx context.Context, arg ListAllOrdersParams) ([
 			&i.UpdatedAt,
 			&i.Username,
 			&i.Email,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDepositMethods = `-- name: ListDepositMethods :many
+
+SELECT id, public_id, code, kind, name, instructions, config, min_amount_minor, max_amount_minor, is_active, sort_order, created_at, updated_at FROM deposit_methods ORDER BY sort_order, name
+`
+
+// ─────────────────────── Ödeme yöntemleri ───────────────────────
+// Yönetim: tüm yöntemler (pasifler dahil).
+func (q *Queries) ListDepositMethods(ctx context.Context) ([]DepositMethod, error) {
+	rows, err := q.db.Query(ctx, listDepositMethods)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DepositMethod{}
+	for rows.Next() {
+		var i DepositMethod
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.Code,
+			&i.Kind,
+			&i.Name,
+			&i.Instructions,
+			&i.Config,
+			&i.MinAmountMinor,
+			&i.MaxAmountMinor,
+			&i.IsActive,
+			&i.SortOrder,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1025,6 +1190,39 @@ func (q *Queries) RecordCloseFailure(ctx context.Context, arg RecordCloseFailure
 	return err
 }
 
+const setDepositMethodActive = `-- name: SetDepositMethodActive :one
+UPDATE deposit_methods SET is_active = $1 WHERE public_id = $2
+RETURNING id, public_id, code, kind, name, instructions, config, min_amount_minor, max_amount_minor, is_active, sort_order, created_at, updated_at
+`
+
+type SetDepositMethodActiveParams struct {
+	IsActive bool
+	PublicID uuid.UUID
+}
+
+// Aktif/pasif AYRI bir sorgu: tek bir düğmeye basmak, o sırada düzenlenmekte
+// olan diğer alanları yazmamalı.
+func (q *Queries) SetDepositMethodActive(ctx context.Context, arg SetDepositMethodActiveParams) (DepositMethod, error) {
+	row := q.db.QueryRow(ctx, setDepositMethodActive, arg.IsActive, arg.PublicID)
+	var i DepositMethod
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.Code,
+		&i.Kind,
+		&i.Name,
+		&i.Instructions,
+		&i.Config,
+		&i.MinAmountMinor,
+		&i.MaxAmountMinor,
+		&i.IsActive,
+		&i.SortOrder,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const setOrderStatus = `-- name: SetOrderStatus :one
 UPDATE orders SET
     status       = $1,
@@ -1116,4 +1314,55 @@ func (q *Queries) SetProviderRefundStatus(ctx context.Context, arg SetProviderRe
 		arg.ID,
 	)
 	return err
+}
+
+const updateDepositMethod = `-- name: UpdateDepositMethod :one
+UPDATE deposit_methods SET
+    name             = $1,
+    instructions     = $2,
+    config           = $3,
+    min_amount_minor = $4,
+    max_amount_minor = $5,
+    sort_order       = $6
+WHERE public_id = $7
+RETURNING id, public_id, code, kind, name, instructions, config, min_amount_minor, max_amount_minor, is_active, sort_order, created_at, updated_at
+`
+
+type UpdateDepositMethodParams struct {
+	Name           string
+	Instructions   string
+	Config         []byte
+	MinAmountMinor int64
+	MaxAmountMinor int64
+	SortOrder      int32
+	PublicID       uuid.UUID
+}
+
+func (q *Queries) UpdateDepositMethod(ctx context.Context, arg UpdateDepositMethodParams) (DepositMethod, error) {
+	row := q.db.QueryRow(ctx, updateDepositMethod,
+		arg.Name,
+		arg.Instructions,
+		arg.Config,
+		arg.MinAmountMinor,
+		arg.MaxAmountMinor,
+		arg.SortOrder,
+		arg.PublicID,
+	)
+	var i DepositMethod
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.Code,
+		&i.Kind,
+		&i.Name,
+		&i.Instructions,
+		&i.Config,
+		&i.MinAmountMinor,
+		&i.MaxAmountMinor,
+		&i.IsActive,
+		&i.SortOrder,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

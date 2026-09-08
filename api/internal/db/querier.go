@@ -25,7 +25,9 @@ type Querier interface {
 	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
 	CountOrderMessages(ctx context.Context, orderID int64) (int64, error)
 	CountUserOrders(ctx context.Context, userID int64) (int64, error)
+	CountUsersForAdmin(ctx context.Context, arg CountUsersForAdminParams) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
+	CreateDepositMethod(ctx context.Context, arg CreateDepositMethodParams) (DepositMethod, error)
 	// Sipariş kaydı — T2 içinde, sağlayıcı çağrısı BAŞARILI olduktan sonra.
 	//
 	// Katalog alanları ANLIK GÖRÜNTÜ olarak yazılır: servis/ülke satırları katalog
@@ -38,6 +40,9 @@ type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeactivatePricingRule(ctx context.Context, id int64) error
+	// Yöntem SİLİNİR ama geçmiş yükleme kayıtları KALIR: deposits.method_id
+	// ON DELETE SET NULL ve method_name anlık görüntü olarak saklanıyor.
+	DeleteDepositMethod(ctx context.Context, publicID uuid.UUID) error
 	DeleteExpiredAuthTokens(ctx context.Context) (int64, error)
 	// Tüketilmemiş ve süresi geçmiş teklifler temizlenir.
 	// Tüketilmiş olanlar SAKLANIR: sipariş kaydının fiyat kanıtıdır.
@@ -54,6 +59,7 @@ type Querier interface {
 	// İdempotency: bu anahtarla daha önce işlem yapıldıysa sonucu döner.
 	FindLedgerEntryByKey(ctx context.Context, idempotencyKey string) (LedgerEntry, error)
 	GetCountryByISO(ctx context.Context, iso2 string) (Country, error)
+	GetDepositMethod(ctx context.Context, publicID uuid.UUID) (DepositMethod, error)
 	GetLatestFXRate(ctx context.Context, arg GetLatestFXRateParams) (FxRate, error)
 	// Webhook korelasyonu: sağlayıcı YALNIZ aktivasyon kimliğini taşır.
 	GetOrderByRemote(ctx context.Context, arg GetOrderByRemoteParams) (Order, error)
@@ -102,6 +108,8 @@ type Querier interface {
 	// yutulur ve `inserted` alanı gerçekten yeni mi söyler.
 	InsertOrderMessage(ctx context.Context, arg InsertOrderMessageParams) (OrderMessage, error)
 	InvalidateUserTokens(ctx context.Context, arg InvalidateUserTokensParams) error
+	// Kullanıcı: yalnız aktif yöntemler.
+	ListActiveDepositMethods(ctx context.Context) ([]DepositMethod, error)
 	// ─────────────────────── Sağlayıcı ───────────────────────
 	ListActiveProviders(ctx context.Context) ([]Provider, error)
 	// ─────────────────────────── Yönetim ───────────────────────────
@@ -122,6 +130,9 @@ type Querier interface {
 	// yapılsaydı her istemci kendi kuralını uygular, mobil ve masaüstü farklı
 	// sıralanırdı.
 	ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error)
+	// ─────────────────────── Ödeme yöntemleri ───────────────────────
+	// Yönetim: tüm yöntemler (pasifler dahil).
+	ListDepositMethods(ctx context.Context) ([]DepositMethod, error)
 	ListDimensionMaps(ctx context.Context, arg ListDimensionMapsParams) ([]ProviderDimensionMap, error)
 	// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan siparişler.
 	ListExpiredPendingOrders(ctx context.Context, arg ListExpiredPendingOrdersParams) ([]Order, error)
@@ -144,6 +155,12 @@ type Querier interface {
 	// `order-poller` için: kod bekleyen, süresi dolmamış siparişler.
 	ListPendingOrdersForPoll(ctx context.Context, arg ListPendingOrdersForPollParams) ([]Order, error)
 	ListPricingRules(ctx context.Context) ([]PricingRule, error)
+	// Yönetim sağlayıcı listesi.
+	//
+	// 🔴 api_key_enc SEÇİLMEZ. Şifreli hâli bile dışarı verilmez: panelde
+	// gösterilecek bir şey değil ve varlığı/uzunluğu bilgi sızdırır.
+	// Anahtarın TANIMLI OLUP OLMADIĞI yeterli bilgidir.
+	ListProvidersForAdmin(ctx context.Context) ([]ListProvidersForAdminRow, error)
 	// Mutabakat: defter toplamı ile önbelleklenmiş bakiyenin uyuşmadığı kullanıcılar.
 	// Boş dönmesi beklenir; dönmezse ALARM üretilir (docs/trd.md FR-205).
 	ListReconciliationDrift(ctx context.Context, limit int32) ([]ListReconciliationDriftRow, error)
@@ -171,6 +188,13 @@ type Querier interface {
 	ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]Order, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	// Yönetim kullanıcı listesi.
+	//
+	// 🔴 password_hash SEÇİLMEZ. Yönetim panelinde bile: bir sızıntıda parola
+	// özetleri offline kırma denemelerine açık olur ve hiçbir yönetim işlevi
+	// onlara ihtiyaç duymaz.
+	// test: internal/transport/http/handler/admin_integration_test.go#TestListUsersNeverReturnsPasswordHash
+	ListUsersForAdmin(ctx context.Context, arg ListUsersForAdminParams) ([]ListUsersForAdminRow, error)
 	ListVisibleCountries(ctx context.Context) ([]Country, error)
 	ListVisibleServices(ctx context.Context) ([]Service, error)
 	// Teklifi KİLİTLER. Aynı teklifle iki eşzamanlı satın alma denemesinde
@@ -204,6 +228,9 @@ type Querier interface {
 	RevokeAllUserSessions(ctx context.Context, userID int64) error
 	RevokeRole(ctx context.Context, arg RevokeRoleParams) error
 	RevokeSession(ctx context.Context, id string) error
+	// Aktif/pasif AYRI bir sorgu: tek bir düğmeye basmak, o sırada düzenlenmekte
+	// olan diğer alanları yazmamalı.
+	SetDepositMethodActive(ctx context.Context, arg SetDepositMethodActiveParams) (DepositMethod, error)
 	// Durum yazımı — YALNIZ domain/order.Transition doğruladıktan sonra çağrılır.
 	// Veritabanındaki tetikleyici ikinci savunma hattıdır.
 	SetOrderStatus(ctx context.Context, arg SetOrderStatusParams) (Order, error)
@@ -213,11 +240,24 @@ type Querier interface {
 	SetServiceIcon(ctx context.Context, arg SetServiceIconParams) (SetServiceIconRow, error)
 	SetUserBalance(ctx context.Context, arg SetUserBalanceParams) error
 	SetUserStatus(ctx context.Context, arg SetUserStatusParams) error
+	// Yönetim: kullanıcı durumunu değiştirir.
+	// public_id ile çalışır — sayısal id dışarı verilmez (değişmez #10).
+	SetUserStatusByPublicID(ctx context.Context, arg SetUserStatusByPublicIDParams) (SetUserStatusByPublicIDRow, error)
 	// Kâr raporu ve muhasebe özeti girdisi.
 	SumLedgerByType(ctx context.Context, arg SumLedgerByTypeParams) ([]SumLedgerByTypeRow, error)
 	TouchSession(ctx context.Context, id string) error
+	UpdateDepositMethod(ctx context.Context, arg UpdateDepositMethodParams) (DepositMethod, error)
 	UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) error
+	// API anahtarı güncelleme — AYRI bir sorgu.
+	//
+	// Diğer ayarlarla aynı UPDATE'e konsaydı, ayar değiştiren her istek anahtarı
+	// da yazardı ve boş bir alan anahtarı SİLERDİ. Ayrı tutmak, "kaydet"e basmanın
+	// anahtarı yanlışlıkla silmesini imkânsız kılar.
+	// test: internal/transport/http/handler/admin_integration_test.go#TestSavingProviderSettingsDoesNotEraseAPIKey
+	UpdateProviderAPIKey(ctx context.Context, arg UpdateProviderAPIKeyParams) error
 	UpdateProviderBalance(ctx context.Context, arg UpdateProviderBalanceParams) error
+	// Sağlayıcı ayarları. API ANAHTARI BURADAN GÜNCELLENMEZ — ayrı bir yol var.
+	UpdateProviderSettings(ctx context.Context, arg UpdateProviderSettingsParams) (UpdateProviderSettingsRow, error)
 	UpsertCountry(ctx context.Context, arg UpsertCountryParams) (Country, error)
 	// ─────────────────────── Boyut eşleştirme ───────────────────────
 	UpsertDimensionMap(ctx context.Context, arg UpsertDimensionMapParams) error

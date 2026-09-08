@@ -128,7 +128,7 @@ func (h *Wallet) AdjustBalance(c *gin.Context) {
 	// Hedef kullanıcı kapsama dahildir: aynı anahtarın farklı bir kullanıcı
 	// için kullanılması artık çakışma değil, ayrı bir işlemdir.
 	//
-	// test: handler/wallet_integration_test.go#TestAdjustIsIdempotent
+	// test: handler/auth_wallet_integration_test.go#TestAdjustIsIdempotent
 	idem := fmt.Sprintf("manual:%s:%s", target.PublicID, strings.TrimSpace(req.IdempotencyKey))
 
 	res, err := h.svc.Adjust(c.Request.Context(), adminID, target.ID,

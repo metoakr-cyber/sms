@@ -28,19 +28,43 @@ func bindJSON(c *gin.Context, r Responder, out any) bool {
 // Böylece sunucu ile istemci gösterimi ayrışmaz
 // (docs/frontend-contract.md §5.1).
 func formatTRY(m money.Money) string {
+	// PARA BİRİMİNİ VE ÖLÇEĞİNİ PARANIN KENDİSİNDEN OKU.
+	//
+	// Bu fonksiyon her değeri kuruş (10^2) sayıp "₺" ekliyordu. Yönetim
+	// panelinde sağlayıcı bakiyesi USD (10^6) olarak tutuluyor ve
+	// 30,3133 USD ekranda "303.133,00 ₺" görünüyordu: hem yanlış para birimi
+	// hem on bin kat hata. Yönetici sağlayıcıda 303 bin lira olduğunu sanırdı.
+	scale := m.Currency().Scale
+	div := int64(1)
+	for i := int32(0); i < scale; i++ {
+		div *= 10
+	}
+
 	minor := m.Minor()
 	neg := minor < 0
 	if neg {
 		minor = -minor
 	}
-	whole, frac := minor/100, minor%100
+	whole, frac := minor/div, minor%div
+
+	symbol := " ₺"
+	if m.Currency().Code == "USD" {
+		symbol = " $"
+	}
 
 	var sb strings.Builder
 	if neg {
 		sb.WriteByte('-')
 	}
 	sb.WriteString(groupThousands(whole))
-	fmt.Fprintf(&sb, ",%02d ₺", frac)
+	// Kesir HER ZAMAN iki hane gösterilir: 6 haneli mikro-dolarda altı hane
+	// basmak okunmaz olur ve kullanıcı için anlamsızdır.
+	cents := frac
+	for scale > 2 {
+		cents /= 10
+		scale--
+	}
+	fmt.Fprintf(&sb, ",%02d%s", cents, symbol)
 	return sb.String()
 }
 

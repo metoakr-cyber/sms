@@ -191,3 +191,45 @@ JOIN products  p ON p.id = q.product_id
 JOIN services  s ON s.id = p.service_id
 JOIN countries c ON c.id = p.country_id
 WHERE q.id = @quote_id;
+
+-- ─────────────────────── Ödeme yöntemleri ───────────────────────
+
+-- name: ListDepositMethods :many
+-- Yönetim: tüm yöntemler (pasifler dahil).
+SELECT * FROM deposit_methods ORDER BY sort_order, name;
+
+-- name: ListActiveDepositMethods :many
+-- Kullanıcı: yalnız aktif yöntemler.
+SELECT * FROM deposit_methods WHERE is_active ORDER BY sort_order, name;
+
+-- name: GetDepositMethod :one
+SELECT * FROM deposit_methods WHERE public_id = @public_id;
+
+-- name: CreateDepositMethod :one
+INSERT INTO deposit_methods (code, kind, name, instructions, config,
+                             min_amount_minor, max_amount_minor, sort_order)
+VALUES (@code, @kind, @name, @instructions, @config,
+        @min_amount_minor, @max_amount_minor, @sort_order)
+RETURNING *;
+
+-- name: UpdateDepositMethod :one
+UPDATE deposit_methods SET
+    name             = @name,
+    instructions     = @instructions,
+    config           = @config,
+    min_amount_minor = @min_amount_minor,
+    max_amount_minor = @max_amount_minor,
+    sort_order       = @sort_order
+WHERE public_id = @public_id
+RETURNING *;
+
+-- name: SetDepositMethodActive :one
+-- Aktif/pasif AYRI bir sorgu: tek bir düğmeye basmak, o sırada düzenlenmekte
+-- olan diğer alanları yazmamalı.
+UPDATE deposit_methods SET is_active = @is_active WHERE public_id = @public_id
+RETURNING *;
+
+-- name: DeleteDepositMethod :exec
+-- Yöntem SİLİNİR ama geçmiş yükleme kayıtları KALIR: deposits.method_id
+-- ON DELETE SET NULL ve method_name anlık görüntü olarak saklanıyor.
+DELETE FROM deposit_methods WHERE public_id = @public_id;

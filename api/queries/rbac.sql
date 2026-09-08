@@ -41,3 +41,35 @@ RETURNING *;
 -- name: GrantPermissionToRole :exec
 INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2)
 ON CONFLICT DO NOTHING;
+
+-- name: ListUsersForAdmin :many
+-- Yönetim kullanıcı listesi.
+--
+-- 🔴 password_hash SEÇİLMEZ. Yönetim panelinde bile: bir sızıntıda parola
+-- özetleri offline kırma denemelerine açık olur ve hiçbir yönetim işlevi
+-- onlara ihtiyaç duymaz.
+-- test: internal/transport/http/handler/admin_integration_test.go#TestListUsersNeverReturnsPasswordHash
+SELECT
+    u.public_id, u.email, u.username, u.status,
+    u.email_verified_at, u.balance_minor, u.created_at,
+    coalesce(string_agg(DISTINCT r.name, ','), '')::text AS roles,
+    (SELECT count(*) FROM orders o WHERE o.user_id = u.id)::bigint AS order_count
+FROM users u
+LEFT JOIN user_roles ur ON ur.user_id = u.id
+LEFT JOIN roles r ON r.id = ur.role_id
+WHERE (sqlc.narg(q)::text IS NULL
+       OR u.email ILIKE '%' || sqlc.narg(q) || '%'
+       OR u.username ILIKE '%' || sqlc.narg(q) || '%')
+  AND (sqlc.narg(status)::user_status IS NULL OR u.status = sqlc.narg(status))
+GROUP BY u.id
+ORDER BY u.created_at DESC
+LIMIT @lim OFFSET @off;
+
+-- name: CountUsersForAdmin :one
+SELECT count(*) FROM users u
+WHERE (sqlc.narg(q)::text IS NULL
+       OR u.email ILIKE '%' || sqlc.narg(q) || '%'
+       OR u.username ILIKE '%' || sqlc.narg(q) || '%')
+  AND (sqlc.narg(status)::user_status IS NULL OR u.status = sqlc.narg(status));
+
+

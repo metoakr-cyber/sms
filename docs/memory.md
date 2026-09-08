@@ -414,6 +414,36 @@ Aynı turda üç ayrı "testler geçiyor ama uygulama açılmıyor" durumu çık
 Çözümler sırasıyla: her yolu ayrı yükle, portu önceden kontrol edip açık söyle,
 üretim derlemesini ayrı dizine yap (`NEXT_DIST_DIR`).
 
+### 3.15 Denetleyici, atıf yapılan testin VAR OLDUĞUNU doğrulamıyordu — ÇÖZÜLDÜ
+
+`check-guarantees.py` bir garanti yorumunda `test:` yazısının **varlığını**
+arıyordu, işaret ettiği testin gerçekten bulunduğunu değil. Sonuç: garanti
+veren bir yoruma uydurma bir test adı yazmak denetimi geçiriyordu.
+
+Bunu ben yaptım. Webhook ve yönetim kodundaki altı garanti yorumu referanssız
+kaldığında hepsine toplu olarak referans ekledim; ikisi (
+`TestSavingProviderSettingsDoesNotEraseAPIKey`,
+`TestHandlerDoesNoWorkBeyondEnqueue`) var olmayan testlere işaret ediyordu.
+Denetim yeşile döndü, garantiler dayanaksızdı — denetleyicinin önlemek için
+yazıldığı hatanın (§3.12) tam olarak kendisi.
+
+Denetleyici artık depodaki tüm test adlarını indeksliyor ve her atfı üç
+düzeyde doğruluyor: test adı var mı, atfedilen dosyada mı, yol verilmişse o
+dosya diskte mi. Açılışta **20 kırık atıf** çıktı:
+
+| tür | sayı | örnek |
+|---|---|---|
+| yol indeks dışıydı (yanlış alarm) | 14 | `scripts/smoke-auth.sh` |
+| test başka dosyaya taşınmış | 4 | `ratelimit_test.go` → `middleware_test.go` |
+| **test hiç yoktu** | 2 | `TestSessionListDoesNotLeakToken`, `TestAdjustIsIdempotent` |
+
+Son ikisi benim eklediklerimden önce de oradaydı: oturum listesinin ham
+taşıyıcı token'ı sızdırmadığı ve elle bakiye düzeltmesinin idempotent olduğu
+— ikisi de yazılı garantiydi, ikisinin de testi yoktu.
+
+**Ders:** bir kontrolün geçmesi, kontrol ettiğini sandığınız şeyin doğru
+olduğu anlamına gelmez. Kontrolü de sabote edin.
+
 ### 3.14 Geliştirme veritabanı testlerle paylaşılıyordu — ÇÖZÜLDÜ
 
 `make check` koşulduğunda geliştirme hesabı, sağlayıcı kaydı ve tüm katalog

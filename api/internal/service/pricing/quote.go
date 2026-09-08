@@ -282,7 +282,7 @@ func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64, live 
 			// kodlarımız gönderiliyordu ve sağlayıcı her seferinde "yok" diyordu;
 			// kullanıcı stokta 1487 numara varken NO_PROVIDER_AVAILABLE görüyordu.
 			//
-			// test: quote_integration_test.go#TestProviderReceivesItsOwnCodes
+			// test: remote_codes_integration_test.go#TestProviderReceivesItsOwnCodes
 			codes, err := s.tx.Queries().GetProviderRemoteCodes(gctx, db.GetProviderRemoteCodesParams{
 				ProviderID: r.ProviderID, ProductID: productID,
 			})

@@ -299,3 +299,42 @@ ORDER BY is_home DESC, sort_name;
 
 -- name: GetProductByID :one
 SELECT * FROM products WHERE id = @id;
+
+-- name: ListProvidersForAdmin :many
+-- Yönetim sağlayıcı listesi.
+--
+-- 🔴 api_key_enc SEÇİLMEZ. Şifreli hâli bile dışarı verilmez: panelde
+-- gösterilecek bir şey değil ve varlığı/uzunluğu bilgi sızdırır.
+-- Anahtarın TANIMLI OLUP OLMADIĞI yeterli bilgidir.
+SELECT
+    p.id, p.name, p.protocol, p.base_url, p.is_active, p.priority,
+    p.cost_multiplier, p.capabilities,
+    -- COALESCE ZORUNLU: api_key_enc NULL ise length() de NULL döner ve
+    -- `bool` alana tarama "cannot scan NULL into *bool" ile ÇÖKER — yani
+    -- anahtarı henüz kurulmamış TEK bir sağlayıcı, tüm listeyi 500 yapardı.
+    -- test: internal/transport/http/handler/admin_integration_test.go#TestListProvidersNeverReturnsAPIKey
+    COALESCE(length(p.api_key_enc) > 0, false)::bool AS has_api_key,
+    p.account_balance_micro, p.account_synced_at,
+    p.created_at, p.updated_at
+FROM providers p
+ORDER BY p.priority, p.name;
+
+-- name: UpdateProviderSettings :one
+-- Sağlayıcı ayarları. API ANAHTARI BURADAN GÜNCELLENMEZ — ayrı bir yol var.
+UPDATE providers SET
+    base_url        = @base_url,
+    is_active       = @is_active,
+    priority        = @priority,
+    cost_multiplier = @cost_multiplier,
+    updated_at      = now()
+WHERE id = @id
+RETURNING id, name, protocol, base_url, is_active, priority, cost_multiplier;
+
+-- name: UpdateProviderAPIKey :exec
+-- API anahtarı güncelleme — AYRI bir sorgu.
+--
+-- Diğer ayarlarla aynı UPDATE'e konsaydı, ayar değiştiren her istek anahtarı
+-- da yazardı ve boş bir alan anahtarı SİLERDİ. Ayrı tutmak, "kaydet"e basmanın
+-- anahtarı yanlışlıkla silmesini imkânsız kılar.
+-- test: internal/transport/http/handler/admin_integration_test.go#TestSavingProviderSettingsDoesNotEraseAPIKey
+UPDATE providers SET api_key_enc = @api_key_enc, updated_at = now() WHERE id = @id;

@@ -4,6 +4,7 @@ package http
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
 	"github.com/ikmetrik/sms-platform/api/internal/config"
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
@@ -24,17 +26,19 @@ import (
 
 // Deps yönlendiricinin ihtiyaç duyduğu bağımlılıklar.
 type Deps struct {
-	Config    *config.Config
-	Pool      *pgxpool.Pool
-	Redis     *goredis.Client
-	Queries   *db.Queries
-	Sessions  port.SessionStore
-	Limiter   port.RateLimiter
-	AuthSvc   *authsvc.Service
-	WalletSvc *walletsvc.Service
-	QuoteSvc  *pricingsvc.QuoteService
-	OrderSvc  *ordersvc.Service
-	OrderBus  handler.OrderStream
+	Config       *config.Config
+	Pool         *pgxpool.Pool
+	Redis        *goredis.Client
+	Queries      *db.Queries
+	Sessions     port.SessionStore
+	Limiter      port.RateLimiter
+	Secrets      *crypto.SecretBox
+	AuthSvc      *authsvc.Service
+	WebhookQueue handler.WebhookQueue
+	WalletSvc    *walletsvc.Service
+	QuoteSvc     *pricingsvc.QuoteService
+	OrderSvc     *ordersvc.Service
+	OrderBus     handler.OrderStream
 }
 
 // NewRouter uygulamanın HTTP yönlendiricisini kurar.
@@ -164,6 +168,31 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.GET("/orders/:id/stream", orderH.Stream)
 	}
 
+	// ─── Webhook: KİMLİK DOĞRULAMA YOK ───
+	//
+	// Sağlayıcı oturum veya çerez taşımaz. Auth ara katmanı eklemek her
+	// bildirimin 401 almasına, sağlayıcının ≥7 kez yeniden denemesine ve
+	// kodun HİÇ ulaşmamasına yol açardı (FR-410/6).
+	//
+	// Koruma üç katmanlı: tahmin edilemez yol + IP izin listesi + teyit.
+	// Hız limiti de var: gizli yol sızarsa sınırsız kuyruk doldurma vektörü
+	// olurdu (NFR-802).
+	if d.Config.WebhookHeroSMSSecret != "" && d.WebhookQueue != nil {
+		webhookH := handler.NewWebhook(d.WebhookQueue, d.Config.WebhookHeroSMSSecret,
+			d.Config.WebhookHeroSMSAllowedIPs, responder)
+		rg.POST("/webhooks/herosms/:secret",
+			middleware.RateLimit(d.Limiter, "webhook", middleware.RateLimitConfig{
+				Limit: 300, Window: time.Minute, KeyFn: middleware.ByIP,
+			}, Fail),
+			webhookH.HeroSMS)
+	} else {
+		// SESSİZ KALMAYIZ: sır tanımsızsa webhook ucu YOKTUR ve sistem
+		// yalnız yoklamaya (30 sn) düşer. Bunu fark etmemek, "kod neden geç
+		// geliyor?" sorusunu aylarca cevapsız bırakır.
+		slog.Warn("webhook ucu KAPALI — WEBHOOK_HEROSMS_SECRET tanımsız; " +
+			"kodlar yalnız 30 saniyelik yoklamayla gelecek")
+	}
+
 	// ─── Yönetim: izin ZORUNLU ───
 	// Yönetim uçları da hız limitlidir: yetkili bir hesabın ele geçirilmesi
 	// veya bir betik hatası, sınırsız bakiye düzeltmesi anlamına gelmemeli.
@@ -171,10 +200,38 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
 	}, Fail)
 
+	adminH := handler.NewAdmin(d.Queries, d.Secrets, responder)
+
 	admin := rg.Group("/admin", requireAuth, adminLimit)
 	{
+		// HER UÇ KENDİ İZNİNİ İSTER. "admin ise her şeyi yapabilir" modeli,
+		// tek bir hesabın ele geçirilmesini toplam kayba çevirir; ayrıca
+		// destek personeline yalnız okuma verilemezdi.
+		admin.GET("/users",
+			middleware.RequirePermission("users:read", Fail), adminH.ListUsers)
+		admin.PATCH("/users/:id/status",
+			middleware.RequirePermission("users:write", Fail), adminH.SetUserStatus)
 		admin.POST("/users/:id/balance",
 			middleware.RequirePermission("users:write", Fail), walletH.AdjustBalance)
+
+		admin.GET("/providers",
+			middleware.RequirePermission("providers:read", Fail), adminH.ListProviders)
+		admin.PATCH("/providers/:id",
+			middleware.RequirePermission("providers:write", Fail), adminH.UpdateProvider)
+		// API anahtarı AYRI bir uç: ayar kaydetmek anahtarı silememeli.
+		admin.PUT("/providers/:id/api-key",
+			middleware.RequirePermission("providers:write", Fail), adminH.SetProviderAPIKey)
+
+		admin.GET("/deposit-methods",
+			middleware.RequirePermission("deposits:read", Fail), adminH.ListDepositMethods)
+		admin.POST("/deposit-methods",
+			middleware.RequirePermission("deposits:approve", Fail), adminH.CreateDepositMethod)
+		admin.PATCH("/deposit-methods/:id",
+			middleware.RequirePermission("deposits:approve", Fail), adminH.UpdateDepositMethod)
+		admin.PATCH("/deposit-methods/:id/active",
+			middleware.RequirePermission("deposits:approve", Fail), adminH.SetDepositMethodActive)
+		admin.DELETE("/deposit-methods/:id",
+			middleware.RequirePermission("deposits:approve", Fail), adminH.DeleteDepositMethod)
 	}
 
 	// M2: /wallet/*  ·  M4: /catalog/*  ·  M5: /orders/*  ·  M6: /admin/*

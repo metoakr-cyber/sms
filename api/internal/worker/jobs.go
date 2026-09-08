@@ -242,3 +242,55 @@ func orphanHoldReaper(d Deps) Job {
 		},
 	}
 }
+
+/* ═══════════════════════ Webhook işleme ═══════════════════════ */
+
+// WebhookDequeuer kuyruktan ham bildirim alır.
+type WebhookDequeuer interface {
+	Dequeue(ctx context.Context, timeout time.Duration) ([]byte, error)
+}
+
+// webhookIngest kuyruktaki bildirimleri işler (ADR-024).
+//
+// SIKLIK 1 SANİYE ama gerçekte BLOKLAYARAK bekler: her tur kuyruktan
+// bloklayan bir okuma yapar ve bildirim gelene kadar orada durur. Yoklamalı
+// bir döngü, kod bekleyen kullanıcıya ortalama yarım tur gecikme bindirirdi.
+//
+// Tur başına SINIRLI sayıda bildirim işlenir: bir birikim tek turu
+// dakikalarca sürdürmemeli.
+func webhookIngest(d Deps, q WebhookDequeuer, providerName string) Job {
+	if q == nil || d.Orders == nil {
+		return Job{Name: "webhook-ingest", Every: 0}
+	}
+	return Job{
+		Name: "webhook-ingest", Every: time.Second,
+		Run: func(ctx context.Context) error {
+			prov, err := d.TxRunner.Queries().GetProviderByName(ctx, providerName)
+			if err != nil {
+				// Sağlayıcı henüz eklenmemiş olabilir — bildirim de gelmez.
+				return nil
+			}
+			for i := 0; i < 50; i++ {
+				raw, err := q.Dequeue(ctx, 900*time.Millisecond)
+				if err != nil {
+					return err
+				}
+				if raw == nil {
+					return nil // kuyruk boş
+				}
+				if err := d.Orders.HandleWebhook(ctx, prov.ID, raw); err != nil {
+					// İşlenemeyen bildirim KAYBOLUR. Yeniden kuyruğa koymak
+					// sonsuz döngü riski taşır (aynı gövde yine düşer).
+					// Güvenlik ağı order-poller: kod en geç 30 saniyede gelir.
+					slog.Error("webhook işlenemedi — yoklama devreye girecek", "err", err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// AllWithWebhook webhook işçisiyle birlikte tüm işleri döner.
+func AllWithWebhook(d Deps, q WebhookDequeuer, providerName string) []Job {
+	return append(All(d), webhookIngest(d, q, providerName))
+}
