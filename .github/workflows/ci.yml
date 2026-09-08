@@ -106,3 +106,104 @@ jobs:
             echo "HTTP_ADDR=:8091"
           } >> .env
           ./scripts/smoke-auth.sh
+
+  web:
+    name: Web (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `npm ci` — `npm install` DEĞİL. install kilit dosyasını sessizce
+      # güncelleyebilir; o zaman CI, geliştiricinin makinesindekinden farklı
+      # sürümleri derler ve "bende çalışıyordu" hataları CI'da görünmez olur.
+      - name: Bağımlılıklar
+        working-directory: web
+        run: npm ci
+
+      # Tip denetimi derlemeden AYRI koşar: Next derlemesi tip hatalarını
+      # atlayabilir (ignoreBuildErrors kapalı olsa bile bazı yollar analiz
+      # dışı kalır), tsc tümünü görür.
+      - name: Tip denetimi
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Derleme
+        working-directory: web
+        # Derleme zamanı gereken NEXT_PUBLIC_* değişkenleri BUILD'E GÖMÜLÜR.
+        # CI'da gerçek değer verilmez; yer tutucular derlemenin geçtiğini
+        # doğrulamaya yeter.
+        env:
+          NEXT_PUBLIC_SITE_URL: https://ornek.test
+          NEXT_PUBLIC_RECAPTCHA_SITE_KEY: ''
+        run: npm run build
+
+  guvenlik:
+    name: Güvenlik taraması
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: api/go.sum
+
+      # govulncheck ÇAĞRI GRAFİĞİNE bakar: yalnız gerçekten ulaşılabilen
+      # açıkları bildirir. Bu yüzden "bağımlılıkta açık var ama biz o kodu
+      # çağırmıyoruz" gürültüsü üretmez ve bulduğu her şey gerçektir.
+      - name: govulncheck (Go)
+        working-directory: api
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Bağımlılıklar
+        working-directory: web
+        run: npm ci
+
+      # SERT KAPI yalnız ÜRETİME ÇIKAN bağımlılıklar için (--omit=dev).
+      # Geliştirme bağımlılıklarındaki bir açık kullanıcıyı etkilemez ama
+      # her yükseltmede tüm işi durdurur; o kapının arkasında insan kalmaz,
+      # gürültü olur ve gerçek uyarılar da yok sayılmaya başlanır.
+      - name: npm audit — üretim bağımlılıkları (kapı)
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
+
+      # Geliştirme bağımlılıkları GÖRÜNÜR olsun ama işi durdurmasın.
+      - name: npm audit — tümü (bilgi)
+        working-directory: web
+        continue-on-error: true
+        run: npm audit --audit-level=moderate
+
+  imajlar:
+    name: Üretim imajları derleniyor mu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dağıtım dosyaları kod gibi çürür: go.mod'daki sürüm yükselir,
+      # Dockerfile'daki taban imaj eskir ve bu YALNIZ dağıtım gününde
+      # fark edilir. Bu iş onu her PR'da fark eder.
+      - name: API imajı
+        run: docker build -f deploy/Dockerfile.api -t onay360-api:ci .
+
+      - name: Web imajı
+        run: |
+          docker build -f deploy/Dockerfile.web \
+            --build-arg NEXT_PUBLIC_SITE_URL=https://ornek.test \
+            -t onay360-web:ci .
+
+      - name: Compose sözdizimi
+        run: docker compose -f deploy/docker-compose.prod.yml config >/dev/null

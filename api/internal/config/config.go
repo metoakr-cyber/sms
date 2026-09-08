@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +82,19 @@ type Config struct {
 	// test: ../transport/http/handler/webhook_test.go#TestTrustedProxyHeaderIsHonored
 	TrustedProxies []string
 
+	// UploadDir yüklenen dekontların saklandığı dizin (FR-500).
+	//
+	// 🔴 WEB KÖKÜNÜN DIŞINDA olmalıdır ve hiçbir statik dosya sunucusuna
+	// bağlanmamalıdır: dekont doğrudan bir URL ile servis edilemez (KK-500).
+	// Erişim yalnız yetkili HTTP uçlarındandır.
+	//
+	// Yazılabilirliği AÇILIŞTA doğrulanır (adapter/storage.NewLocal, cmd/server):
+	// ilk yükleme anında keşfedilen bir izin hatası kullanıcıya "beklenmeyen
+	// hata" olarak döner ve sebebi günlerce fark edilmez.
+	//
+	// test: config_upload_test.go#TestProductionRequiresUploadDir
+	UploadDir string
+
 	SentryDSN      string
 	MetricsEnabled bool
 }
@@ -148,6 +162,10 @@ func Load() (*Config, error) {
 		RecaptchaSiteKey:   v.str("RECAPTCHA_SITE_KEY", ""),
 		RecaptchaSecretKey: v.str("RECAPTCHA_SECRET_KEY", ""),
 
+		// Geliştirme varsayılanı geçici dizindir: depoya dosya bırakmaz.
+		// Üretimde AÇIKÇA verilmesi zorunludur (aşağıdaki blok).
+		UploadDir: v.str("UPLOAD_DIR", filepath.Join(os.TempDir(), "onay360-uploads")),
+
 		SentryDSN:      v.str("SENTRY_DSN", ""),
 		MetricsEnabled: v.boolean("METRICS_ENABLED", true),
 	}
@@ -192,6 +210,21 @@ func Load() (*Config, error) {
 		// bir varsayılan, eksik bir ayardan daha kötüdür.
 		//
 		// test: config_test.go#TestProductionRequiresTrustedProxies
+		// UPLOAD_DIR de AÇIKÇA aranır: geliştirme varsayılanı geçici dizindir ve
+		// üretimde sessizce kullanılırsa yüklenen dekontlar ilk yeniden
+		// başlatmada kaybolur — kullanıcı "yükledim" der, ortada kanıt olmaz.
+		//
+		// test: config_upload_test.go#TestProductionRequiresUploadDir
+		if raw := strings.TrimSpace(os.Getenv("UPLOAD_DIR")); raw == "" {
+			v.fail("UPLOAD_DIR",
+				"üretimde açıkça verilmelidir — dekontların saklanacağı, WEB KÖKÜ DIŞINDA "+
+					"kalıcı bir dizin (örn. /var/lib/onay360/uploads)")
+		} else if !filepath.IsAbs(raw) {
+			v.fail("UPLOAD_DIR",
+				"üretimde mutlak yol olmalıdır: göreli yol, sürecin çalışma dizinine "+
+					"göre değişir ve yeniden başlatmada başka bir dizine düşebilir")
+		}
+
 		if strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")) == "" {
 			v.fail("TRUSTED_PROXIES",
 				"üretimde açıkça verilmelidir — ters vekilin ağ aralığı (örn. 172.16.0.0/12). "+

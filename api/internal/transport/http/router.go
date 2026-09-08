@@ -18,6 +18,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	depositsvc "github.com/ikmetrik/sms-platform/api/internal/service/deposit"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
@@ -40,6 +41,18 @@ type Deps struct {
 	QuoteSvc     *pricingsvc.QuoteService
 	OrderSvc     *ordersvc.Service
 	OrderBus     handler.OrderStream
+	DepositSvc   *depositsvc.Service
+
+	// RuleSvc fiyat kuralı yönetimi (FR-703). nil ise /admin/pricing-rules
+	// uçları 500 döner.
+	RuleSvc *pricingsvc.RuleService
+
+	// CatalogSync katalog senkronunu arka planda çalıştırır.
+	//
+	// nil ise POST /admin/providers/:id/sync ucu KURULUR ama 503 döner ve
+	// açılışta uyarı basılır. Uç hiç kurulmasaydı yönetici 404 görür ve
+	// sebebini arardı; sessiz eksiklik yerine konuşan bir eksiklik.
+	CatalogSync handler.CatalogSyncer
 
 	// Metrics Prometheus toplayıcısının HTTP işleyicisi. nil ise /metrics
 	// ucu HİÇ tanımlanmaz (METRICS_ENABLED=false).
@@ -100,6 +113,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	walletH := handler.NewWallet(d.WalletSvc, d.Queries, responder)
 	catalogH := handler.NewCatalog(d.Queries, d.QuoteSvc, responder)
 	orderH := handler.NewOrder(d.OrderSvc, d.OrderBus, responder)
+	depositH := handler.NewDeposit(d.DepositSvc, responder)
 
 	requireAuth := middleware.RequireAuth(middleware.AuthDeps{
 		Sessions: d.Sessions, Queries: d.Queries,
@@ -154,6 +168,34 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		// Cüzdan — sahiplik sorgunun parçasıdır, ayrı bir izin gerekmez.
 		auth.GET("/wallet/balance", walletH.Balance)
 		auth.GET("/wallet/entries", walletH.Statement)
+
+		// ─── Bakiye yükleme (FR-500 … FR-503) ───
+		//
+		// Kullanıcı uçlarında ayrı bir izin YOKTUR: sahiplik sorgunun
+		// parçasıdır ve başkasının talebi 404 döner.
+		auth.GET("/wallet/deposit-methods", depositH.Methods)
+		auth.GET("/wallet/deposits", depositH.List)
+		auth.GET("/wallet/deposits/:id", depositH.Get)
+		auth.GET("/wallet/deposits/:id/receipt", depositH.Receipt)
+
+		// Talep açmak DOĞRULANMIŞ E-POSTA ister ve DAR bir limit taşır:
+		// her talep bir yöneticiye iş üretir ve doğrulanmamış bir hesabın
+		// kuyruğu doldurması operasyonu kilitler.
+		auth.POST("/wallet/deposits",
+			middleware.RequireVerifiedEmail(Fail),
+			middleware.RateLimit(d.Limiter, "deposit", middleware.RateLimitConfig{
+				Limit: 10, Window: time.Minute, KeyFn: middleware.ByUser,
+			}, Fail),
+			depositH.Create)
+
+		// Dekont yükleme AYRI ve daha dar bir limit taşır: her istek diske
+		// yazar. POST'tur — durum değiştirir (değişmez #8).
+		auth.POST("/wallet/deposits/:id/receipt",
+			middleware.RequireVerifiedEmail(Fail),
+			middleware.RateLimit(d.Limiter, "receipt", middleware.RateLimitConfig{
+				Limit: 10, Window: time.Minute, KeyFn: middleware.ByUser,
+			}, Fail),
+			depositH.UploadReceipt)
 
 		// Teklif: oturum + DOĞRULANMIŞ E-POSTA + hız limiti.
 		//
@@ -225,7 +267,23 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
 	}, Fail)
 
-	adminH := handler.NewAdmin(d.Queries, d.Secrets, responder)
+	if d.RuleSvc == nil {
+		// Marj bu sunucudan DEĞİŞTİRİLEMEZ. Sessiz kalınsaydı yönetici
+		// "Fiyat kuralları" ekranında 500 görür ve sebebini arardı.
+		slog.Warn("fiyat kuralı uçları KAPALI — RuleSvc bağlanmamış; " +
+			"marj yalnız veritabanından elle değiştirilebilir")
+	}
+	if d.CatalogSync == nil {
+		// SESSİZ KALMAYIZ: yönetici "Senkronla" düğmesine basıp hata
+		// aldığında sebebi burada yazar.
+		slog.Warn("katalog senkron ucu KAPALI — CatalogSync bağlanmamış; " +
+			"katalog yalnız `cli catalog:sync` ile ve periyodik işlerle tazelenir")
+	}
+
+	adminH := handler.NewAdmin(handler.AdminDeps{
+		Queries: d.Queries, Secrets: d.Secrets,
+		Rules: d.RuleSvc, Sync: d.CatalogSync, Responder: responder,
+	})
 
 	admin := rg.Group("/admin", requireAuth, adminLimit)
 	{
@@ -241,11 +299,36 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 
 		admin.GET("/providers",
 			middleware.RequirePermission("providers:read", Fail), adminH.ListProviders)
+		// Sağlayıcı EKLEME (FR-701). Gövdesinde API anahtarı ALINMAZ.
+		admin.POST("/providers",
+			middleware.RequirePermission("providers:write", Fail), adminH.CreateProvider)
 		admin.PATCH("/providers/:id",
 			middleware.RequirePermission("providers:write", Fail), adminH.UpdateProvider)
 		// API anahtarı AYRI bir uç: ayar kaydetmek anahtarı silememeli.
 		admin.PUT("/providers/:id/api-key",
 			middleware.RequirePermission("providers:write", Fail), adminH.SetProviderAPIKey)
+		// Katalog senkronu: POST, çünkü durum değiştirir (Değişmez #8).
+		// İş ARKA PLANDA koşar; uç yalnız başlatır.
+		admin.POST("/providers/:id/sync",
+			middleware.RequirePermission("providers:write", Fail), adminH.SyncProvider)
+
+		// ─── Fiyat kuralları (FR-703) ───
+		//
+		// Okuma ile yazma AYRI izinlerdir: marj bir iş kararıdır ve destek
+		// personelinin kuralları görmesi, değiştirebilmesi anlamına gelmez.
+		admin.GET("/pricing-rules",
+			middleware.RequirePermission("pricing:read", Fail), adminH.ListPricingRules)
+		admin.POST("/pricing-rules",
+			middleware.RequirePermission("pricing:write", Fail), adminH.CreatePricingRule)
+		admin.DELETE("/pricing-rules/:id",
+			middleware.RequirePermission("pricing:write", Fail), adminH.DeactivatePricingRule)
+		// Önizleme yalnız OKUR: durum değiştirmez, teklif üretmez.
+		admin.POST("/pricing-rules/preview",
+			middleware.RequirePermission("pricing:read", Fail), adminH.PreviewPricing)
+
+		// ─── Denetim kaydı (FR-705) ───
+		admin.GET("/audit-logs",
+			middleware.RequirePermission("audit:read", Fail), adminH.ListAuditLogs)
 
 		admin.GET("/deposit-methods",
 			middleware.RequirePermission("deposits:read", Fail), adminH.ListDepositMethods)
@@ -257,6 +340,19 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 			middleware.RequirePermission("deposits:approve", Fail), adminH.SetDepositMethodActive)
 		admin.DELETE("/deposit-methods/:id",
 			middleware.RequirePermission("deposits:approve", Fail), adminH.DeleteDepositMethod)
+
+		// ─── Bakiye yükleme talepleri ───
+		//
+		// 🔴 ONAY VE RED **POST**'TUR. Eski sistemde onay bir GET'ti ve bir
+		// <img src="…/approve"> etiketiyle tetiklenebiliyordu (design.md §11).
+		admin.GET("/deposits",
+			middleware.RequirePermission("deposits:read", Fail), depositH.AdminList)
+		admin.GET("/deposits/:id/receipt",
+			middleware.RequirePermission("deposits:read", Fail), depositH.AdminReceipt)
+		admin.POST("/deposits/:id/approve",
+			middleware.RequirePermission("deposits:approve", Fail), depositH.Approve)
+		admin.POST("/deposits/:id/reject",
+			middleware.RequirePermission("deposits:approve", Fail), depositH.Reject)
 	}
 
 	// M2: /wallet/*  ·  M4: /catalog/*  ·  M5: /orders/*  ·  M6: /admin/*

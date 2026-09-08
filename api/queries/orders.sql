@@ -91,9 +91,20 @@ LIMIT @lim;
 -- name: ListUnclosedTerminalOrders :many
 -- `activation-reaper` için: terminal ama sağlayıcıda kapatılmamış siparişler.
 -- KK-412: bu sorgunun sonucu uzun vadede BOŞ olmalıdır.
+--
+-- ROL AYRIMI: iade ekseni AÇIK olan satırlar ('PENDING','RETRY_SCHEDULED')
+-- `provider-refund-retry` işinin sorumluluğundadır ve buraya DÜŞMEZ. Bu filtre
+-- olmadan iki iş aynı satıra Cancel() gönderir ve sağlayıcının verdiği
+-- Retry-After süresi (FR-414) 60 saniyede bir çiğnenir.
+--
+-- Kapatma ekseni (FR-412) YİNE reaper'ındır: iade ekseni DENIED/REFUNDED/
+-- NOT_APPLICABLE'a düştüğü an satır buraya geri döner — kapatma denemesinden
+-- vazgeçilmez.
+-- test: refund_retry_integration_test.go#TestReaperIgnoresScheduledRefundOrders
 SELECT * FROM orders
 WHERE provider_closed_at IS NULL
   AND status IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REFUNDED')
+  AND provider_refund_status NOT IN ('PENDING', 'RETRY_SCHEDULED')
 ORDER BY updated_at
 LIMIT @lim;
 
@@ -104,6 +115,53 @@ WHERE provider_refund_status IN ('PENDING', 'RETRY_SCHEDULED')
   AND (refund_next_attempt_at IS NULL OR refund_next_attempt_at <= @now)
 ORDER BY coalesce(refund_next_attempt_at, created_at)
 LIMIT @lim;
+
+-- name: ClaimOrderClose :one
+-- SAHİPLENME: sağlayıcıda kapatma denemesini TEK bir işçiye verir.
+--
+-- Kapatma bir HTTP çağrısı içerir; dış çağrı transaction içinde yapılmaz
+-- (değişmez #5), dolayısıyla satır kilidi çağrı boyunca tutulamaz —
+-- `GetOrderForUpdate` bir transaction dışında çağrıldığında kilit deyim
+-- biter bitmez bırakılır ve hiçbir şeyi korumaz. Bunun yerine satır koşullu
+-- bir UPDATE ile sahiplenilir: yarışı kaybeden işçi SIFIR satır alır
+-- (ConsumeQuote ile aynı desen) ve sağlayıcıya hiç gitmez.
+--
+-- Kira süresi dolduğunda satır kendiliğinden yeniden uygun hâle gelir: çağrı
+-- sırasında ölen bir işçi satırı sonsuza kadar bloke edemez.
+--
+-- `provider_closed_at IS NULL` koşulu da buradadır: zaten kapatılmış siparişe
+-- ikinci kez Cancel/Finish gönderilmez.
+-- test: refund_retry_integration_test.go#TestConcurrentCloseSendsSingleProviderCall
+UPDATE orders SET close_claimed_at = @now
+WHERE id = @id
+  AND provider_closed_at IS NULL
+  AND (close_claimed_at IS NULL OR close_claimed_at <= @claim_stale_before)
+RETURNING *;
+
+-- name: ReleaseOrderClose :exec
+-- Sahiplenmeyi BIRAKIR: kapatılacak bir şey olmadığı anlaşıldığında çağrılır
+-- (örn. sipariş hâlâ beklemede). Kirayı boşuna tutmak, siparişin terminal
+-- olduğu anda yapılacak kapatmayı kira süresi kadar geciktirirdi.
+--
+-- BAŞARISIZLIKTA ÇAĞRILMAZ: kira, başarısız bir denemenin hemen ardından
+-- ikinci bir denemeyi engelleyerek sağlayıcının verdiği Retry-After süresine
+-- saygı gösterir.
+UPDATE orders SET close_claimed_at = NULL WHERE id = @id;
+
+-- name: SettleProviderRefund :exec
+-- İade eksenini KAPATIR: sağlayıcıya bir daha istek gönderilmez.
+--
+-- `SetProviderRefundStatus`ten iki farkı var ve ikisi de kasıtlı:
+--   1. `refund_attempts` ARTIRILMAZ — kapatmak bir deneme değildir.
+--   2. Koşulludur: yalnız iade ekseni AÇIKKEN yazar, böylece iki işçi aynı
+--      anda kapatmaya çalışsa da sonuç tektir ve REFUNDED/DENIED bir satırın
+--      üstüne yazılmaz.
+-- test: ../internal/service/order/refund_retry_integration_test.go#TestFinishedOrderLeavesRefundQueue
+UPDATE orders SET
+    provider_refund_status = @provider_refund_status,
+    refund_next_attempt_at = NULL
+WHERE id = @id
+  AND provider_refund_status IN ('PENDING', 'RETRY_SCHEDULED');
 
 -- name: ListOrphanHolds :many
 -- `orphan-hold-reaper` için: PARASI ÇEKİLMİŞ ama siparişi olmayan teklifler.

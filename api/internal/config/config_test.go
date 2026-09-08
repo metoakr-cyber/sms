@@ -145,6 +145,9 @@ func TestProductionRequiresSecurityConfig(t *testing.T) {
 		// Ters vekilin ağ aralığı: üretimde AÇIKÇA verilmek zorunda.
 		// Varsayılan loopback listesi Caddy ayrı bir konteynerken hiç eşleşmez.
 		t.Setenv("TRUSTED_PROXIES", "172.16.0.0/12")
+		// Dekont dizini: üretimde açık ve MUTLAK olmak zorunda
+		// (bkz. config_upload_test.go#TestProductionRequiresUploadDir).
+		t.Setenv("UPLOAD_DIR", "/var/lib/onay360/uploads")
 	}
 
 	t.Run("tam yapılandırma geçerli", func(t *testing.T) {

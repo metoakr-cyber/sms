@@ -184,6 +184,7 @@ func (p *Provider) legacyGetRaw(ctx context.Context, c port.Creds, action string
 		q[k] = v
 	}
 	// 🔴 URL LOG'A YAZILMAZ: API anahtarı sorgu dizesinde gider.
+	// test: leak_test.go#TestLegacyRawCallNeverLogsAPIKey
 	u := baseOf(c) + legacyPath + "?" + q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

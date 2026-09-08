@@ -3,6 +3,8 @@ package fake
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
@@ -144,12 +146,27 @@ func (p *Provider) GetStatus(ctx context.Context, _ port.Creds, remoteID string)
 		return nil, port.ErrOrderClosed
 	}
 
-	now := p.clock.Now()
+	p.deliverDue(o, p.clock.Now())
+
+	msgs := make([]port.RemoteMessage, len(o.messages))
+	copy(msgs, o.messages)
+	return &port.RemoteStatus{State: o.state, Messages: msgs}, nil
+}
+
+// deliverDue zamanı gelen SMS'i düşürür ve süresi dolanı iptal eder.
+//
+// TEKİL VE TOPLU YOL AYNI SİMÜLASYONDAN BESLENİR: `GetStatus` ile
+// `ListActive` iki ayrı uygulama olsaydı biri diğerinden sessizce ayrışır ve
+// toplu yolun hatası testte görünmezdi (docs/memory.md §3.15 dersi).
+//
+// Kilit ÇAĞIRANDA tutulur: iki metot da p.mu altında çağırır.
+// test: fake_test.go#TestFakeListActiveMatchesGetStatus
+func (p *Provider) deliverDue(o *fakeOrder, now time.Time) {
 	// SMS zamanı geldiyse otomatik teslim et.
 	if o.state == port.StateWaiting && !now.Before(o.smsAt) && len(o.messages) == 0 {
 		code := fmt.Sprintf("%06d", (p.seq*7919)%1000000)
 		o.messages = append(o.messages, port.RemoteMessage{
-			RemoteID:   remoteID + "-msg-1",
+			RemoteID:   o.id + "-msg-1",
 			Code:       code,
 			Body:       "Dogrulama kodunuz: " + code,
 			Sender:     "SERVIS",
@@ -161,10 +178,6 @@ func (p *Provider) GetStatus(ctx context.Context, _ port.Creds, remoteID string)
 	if o.state == port.StateWaiting && now.After(o.expiresAt) {
 		o.state = port.StateCancelled
 	}
-
-	msgs := make([]port.RemoteMessage, len(o.messages))
-	copy(msgs, o.messages)
-	return &port.RemoteStatus{State: o.state, Messages: msgs}, nil
 }
 
 // minCancelWait iptal için asgari bekleme. HeroSMS'te 120 saniye
@@ -235,4 +248,85 @@ func (p *Provider) GetBalance(ctx context.Context, _ port.Creds) (money.Money, e
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return money.New(p.BalanceMicro, money.USD), nil
+}
+
+/* ═══════════════════ Toplu yoklama ═══════════════════ */
+
+var _ port.BatchPoller = (*Provider)(nil)
+
+// fakeMaxPageSize gerçek sağlayıcının sayfa üst sınırıyla AYNI (25).
+//
+// Taklidin daha cömert olması sayfalama hatalarını testte gizlerdi: 100
+// bekleyen sipariş tek sayfada dönseydi KK-404'ün "tur başına ≤ 4 istek"
+// sınavı hiçbir şey ölçmezdi.
+const fakeMaxPageSize = 25
+
+// ListActive açık aktivasyonları sayfalı döner (port.BatchPoller).
+//
+// HeroSMS ile AYNI SÖZLEŞME: `size` 25'e kırpılır, `cursor` 1 tabanlı sayfa
+// numarasının metin hâlidir, son sayfada `NextCursor` boş döner
+// (herosms/operations.go ListActive).
+//
+// test: fake_test.go#TestFakeListActivePagesAtTwentyFive
+func (p *Provider) ListActive(ctx context.Context, _ port.Creds, cursor string, size int) (port.ActivePage, error) {
+	if err := p.delay(ctx); err != nil {
+		return port.ActivePage{}, err
+	}
+	if size <= 0 || size > fakeMaxPageSize {
+		size = fakeMaxPageSize
+	}
+	page := 1
+	if cursor != "" {
+		n, err := strconv.Atoi(cursor)
+		if err != nil || n < 1 {
+			return port.ActivePage{}, fmt.Errorf("fake: geçersiz sayfa imleci %q", cursor)
+		}
+		page = n
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.faults.StatusFails != nil {
+		// Toplu yolda da sağlayıcı kesintisi enjekte edilebilmeli.
+		return port.ActivePage{}, p.faults.StatusFails
+	}
+
+	// SIRALI: sayfalama deterministik olmalı, yoksa aynı kayıt iki sayfada
+	// görünüp bir başkası hiç görünmez.
+	ids := make([]string, 0, len(p.orders))
+	for id, o := range p.orders {
+		if o.closed {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	start := (page - 1) * size
+	if start > len(ids) {
+		start = len(ids)
+	}
+	end := start + size
+	if end > len(ids) {
+		end = len(ids)
+	}
+
+	now := p.clock.Now()
+	items := make([]port.ActiveOrder, 0, end-start)
+	for _, id := range ids[start:end] {
+		o := p.orders[id]
+		p.deliverDue(o, now)
+		msgs := make([]port.RemoteMessage, len(o.messages))
+		copy(msgs, o.messages)
+		items = append(items, port.ActiveOrder{
+			RemoteOrderID: o.id, State: o.state, Messages: msgs,
+		})
+	}
+
+	next := ""
+	if end < len(ids) {
+		next = strconv.Itoa(page + 1)
+	}
+	return port.ActivePage{Items: items, NextCursor: next}, nil
 }

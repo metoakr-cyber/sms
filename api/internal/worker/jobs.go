@@ -1,9 +1,17 @@
 package worker
 
-// M5 işleri: kur senkronu, süre dolumu, sağlayıcıda kapatma, yetim provizyon.
+// M5 işleri: kur senkronu, süre dolumu, yoklama, sağlayıcıda kapatma, iade
+// mutabakatı, yetim provizyon, katalog tazeleme.
 //
-// FR-404 (yoklama) ve FR-406b (iade yeniden deneme) buraya eklenecek; bugünkü
-// set, PARANIN ASILI KALMASINI önleyen asgari kümedir.
+// SİPARİŞ EKSENİNDE ROL AYRIMI — üç iş aynı satırlara bakar, kümeleri
+// KESİŞMEZ:
+//   - `order-poller`          → PENDING, süresi dolmamış (kod arar)
+//   - `provider-refund-retry` → iade ekseni AÇIK (PENDING|RETRY_SCHEDULED)
+//   - `activation-reaper`     → iade ekseni KAPALI ama sağlayıcıda açık
+//
+// Ayrım sorgularda zorlanır (queries/orders.sql): iki iş aynı siparişe aynı
+// anda Cancel() gönderirse sağlayıcının verdiği Retry-After süresi çiğnenir.
+// test: ../service/order/refund_retry_integration_test.go#TestReaperIgnoresScheduledRefundOrders
 
 import (
 	"context"
@@ -45,8 +53,11 @@ func All(d Deps) []Job {
 	return []Job{
 		fxSync(d),
 		orderExpirer(d),
+		orderPoller(d),
 		activationReaper(d),
+		refundRetry(d),
 		orphanHoldReaper(d),
+		offerSync(d),
 		rentalSync(d),
 	}
 }
@@ -300,4 +311,136 @@ func webhookIngest(d Deps, q WebhookDequeuer, providerName string) Job {
 // AllWithWebhook webhook işçisiyle birlikte tüm işleri döner.
 func AllWithWebhook(d Deps, q WebhookDequeuer, providerName string) []Job {
 	return append(All(d), webhookIngest(d, q, providerName))
+}
+
+/* ═══════════════════════ Sunucu tarafı yoklama ═══════════════════════ */
+
+// orderPoller webhook'u gelmemiş siparişleri toplu yoklar (FR-404).
+//
+// SIKLIK: 30 saniye. Üç dokümanda farklı yazıyordu; docs/memory.md'de 30
+// saniyede birleştirildi (design.md §13, trd.md FR-404).
+//
+// GÜVENLİK AĞI: birincil yol webhook'tur (ADR-020) ama teslim garantisi
+// yoktur, imzası yoktur ve URL'i panelden elle kaydedilir. `webhook-ingest`
+// işlenemeyen bildirimi DÜŞÜRÜR ve devamını bu işe emanet eder — o satırdaki
+// "kod en geç 30 saniyede gelir" sözünün karşılığı budur.
+// test: ../service/order/poller_integration_test.go#TestPollerDeliversCodeWithoutWebhook
+//
+// SAĞLAYICI YÜKÜ SİPARİŞ SAYISIYLA ORANTILI DEĞİLDİR: toplu uç kullanılır ve
+// sayfa sayısı bekleyen sipariş sayısından türer — 100 bekleyen sipariş için
+// tur başına en fazla 4 istek (KK-404).
+// test: ../service/order/poller_integration_test.go#TestPollerUsesAtMostFourRequestsFor100Orders
+//
+// AÇILIŞTA ÇALIŞMAZ: ilk tur 30 saniye sonra; sunucunun ilk saniyelerinde
+// sağlayıcıya toplu istek atmanın kazancı yok.
+func orderPoller(d Deps) Job {
+	if d.Orders == nil {
+		// Sessizce çalışmayan bir iş, çalıştığını sandığımız bir iştir.
+		return Job{Name: "order-poller", Every: 0}
+	}
+	return Job{
+		Name: "order-poller", Every: 30 * time.Second,
+		Run: func(ctx context.Context) error {
+			rep, err := d.Orders.PollPending(ctx, batchLimit)
+			if err != nil {
+				return err
+			}
+			if rep.Scanned > 0 {
+				slog.Info("yoklama turu",
+					"bekleyen", rep.Scanned, "eslesen", rep.Matched,
+					"teslim", rep.Delivered, "saglayici_istegi", rep.ProviderCalls)
+			}
+			return nil
+		},
+	}
+}
+
+/* ═══════════════════════ Sağlayıcı iade mutabakatı ═══════════════════════ */
+
+// refundRetry sağlayıcıdan iade taleplerini yeniden dener (FR-406b).
+//
+// SIKLIK: 2 dakika (design.md §13). Sağlayıcının EARLY_CANCEL_DENIED için
+// verdiği süre tipik 120 saniyedir; daha sık denemek aynı reddi tekrar tekrar
+// sormaktır.
+//
+// KULLANICIYI ETKİLEMEZ: kullanıcı iadesini çoktan almıştır (FR-406). Burada
+// alınamayan tutar BİZİM giderimizdir; `provider_refund_denied_total` log
+// alanıyla ölçülür.
+//
+// SONSUZ DÖNGÜ YOKTUR: üst sınıra ulaşan satır DENIED yazılır ve sağlayıcıya
+// bir daha istek gönderilmez.
+// test: ../service/order/refund_retry_integration_test.go#TestRefundRetryStopsAtCeiling
+//
+// ⚠️ Değişmez #6 ile çelişmez: yeniden denenen çağrı `Purchase` değil
+// `Cancel`/`Finish`'tir. `Purchase` idempotent olmadığı için asla
+// tekrarlanmaz; kapatma çağrıları sağlayıcı tarafında idempotenttir.
+func refundRetry(d Deps) Job {
+	if d.Orders == nil {
+		return Job{Name: "provider-refund-retry", Every: 0}
+	}
+	return Job{
+		Name: "provider-refund-retry", Every: 2 * time.Minute,
+		Run: func(ctx context.Context) error {
+			rep, err := d.Orders.RetryProviderRefunds(ctx, batchLimit)
+			if err != nil {
+				return err
+			}
+			if rep.Scanned > 0 {
+				slog.Info("sağlayıcı iade turu",
+					"aday", rep.Scanned, "denendi", rep.Attempted,
+					"iade", rep.Refunded, "gider", rep.Denied, "kapatildi", rep.Settled)
+			}
+			return nil
+		},
+	}
+}
+
+/* ═══════════════════════ Aktivasyon kataloğu ═══════════════════════ */
+
+// offerSync aktivasyon fiyat ve stoklarını tazeler.
+//
+// NEDEN VAR: bugüne kadar YALNIZ `rental-sync` (6 saat) vardı; aktivasyon
+// teklifleri hiç tazelenmiyordu. Teklif satırı bayatladığında iki yönlü zarar
+// oluşur: (a) düşmüş bir maliyetle değil, yükselmiş maliyetin ALTINDA fiyatla
+// satarız — her satış zarar; (b) sağlayıcıda tükenmiş stoku satışa açık
+// gösteririz — satın alma sağlayıcı sınırında düşer, kullanıcı hata görür.
+//
+// SIKLIK: 30 dakika (design.md §13 `offers-sync`).
+// SAĞLAYICI YÜKÜ ÖLÇÜLDÜ: `ListOffers` TEK çağrıdır ve ~20.000 kombinasyonu
+// birlikte döner (canlı ölçüm 1,09 MB / ~600 ms). Yani tur maliyeti = aktif
+// sağlayıcı sayısı kadar istek; tek sağlayıcıda günde 48 istek. Daha sık
+// (örn. 5 dk) senkron 288 isteğe çıkar ve her turda ~20.000 satır upsert eder
+// — sağlayıcıyı da veritabanını da fiyat oynaklığının hak ettiğinden fazla
+// yorar. Teklif geçerlilik süresi zaten 120 saniyedir: satın alma anındaki
+// güvence tekliftir, bu iş yalnız vitrini tazeler.
+//
+// AÇILIŞTA ÇALIŞMAZ: yeniden başlatma fırtınasında (deploy, çökme döngüsü)
+// her açılış sağlayıcıya tam bir katalog isteği atardı. Vitrin, en fazla bir
+// tur boyunca bir öncekinin verisiyle görünür.
+func offerSync(d Deps) Job {
+	if d.Catalog == nil {
+		return Job{Name: "offer-sync", Every: 0}
+	}
+	return Job{
+		Name: "offer-sync", Every: 30 * time.Minute,
+		Run: func(ctx context.Context) error {
+			provs, err := d.TxRunner.Queries().ListActiveProviders(ctx)
+			if err != nil {
+				return err
+			}
+			for _, p := range provs {
+				rep, err := d.Catalog.SyncOffers(ctx, p.ID)
+				if err != nil {
+					// TEK SAĞLAYICININ HATASI TURU DURDURMAZ.
+					slog.Error("teklif senkronu başarısız", "provider", p.Name, "err", err)
+					continue
+				}
+				if len(rep.Errors) > 0 {
+					slog.Warn("teklif senkronu uyarılarla bitti",
+						"provider", p.Name, "offers", rep.Offers, "errors", rep.Errors)
+				}
+			}
+			return nil
+		},
+	}
 }

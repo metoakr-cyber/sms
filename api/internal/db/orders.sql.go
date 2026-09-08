@@ -13,6 +13,78 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimOrderClose = `-- name: ClaimOrderClose :one
+UPDATE orders SET close_claimed_at = $1
+WHERE id = $2
+  AND provider_closed_at IS NULL
+  AND (close_claimed_at IS NULL OR close_claimed_at <= $3)
+RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at
+`
+
+type ClaimOrderCloseParams struct {
+	Now              *time.Time
+	ID               int64
+	ClaimStaleBefore *time.Time
+}
+
+// SAHİPLENME: sağlayıcıda kapatma denemesini TEK bir işçiye verir.
+//
+// Kapatma bir HTTP çağrısı içerir; dış çağrı transaction içinde yapılmaz
+// (değişmez #5), dolayısıyla satır kilidi çağrı boyunca tutulamaz —
+// `GetOrderForUpdate` bir transaction dışında çağrıldığında kilit deyim
+// biter bitmez bırakılır ve hiçbir şeyi korumaz. Bunun yerine satır koşullu
+// bir UPDATE ile sahiplenilir: yarışı kaybeden işçi SIFIR satır alır
+// (ConsumeQuote ile aynı desen) ve sağlayıcıya hiç gitmez.
+//
+// Kira süresi dolduğunda satır kendiliğinden yeniden uygun hâle gelir: çağrı
+// sırasında ölen bir işçi satırı sonsuza kadar bloke edemez.
+//
+// `provider_closed_at IS NULL` koşulu da buradadır: zaten kapatılmış siparişe
+// ikinci kez Cancel/Finish gönderilmez.
+// test: refund_retry_integration_test.go#TestConcurrentCloseSendsSingleProviderCall
+func (q *Queries) ClaimOrderClose(ctx context.Context, arg ClaimOrderCloseParams) (Order, error) {
+	row := q.db.QueryRow(ctx, claimOrderClose, arg.Now, arg.ID, arg.ClaimStaleBefore)
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.UserID,
+		&i.ProviderID,
+		&i.RemoteOrderID,
+		&i.ProviderActivationID,
+		&i.PhoneNumber,
+		&i.VerificationType,
+		&i.ProductID,
+		&i.ServiceCode,
+		&i.ServiceName,
+		&i.CountryIso2,
+		&i.CountryName,
+		&i.PhoneCode,
+		&i.QuoteID,
+		&i.PricePaidMinor,
+		&i.CostMicro,
+		&i.FxRate,
+		&i.Status,
+		&i.ExpiresAt,
+		&i.CancellableAt,
+		&i.CompletedAt,
+		&i.CancelledAt,
+		&i.RefundedAt,
+		&i.ProviderClosedAt,
+		&i.CloseAttempts,
+		&i.CloseLastError,
+		&i.ProviderRefundStatus,
+		&i.ProviderRefundAmountMinor,
+		&i.RefundAttempts,
+		&i.RefundNextAttemptAt,
+		&i.CancelReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CloseClaimedAt,
+	)
+	return i, err
+}
+
 const countAllOrders = `-- name: CountAllOrders :one
 SELECT count(*)
 FROM orders o JOIN users u ON u.id = o.user_id
@@ -120,7 +192,7 @@ INSERT INTO orders (
     $13, $14, $15, $16,
     $17, $18
 )
-RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at
+RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at
 `
 
 type CreateOrderParams struct {
@@ -205,6 +277,7 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.CancelReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CloseClaimedAt,
 	)
 	return i, err
 }
@@ -246,7 +319,7 @@ func (q *Queries) GetDepositMethod(ctx context.Context, publicID uuid.UUID) (Dep
 }
 
 const getOrderByRemote = `-- name: GetOrderByRemote :one
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
 WHERE provider_id = $1 AND remote_order_id = $2
 `
 
@@ -294,12 +367,13 @@ func (q *Queries) GetOrderByRemote(ctx context.Context, arg GetOrderByRemotePara
 		&i.CancelReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CloseClaimedAt,
 	)
 	return i, err
 }
 
 const getOrderForUpdate = `-- name: GetOrderForUpdate :one
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders WHERE id = $1 FOR UPDATE
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders WHERE id = $1 FOR UPDATE
 `
 
 // Durum değiştirmeden ÖNCE kilitle. Kilitsiz okuma + yazma, iki işçinin aynı
@@ -342,12 +416,13 @@ func (q *Queries) GetOrderForUpdate(ctx context.Context, id int64) (Order, error
 		&i.CancelReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CloseClaimedAt,
 	)
 	return i, err
 }
 
 const getOrderForUser = `-- name: GetOrderForUser :one
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders WHERE public_id = $1 AND user_id = $2
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders WHERE public_id = $1 AND user_id = $2
 `
 
 type GetOrderForUserParams struct {
@@ -395,6 +470,7 @@ func (q *Queries) GetOrderForUser(ctx context.Context, arg GetOrderForUserParams
 		&i.CancelReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CloseClaimedAt,
 	)
 	return i, err
 }
@@ -525,7 +601,7 @@ func (q *Queries) ListActiveDepositMethods(ctx context.Context) ([]DepositMethod
 
 const listAllOrders = `-- name: ListAllOrders :many
 
-SELECT o.id, o.public_id, o.user_id, o.provider_id, o.remote_order_id, o.provider_activation_id, o.phone_number, o.verification_type, o.product_id, o.service_code, o.service_name, o.country_iso2, o.country_name, o.phone_code, o.quote_id, o.price_paid_minor, o.cost_micro, o.fx_rate, o.status, o.expires_at, o.cancellable_at, o.completed_at, o.cancelled_at, o.refunded_at, o.provider_closed_at, o.close_attempts, o.close_last_error, o.provider_refund_status, o.provider_refund_amount_minor, o.refund_attempts, o.refund_next_attempt_at, o.cancel_reason, o.created_at, o.updated_at, u.username, u.email
+SELECT o.id, o.public_id, o.user_id, o.provider_id, o.remote_order_id, o.provider_activation_id, o.phone_number, o.verification_type, o.product_id, o.service_code, o.service_name, o.country_iso2, o.country_name, o.phone_code, o.quote_id, o.price_paid_minor, o.cost_micro, o.fx_rate, o.status, o.expires_at, o.cancellable_at, o.completed_at, o.cancelled_at, o.refunded_at, o.provider_closed_at, o.close_attempts, o.close_last_error, o.provider_refund_status, o.provider_refund_amount_minor, o.refund_attempts, o.refund_next_attempt_at, o.cancel_reason, o.created_at, o.updated_at, o.close_claimed_at, u.username, u.email
 FROM orders o
 JOIN users u ON u.id = o.user_id
 WHERE ($1::order_status IS NULL OR o.status = $1)
@@ -579,6 +655,7 @@ type ListAllOrdersRow struct {
 	CancelReason              string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
+	CloseClaimedAt            *time.Time
 	Username                  string
 	Email                     string
 }
@@ -634,6 +711,7 @@ func (q *Queries) ListAllOrders(ctx context.Context, arg ListAllOrdersParams) ([
 			&i.CancelReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CloseClaimedAt,
 			&i.Username,
 			&i.Email,
 		); err != nil {
@@ -689,7 +767,7 @@ func (q *Queries) ListDepositMethods(ctx context.Context) ([]DepositMethod, erro
 }
 
 const listExpiredPendingOrders = `-- name: ListExpiredPendingOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
 WHERE status = 'PENDING' AND expires_at <= $1
 ORDER BY expires_at
 LIMIT $2
@@ -745,6 +823,7 @@ func (q *Queries) ListExpiredPendingOrders(ctx context.Context, arg ListExpiredP
 			&i.CancelReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CloseClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -850,7 +929,7 @@ func (q *Queries) ListOrphanHolds(ctx context.Context, arg ListOrphanHoldsParams
 
 const listPendingOrdersForPoll = `-- name: ListPendingOrdersForPoll :many
 
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
 WHERE status = 'PENDING' AND expires_at > $1
 ORDER BY created_at
 LIMIT $2
@@ -907,6 +986,7 @@ func (q *Queries) ListPendingOrdersForPoll(ctx context.Context, arg ListPendingO
 			&i.CancelReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CloseClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -919,7 +999,7 @@ func (q *Queries) ListPendingOrdersForPoll(ctx context.Context, arg ListPendingO
 }
 
 const listRefundRetryOrders = `-- name: ListRefundRetryOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
 WHERE provider_refund_status IN ('PENDING', 'RETRY_SCHEDULED')
   AND (refund_next_attempt_at IS NULL OR refund_next_attempt_at <= $1)
 ORDER BY coalesce(refund_next_attempt_at, created_at)
@@ -976,6 +1056,7 @@ func (q *Queries) ListRefundRetryOrders(ctx context.Context, arg ListRefundRetry
 			&i.CancelReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CloseClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -988,15 +1069,26 @@ func (q *Queries) ListRefundRetryOrders(ctx context.Context, arg ListRefundRetry
 }
 
 const listUnclosedTerminalOrders = `-- name: ListUnclosedTerminalOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
 WHERE provider_closed_at IS NULL
   AND status IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REFUNDED')
+  AND provider_refund_status NOT IN ('PENDING', 'RETRY_SCHEDULED')
 ORDER BY updated_at
 LIMIT $1
 `
 
 // `activation-reaper` için: terminal ama sağlayıcıda kapatılmamış siparişler.
 // KK-412: bu sorgunun sonucu uzun vadede BOŞ olmalıdır.
+//
+// ROL AYRIMI: iade ekseni AÇIK olan satırlar ('PENDING','RETRY_SCHEDULED')
+// `provider-refund-retry` işinin sorumluluğundadır ve buraya DÜŞMEZ. Bu filtre
+// olmadan iki iş aynı satıra Cancel() gönderir ve sağlayıcının verdiği
+// Retry-After süresi (FR-414) 60 saniyede bir çiğnenir.
+//
+// Kapatma ekseni (FR-412) YİNE reaper'ındır: iade ekseni DENIED/REFUNDED/
+// NOT_APPLICABLE'a düştüğü an satır buraya geri döner — kapatma denemesinden
+// vazgeçilmez.
+// test: refund_retry_integration_test.go#TestReaperIgnoresScheduledRefundOrders
 func (q *Queries) ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]Order, error) {
 	rows, err := q.db.Query(ctx, listUnclosedTerminalOrders, lim)
 	if err != nil {
@@ -1041,6 +1133,7 @@ func (q *Queries) ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]
 			&i.CancelReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CloseClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1053,7 +1146,7 @@ func (q *Queries) ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]
 }
 
 const listUserOrders = `-- name: ListUserOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
 WHERE user_id = $1
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $2
@@ -1109,6 +1202,7 @@ func (q *Queries) ListUserOrders(ctx context.Context, arg ListUserOrdersParams) 
 			&i.CancelReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CloseClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1190,6 +1284,22 @@ func (q *Queries) RecordCloseFailure(ctx context.Context, arg RecordCloseFailure
 	return err
 }
 
+const releaseOrderClose = `-- name: ReleaseOrderClose :exec
+UPDATE orders SET close_claimed_at = NULL WHERE id = $1
+`
+
+// Sahiplenmeyi BIRAKIR: kapatılacak bir şey olmadığı anlaşıldığında çağrılır
+// (örn. sipariş hâlâ beklemede). Kirayı boşuna tutmak, siparişin terminal
+// olduğu anda yapılacak kapatmayı kira süresi kadar geciktirirdi.
+//
+// BAŞARISIZLIKTA ÇAĞRILMAZ: kira, başarısız bir denemenin hemen ardından
+// ikinci bir denemeyi engelleyerek sağlayıcının verdiği Retry-After süresine
+// saygı gösterir.
+func (q *Queries) ReleaseOrderClose(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, releaseOrderClose, id)
+	return err
+}
+
 const setDepositMethodActive = `-- name: SetDepositMethodActive :one
 UPDATE deposit_methods SET is_active = $1 WHERE public_id = $2
 RETURNING id, public_id, code, kind, name, instructions, config, min_amount_minor, max_amount_minor, is_active, sort_order, created_at, updated_at
@@ -1231,7 +1341,7 @@ UPDATE orders SET
     refunded_at  = CASE WHEN $1::order_status = 'REFUNDED' THEN coalesce(refunded_at, $2) ELSE refunded_at END,
     cancel_reason = CASE WHEN $3::text <> '' THEN $3 ELSE cancel_reason END
 WHERE id = $4
-RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at
+RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at
 `
 
 type SetOrderStatusParams struct {
@@ -1286,6 +1396,7 @@ func (q *Queries) SetOrderStatus(ctx context.Context, arg SetOrderStatusParams) 
 		&i.CancelReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CloseClaimedAt,
 	)
 	return i, err
 }
@@ -1313,6 +1424,33 @@ func (q *Queries) SetProviderRefundStatus(ctx context.Context, arg SetProviderRe
 		arg.RefundNextAttemptAt,
 		arg.ID,
 	)
+	return err
+}
+
+const settleProviderRefund = `-- name: SettleProviderRefund :exec
+UPDATE orders SET
+    provider_refund_status = $1,
+    refund_next_attempt_at = NULL
+WHERE id = $2
+  AND provider_refund_status IN ('PENDING', 'RETRY_SCHEDULED')
+`
+
+type SettleProviderRefundParams struct {
+	ProviderRefundStatus RefundStatus
+	ID                   int64
+}
+
+// İade eksenini KAPATIR: sağlayıcıya bir daha istek gönderilmez.
+//
+// `SetProviderRefundStatus`ten iki farkı var ve ikisi de kasıtlı:
+//  1. `refund_attempts` ARTIRILMAZ — kapatmak bir deneme değildir.
+//  2. Koşulludur: yalnız iade ekseni AÇIKKEN yazar, böylece iki işçi aynı
+//     anda kapatmaya çalışsa da sonuç tektir ve REFUNDED/DENIED bir satırın
+//     üstüne yazılmaz.
+//
+// test: ../internal/service/order/refund_retry_integration_test.go#TestFinishedOrderLeavesRefundQueue
+func (q *Queries) SettleProviderRefund(ctx context.Context, arg SettleProviderRefundParams) error {
+	_, err := q.db.Exec(ctx, settleProviderRefund, arg.ProviderRefundStatus, arg.ID)
 	return err
 }
 

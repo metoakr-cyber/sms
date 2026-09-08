@@ -12,7 +12,29 @@ import (
 )
 
 type Querier interface {
+	// İKİNCİ SAVUNMA HATTI: `AND status = 'PENDING'` koşulu yarışta ikinci çağrıya
+	// SIFIR satır döndürür (pgx.ErrNoRows) — bu "zaten sonuçlandırılmış" demektir.
+	//
+	// 🔴 reviewed_at, status ile AYNI ifadede yazılır: deposit_reviewed_has_time
+	// CHECK'i (00008_orders.sql) iki adımlı yazımda 23514 ile düşer.
+	ApproveDeposit(ctx context.Context, arg ApproveDepositParams) (Deposit, error)
 	AssignRole(ctx context.Context, arg AssignRoleParams) error
+	// SAHİPLENME: sağlayıcıda kapatma denemesini TEK bir işçiye verir.
+	//
+	// Kapatma bir HTTP çağrısı içerir; dış çağrı transaction içinde yapılmaz
+	// (değişmez #5), dolayısıyla satır kilidi çağrı boyunca tutulamaz —
+	// `GetOrderForUpdate` bir transaction dışında çağrıldığında kilit deyim
+	// biter bitmez bırakılır ve hiçbir şeyi korumaz. Bunun yerine satır koşullu
+	// bir UPDATE ile sahiplenilir: yarışı kaybeden işçi SIFIR satır alır
+	// (ConsumeQuote ile aynı desen) ve sağlayıcıya hiç gitmez.
+	//
+	// Kira süresi dolduğunda satır kendiliğinden yeniden uygun hâle gelir: çağrı
+	// sırasında ölen bir işçi satırı sonsuza kadar bloke edemez.
+	//
+	// `provider_closed_at IS NULL` koşulu da buradadır: zaten kapatılmış siparişe
+	// ikinci kez Cancel/Finish gönderilmez.
+	// test: refund_retry_integration_test.go#TestConcurrentCloseSendsSingleProviderCall
+	ClaimOrderClose(ctx context.Context, arg ClaimOrderCloseParams) (Order, error)
 	// Tek kullanımlıktır: UPDATE ... RETURNING ile atomik olarak tüketilir.
 	// Ayrı SELECT + UPDATE yapılsaydı iki eşzamanlı istek aynı token'ı kullanabilirdi.
 	ConsumeAuthToken(ctx context.Context, arg ConsumeAuthTokenParams) (AuthToken, error)
@@ -20,13 +42,31 @@ type Querier interface {
 	// WHERE consumed_at IS NULL sayesinde yarış durumunda ikinci çağrı
 	// SIFIR satır döner — kilitle birlikte çift savunma.
 	ConsumeQuote(ctx context.Context, arg ConsumeQuoteParams) (PriceQuote, error)
+	// Bir kapsamdaki etkin kural sayısı.
+	//
+	// Son GLOBAL kuralın pasifleştirilmesini engellemek için kullanılır: GLOBAL
+	// kural kalmazsa ListApplicableRules boş döner, SelectRule ErrNoRule verir ve
+	// SİSTEM SATIŞ YAPAMAZ hâle gelir.
+	CountActiveRulesByScope(ctx context.Context, scope PricingScope) (int64, error)
 	CountAllOrders(ctx context.Context, arg CountAllOrdersParams) (int64, error)
+	CountAuditLogsForAdmin(ctx context.Context, arg CountAuditLogsForAdminParams) (int64, error)
+	CountDepositsForAdmin(ctx context.Context, status *DepositStatus) (int64, error)
 	CountDimensionMaps(ctx context.Context, arg CountDimensionMapsParams) (int64, error)
 	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
 	CountOrderMessages(ctx context.Context, orderID int64) (int64, error)
+	CountUserDeposits(ctx context.Context, userID int64) (int64, error)
 	CountUserOrders(ctx context.Context, userID int64) (int64, error)
 	CountUsersForAdmin(ctx context.Context, arg CountUsersForAdminParams) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
+	// Bakiye yükleme talepleri (FR-500 … FR-503).
+	//
+	// Ödeme YÖNTEMİ sorguları burada değil, queries/orders.sql içindedir
+	// (deposit_methods CRUD'u zaten yazılmıştı).
+	// 🔴 tx_hash HAVALEDE NULL BIRAKILIR, boş string yazılmaz: deposits_tx_hash_uniq
+	// kısmi indeksi (WHERE tx_hash IS NOT NULL) NULL'ları hariç tutar. '' yazılırsa
+	// kullanıcının İKİNCİ havale talebi 23505 alır ve bir daha havale bildiremez.
+	// test: deposit_integration_test.go#TestBankTransferDepositLeavesTxHashNull
+	CreateDeposit(ctx context.Context, arg CreateDepositParams) (Deposit, error)
 	CreateDepositMethod(ctx context.Context, arg CreateDepositMethodParams) (DepositMethod, error)
 	// Sipariş kaydı — T2 içinde, sağlayıcı çağrısı BAŞARILI olduktan sonra.
 	//
@@ -59,6 +99,12 @@ type Querier interface {
 	// İdempotency: bu anahtarla daha önce işlem yapıldıysa sonucu döner.
 	FindLedgerEntryByKey(ctx context.Context, idempotencyKey string) (LedgerEntry, error)
 	GetCountryByISO(ctx context.Context, iso2 string) (Country, error)
+	// Yönetim yolu: sahiplik kısıtı YOKTUR, izin kontrolü middleware'dedir
+	// (deposits:read / deposits:approve).
+	GetDeposit(ctx context.Context, publicID uuid.UUID) (Deposit, error)
+	// SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7). Başkasının talebi ile
+	// var olmayan talep AYNI sonucu (sıfır satır) verir.
+	GetDepositForUser(ctx context.Context, arg GetDepositForUserParams) (Deposit, error)
 	GetDepositMethod(ctx context.Context, publicID uuid.UUID) (DepositMethod, error)
 	GetLatestFXRate(ctx context.Context, arg GetLatestFXRateParams) (FxRate, error)
 	// Webhook korelasyonu: sağlayıcı YALNIZ aktivasyon kimliğini taşır.
@@ -69,6 +115,14 @@ type Querier interface {
 	// SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7).
 	// Ayrı bir `if order.UserID != userID` kontrolü yazılmaz: unutulabilir.
 	GetOrderForUser(ctx context.Context, arg GetOrderForUserParams) (Order, error)
+	GetPricingRule(ctx context.Context, id int64) (PricingRule, error)
+	// Bir kuralın kapsamını İNSAN OKUR kodlarla verir.
+	//
+	// Denetim kaydının entity_id'si için gerekir: oraya sayısal kimlik yazmak
+	// (Değişmez #10) kaydı hem okunmaz hem de kimlik yeniden kullanıldığında
+	// yanıltıcı yapar. "SERVICE_COUNTRY:whatsapp:TR" bir yıl sonra da aynı şeyi
+	// anlatır.
+	GetPricingRuleLabels(ctx context.Context, id int64) (GetPricingRuleLabelsRow, error)
 	GetProductByID(ctx context.Context, id int64) (Product, error)
 	GetProductForActivation(ctx context.Context, arg GetProductForActivationParams) (Product, error)
 	GetProductForRental(ctx context.Context, arg GetProductForRentalParams) (Product, error)
@@ -121,6 +175,18 @@ type Querier interface {
 	// mantığı SQL'e dağıtılmaz, tek yerde kalır (docs/trd.md FR-303).
 	ListApplicableRules(ctx context.Context, arg ListApplicableRulesParams) ([]PricingRule, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	// ─────────────────────── Denetim kaydı okuma (FR-705) ───────────────────────
+	// Aktör / varlık / eylem / tarih süzgeçli, sayfalı denetim kaydı.
+	//
+	// AKTÖR public_id İLE SÜZÜLÜR, sayısal id ile değil (Değişmez #10): dışarıya
+	// verilen kimlik neyse süzgeç de onu almalı, yoksa panel önce kullanıcıyı
+	// sayısal kimliğe çevirmek zorunda kalır ve o kimlik yanıtta da görünür.
+	//
+	// E-POSTA SEÇİLMEZ. Aktörü tanımak için public_id + kullanıcı adı yeter;
+	// e-posta denetim listesinde toplu olarak dışarı akan kişisel veridir.
+	// id DESC ikinci ölçüt: aynı milisaniyede yazılan iki kayıt sayfalar arasında
+	// yer değiştirirse aynı satır iki sayfada birden görünür ya da hiç görünmez.
+	ListAuditLogsForAdmin(ctx context.Context, arg ListAuditLogsForAdminParams) ([]ListAuditLogsForAdminRow, error)
 	// Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
 	// TÜRKİYE HER ZAMAN ÖNCE.
 	//
@@ -133,6 +199,8 @@ type Querier interface {
 	// ─────────────────────── Ödeme yöntemleri ───────────────────────
 	// Yönetim: tüm yöntemler (pasifler dahil).
 	ListDepositMethods(ctx context.Context) ([]DepositMethod, error)
+	// Sayısal id dışarı verilmez: kullanıcı users.public_id ile gösterilir.
+	ListDepositsForAdmin(ctx context.Context, arg ListDepositsForAdminParams) ([]ListDepositsForAdminRow, error)
 	ListDimensionMaps(ctx context.Context, arg ListDimensionMapsParams) ([]ProviderDimensionMap, error)
 	// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan siparişler.
 	ListExpiredPendingOrders(ctx context.Context, arg ListExpiredPendingOrdersParams) ([]Order, error)
@@ -141,6 +209,14 @@ type Querier interface {
 	ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error)
 	// Bir ürün için sağlayıcı teklifleri; en ucuz önce.
 	ListOffersForProduct(ctx context.Context, productID int64) ([]ListOffersForProductRow, error)
+	// YALNIZ YÖNETİM ÖNİZLEMESİ İÇİN: stok koşulu yoktur.
+	//
+	// `ListOffersForProduct` stoksuz teklifleri eler — satış yolunda doğru olan
+	// budur. Ama yönetici marjı değiştirirken stoğu tükenmiş bir ürünün fiyatını
+	// da görebilmeli: maliyet biliniyor, satılamıyor olması fiyatı bilinmez
+	// yapmaz. Bu sorgu SATIŞ YOLUNDA KULLANILMAZ.
+	// test: internal/service/pricing/rules_integration_test.go#TestPreviewWorksWhenOutOfStock
+	ListOffersForProductAnyStock(ctx context.Context, productID int64) ([]ListOffersForProductAnyStockRow, error)
 	ListOrderMessages(ctx context.Context, orderID int64) ([]OrderMessage, error)
 	// `orphan-hold-reaper` için: PARASI ÇEKİLMİŞ ama siparişi olmayan teklifler.
 	//
@@ -155,6 +231,13 @@ type Querier interface {
 	// `order-poller` için: kod bekleyen, süresi dolmamış siparişler.
 	ListPendingOrdersForPoll(ctx context.Context, arg ListPendingOrdersForPollParams) ([]Order, error)
 	ListPricingRules(ctx context.Context) ([]PricingRule, error)
+	// ─────────────────────── Fiyat kuralı yönetimi (FR-703) ───────────────────────
+	// Yönetim listesi: etkin kurallar + kapsamın İNSAN OKUR karşılığı.
+	//
+	// `ListPricingRules` yalnız ham satırı döner; panelde "service_id 42" değil
+	// "whatsapp × TR" yazmalı. Ad çözümlemesini Go tarafında N+1 sorguyla yapmak
+	// yerine tek JOIN'de çözülür.
+	ListPricingRulesForAdmin(ctx context.Context) ([]ListPricingRulesForAdminRow, error)
 	// Yönetim sağlayıcı listesi.
 	//
 	// 🔴 api_key_enc SEÇİLMEZ. Şifreli hâli bile dışarı verilmez: panelde
@@ -184,7 +267,19 @@ type Querier interface {
 	ListServicesWithStock(ctx context.Context) ([]ListServicesWithStockRow, error)
 	// `activation-reaper` için: terminal ama sağlayıcıda kapatılmamış siparişler.
 	// KK-412: bu sorgunun sonucu uzun vadede BOŞ olmalıdır.
+	//
+	// ROL AYRIMI: iade ekseni AÇIK olan satırlar ('PENDING','RETRY_SCHEDULED')
+	// `provider-refund-retry` işinin sorumluluğundadır ve buraya DÜŞMEZ. Bu filtre
+	// olmadan iki iş aynı satıra Cancel() gönderir ve sağlayıcının verdiği
+	// Retry-After süresi (FR-414) 60 saniyede bir çiğnenir.
+	//
+	// Kapatma ekseni (FR-412) YİNE reaper'ındır: iade ekseni DENIED/REFUNDED/
+	// NOT_APPLICABLE'a düştüğü an satır buraya geri döner — kapatma denemesinden
+	// vazgeçilmez.
+	// test: refund_retry_integration_test.go#TestReaperIgnoresScheduledRefundOrders
 	ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]Order, error)
+	// deposits_user_idx (user_id, created_at DESC) tam olarak bu sıralamayı kullanır.
+	ListUserDeposits(ctx context.Context, arg ListUserDepositsParams) ([]Deposit, error)
 	ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]Order, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
@@ -197,6 +292,23 @@ type Querier interface {
 	ListUsersForAdmin(ctx context.Context, arg ListUsersForAdminParams) ([]ListUsersForAdminRow, error)
 	ListVisibleCountries(ctx context.Context) ([]Country, error)
 	ListVisibleServices(ctx context.Context) ([]Service, error)
+	// Bir kapsamdaki ETKİN kuralı KİLİTLER.
+	//
+	// Kural "güncelleme" yoktur: eski kural pasifleştirilip yenisi eklenir
+	// (kısmi tekil indeksler aynı kapsamda iki etkin kurala izin vermez).
+	// Kilit olmadan iki yönetici aynı anda kural yazdığında ikisi de eski satırı
+	// görür, ikisi de INSERT eder ve biri 23505 ile düşer — hangisinin geçtiği
+	// rastgele olur. FOR UPDATE bunu sıraya sokar.
+	//
+	// IS NOT DISTINCT FROM kullanılır: NULL = NULL karşılaştırması `=` ile
+	// daima NULL döner ve GLOBAL kapsam (üç alanı da NULL) hiç eşleşmezdi.
+	LockActiveRuleForScope(ctx context.Context, arg LockActiveRuleForScopeParams) (PricingRule, error)
+	// ÇAĞIRANIN TRANSACTION'I İÇİNDE çağrılmalıdır. Kilit commit'e kadar tutulur;
+	// eşzamanlı onay istekleri burada sıraya girer. Kilitsiz okuyup sonra yazmak,
+	// iki yöneticinin (veya bir yöneticinin iki sekmesinin) aynı talebi iki kez
+	// onaylamasına ve bakiyenin iki kez artmasına yol açar.
+	// test: deposit_integration_test.go#TestApproveIsIdempotentUnderConcurrency
+	LockDepositForUpdate(ctx context.Context, publicID uuid.UUID) (Deposit, error)
 	// Teklifi KİLİTLER. Aynı teklifle iki eşzamanlı satın alma denemesinde
 	// yalnız biri geçmelidir (docs/trd.md KK-402).
 	LockQuoteForConsumption(ctx context.Context, arg LockQuoteForConsumptionParams) (PriceQuote, error)
@@ -216,6 +328,16 @@ type Querier interface {
 	// panelin açılışını yavaşlatır.
 	OrderStatsSummary(ctx context.Context, since time.Time) (OrderStatsSummaryRow, error)
 	RecordCloseFailure(ctx context.Context, arg RecordCloseFailureParams) error
+	// Bakiyeye HİÇ dokunulmaz (FR-503); burada yalnız durum ve gerekçe yazılır.
+	RejectDeposit(ctx context.Context, arg RejectDepositParams) (Deposit, error)
+	// Sahiplenmeyi BIRAKIR: kapatılacak bir şey olmadığı anlaşıldığında çağrılır
+	// (örn. sipariş hâlâ beklemede). Kirayı boşuna tutmak, siparişin terminal
+	// olduğu anda yapılacak kapatmayı kira süresi kadar geciktirirdi.
+	//
+	// BAŞARISIZLIKTA ÇAĞRILMAZ: kira, başarısız bir denemenin hemen ardından
+	// ikinci bir denemeyi engelleyerek sağlayıcının verdiği Retry-After süresine
+	// saygı gösterir.
+	ReleaseOrderClose(ctx context.Context, id int64) error
 	ReplaceUserRoles(ctx context.Context, arg ReplaceUserRolesParams) error
 	// Sağlayıcının İngilizce ülke adını ISO2 + Türkçe ad + telefon koduna çevirir.
 	ResolveCountryRef(ctx context.Context, nameKey string) (ResolveCountryRefRow, error)
@@ -231,6 +353,9 @@ type Querier interface {
 	// Aktif/pasif AYRI bir sorgu: tek bir düğmeye basmak, o sırada düzenlenmekte
 	// olan diğer alanları yazmamalı.
 	SetDepositMethodActive(ctx context.Context, arg SetDepositMethodActiveParams) (DepositMethod, error)
+	// Dekont YALNIZ sahibi tarafından ve YALNIZ inceleme öncesinde eklenebilir:
+	// sonuçlandırılmış bir talebin kanıtını değiştirmek denetimi anlamsız kılar.
+	SetDepositReceipt(ctx context.Context, arg SetDepositReceiptParams) (Deposit, error)
 	// Durum yazımı — YALNIZ domain/order.Transition doğruladıktan sonra çağrılır.
 	// Veritabanındaki tetikleyici ikinci savunma hattıdır.
 	SetOrderStatus(ctx context.Context, arg SetOrderStatusParams) (Order, error)
@@ -243,6 +368,15 @@ type Querier interface {
 	// Yönetim: kullanıcı durumunu değiştirir.
 	// public_id ile çalışır — sayısal id dışarı verilmez (değişmez #10).
 	SetUserStatusByPublicID(ctx context.Context, arg SetUserStatusByPublicIDParams) (SetUserStatusByPublicIDRow, error)
+	// İade eksenini KAPATIR: sağlayıcıya bir daha istek gönderilmez.
+	//
+	// `SetProviderRefundStatus`ten iki farkı var ve ikisi de kasıtlı:
+	//   1. `refund_attempts` ARTIRILMAZ — kapatmak bir deneme değildir.
+	//   2. Koşulludur: yalnız iade ekseni AÇIKKEN yazar, böylece iki işçi aynı
+	//      anda kapatmaya çalışsa da sonuç tektir ve REFUNDED/DENIED bir satırın
+	//      üstüne yazılmaz.
+	// test: ../internal/service/order/refund_retry_integration_test.go#TestFinishedOrderLeavesRefundQueue
+	SettleProviderRefund(ctx context.Context, arg SettleProviderRefundParams) error
 	// Kâr raporu ve muhasebe özeti girdisi.
 	SumLedgerByType(ctx context.Context, arg SumLedgerByTypeParams) ([]SumLedgerByTypeRow, error)
 	TouchSession(ctx context.Context, id string) error

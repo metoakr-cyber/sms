@@ -71,12 +71,15 @@ func newAdminRig(t *testing.T) *adminRig {
 		t.Fatalf("secretbox: %v", err)
 	}
 	q := db.New(pool)
-	a := handler.NewAdmin(q, box, handler.Responder{
-		OK:        func(c *gin.Context, b any) { c.JSON(http.StatusOK, b) },
-		NoContent: func(c *gin.Context) { c.Status(http.StatusNoContent) },
-		Fail:      func(c *gin.Context, err error) { c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()}) },
-		FailField: func(c *gin.Context, errs []dto.FieldError) {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"fields": errs})
+	a := handler.NewAdmin(handler.AdminDeps{
+		Queries: q, Secrets: box,
+		Responder: handler.Responder{
+			OK:        func(c *gin.Context, b any) { c.JSON(http.StatusOK, b) },
+			NoContent: func(c *gin.Context) { c.Status(http.StatusNoContent) },
+			Fail:      func(c *gin.Context, err error) { c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()}) },
+			FailField: func(c *gin.Context, errs []dto.FieldError) {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"fields": errs})
+			},
 		},
 	})
 

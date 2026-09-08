@@ -75,3 +75,72 @@ SELECT * FROM price_quotes WHERE public_id = $1;
 -- Tüketilmiş olanlar SAKLANIR: sipariş kaydının fiyat kanıtıdır.
 DELETE FROM price_quotes
 WHERE consumed_at IS NULL AND expires_at < $1;
+
+-- ─────────────────────── Fiyat kuralı yönetimi (FR-703) ───────────────────────
+
+-- name: ListPricingRulesForAdmin :many
+-- Yönetim listesi: etkin kurallar + kapsamın İNSAN OKUR karşılığı.
+--
+-- `ListPricingRules` yalnız ham satırı döner; panelde "service_id 42" değil
+-- "whatsapp × TR" yazmalı. Ad çözümlemesini Go tarafında N+1 sorguyla yapmak
+-- yerine tek JOIN'de çözülür.
+SELECT
+    r.id, r.scope, r.margin_percent, r.fixed_fee_minor, r.min_price_minor,
+    r.note, r.valid_from, r.valid_to, r.created_at,
+    s.code AS service_code,
+    c.iso2 AS country_iso2,
+    p.duration_minutes AS product_duration_minutes
+FROM pricing_rules r
+LEFT JOIN services  s ON s.id = r.service_id
+LEFT JOIN countries c ON c.id = r.country_id
+LEFT JOIN products  p ON p.id = r.product_id
+WHERE r.is_active
+ORDER BY r.scope DESC, r.id;
+
+-- name: GetPricingRule :one
+SELECT * FROM pricing_rules WHERE id = $1;
+
+-- name: LockActiveRuleForScope :one
+-- Bir kapsamdaki ETKİN kuralı KİLİTLER.
+--
+-- Kural "güncelleme" yoktur: eski kural pasifleştirilip yenisi eklenir
+-- (kısmi tekil indeksler aynı kapsamda iki etkin kurala izin vermez).
+-- Kilit olmadan iki yönetici aynı anda kural yazdığında ikisi de eski satırı
+-- görür, ikisi de INSERT eder ve biri 23505 ile düşer — hangisinin geçtiği
+-- rastgele olur. FOR UPDATE bunu sıraya sokar.
+--
+-- IS NOT DISTINCT FROM kullanılır: NULL = NULL karşılaştırması `=` ile
+-- daima NULL döner ve GLOBAL kapsam (üç alanı da NULL) hiç eşleşmezdi.
+SELECT * FROM pricing_rules
+WHERE is_active
+  AND scope = @scope
+  AND service_id IS NOT DISTINCT FROM sqlc.narg('service_id')::bigint
+  AND country_id IS NOT DISTINCT FROM sqlc.narg('country_id')::bigint
+  AND product_id IS NOT DISTINCT FROM sqlc.narg('product_id')::bigint
+FOR UPDATE;
+
+-- name: CountActiveRulesByScope :one
+-- Bir kapsamdaki etkin kural sayısı.
+--
+-- Son GLOBAL kuralın pasifleştirilmesini engellemek için kullanılır: GLOBAL
+-- kural kalmazsa ListApplicableRules boş döner, SelectRule ErrNoRule verir ve
+-- SİSTEM SATIŞ YAPAMAZ hâle gelir.
+SELECT count(*) FROM pricing_rules WHERE is_active AND scope = @scope;
+
+-- name: GetPricingRuleLabels :one
+-- Bir kuralın kapsamını İNSAN OKUR kodlarla verir.
+--
+-- Denetim kaydının entity_id'si için gerekir: oraya sayısal kimlik yazmak
+-- (Değişmez #10) kaydı hem okunmaz hem de kimlik yeniden kullanıldığında
+-- yanıltıcı yapar. "SERVICE_COUNTRY:whatsapp:TR" bir yıl sonra da aynı şeyi
+-- anlatır.
+SELECT
+    r.scope,
+    s.code AS service_code,
+    c.iso2 AS country_iso2,
+    p.duration_minutes AS product_duration_minutes
+FROM pricing_rules r
+LEFT JOIN services  s ON s.id = r.service_id
+LEFT JOIN countries c ON c.id = r.country_id
+LEFT JOIN products  p ON p.id = r.product_id
+WHERE r.id = $1;

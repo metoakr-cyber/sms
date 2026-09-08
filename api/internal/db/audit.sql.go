@@ -8,7 +8,44 @@ package db
 import (
 	"context"
 	"net/netip"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const countAuditLogsForAdmin = `-- name: CountAuditLogsForAdmin :one
+SELECT count(*) FROM audit_logs a
+LEFT JOIN users u ON u.id = a.actor_user_id
+WHERE ($1::text IS NULL OR a.entity_type = $1::text)
+  AND ($2::text   IS NULL OR a.entity_id   = $2::text)
+  AND ($3::text      IS NULL OR a.action      = $3::text)
+  AND ($4::uuid       IS NULL OR u.public_id   = $4::uuid)
+  AND ($5::timestamptz IS NULL OR a.created_at >= $5::timestamptz)
+  AND ($6::timestamptz IS NULL OR a.created_at < $6::timestamptz)
+`
+
+type CountAuditLogsForAdminParams struct {
+	EntityType *string
+	EntityID   *string
+	Action     *string
+	Actor      pgtype.UUID
+	From       *time.Time
+	Until      *time.Time
+}
+
+func (q *Queries) CountAuditLogsForAdmin(ctx context.Context, arg CountAuditLogsForAdminParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditLogsForAdmin,
+		arg.EntityType,
+		arg.EntityID,
+		arg.Action,
+		arg.Actor,
+		arg.From,
+		arg.Until,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const insertAuditLog = `-- name: InsertAuditLog :exec
 INSERT INTO audit_logs
@@ -87,6 +124,104 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 			&i.UserAgent,
 			&i.RequestID,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuditLogsForAdmin = `-- name: ListAuditLogsForAdmin :many
+
+SELECT
+    a.id, a.action, a.entity_type, a.entity_id, a.before, a.after,
+    a.ip, a.user_agent, a.request_id, a.created_at,
+    u.public_id AS actor_public_id,
+    COALESCE(u.username, '')::text AS actor_username
+FROM audit_logs a
+LEFT JOIN users u ON u.id = a.actor_user_id
+WHERE ($1::text IS NULL OR a.entity_type = $1::text)
+  AND ($2::text   IS NULL OR a.entity_id   = $2::text)
+  AND ($3::text      IS NULL OR a.action      = $3::text)
+  AND ($4::uuid       IS NULL OR u.public_id   = $4::uuid)
+  AND ($5::timestamptz IS NULL OR a.created_at >= $5::timestamptz)
+  AND ($6::timestamptz IS NULL OR a.created_at < $6::timestamptz)
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT $8 OFFSET $7
+`
+
+type ListAuditLogsForAdminParams struct {
+	EntityType *string
+	EntityID   *string
+	Action     *string
+	Actor      pgtype.UUID
+	From       *time.Time
+	Until      *time.Time
+	Off        int32
+	Lim        int32
+}
+
+type ListAuditLogsForAdminRow struct {
+	ID            int64
+	Action        string
+	EntityType    string
+	EntityID      string
+	Before        []byte
+	After         []byte
+	Ip            *netip.Addr
+	UserAgent     string
+	RequestID     string
+	CreatedAt     time.Time
+	ActorPublicID pgtype.UUID
+	ActorUsername string
+}
+
+// ─────────────────────── Denetim kaydı okuma (FR-705) ───────────────────────
+// Aktör / varlık / eylem / tarih süzgeçli, sayfalı denetim kaydı.
+//
+// AKTÖR public_id İLE SÜZÜLÜR, sayısal id ile değil (Değişmez #10): dışarıya
+// verilen kimlik neyse süzgeç de onu almalı, yoksa panel önce kullanıcıyı
+// sayısal kimliğe çevirmek zorunda kalır ve o kimlik yanıtta da görünür.
+//
+// E-POSTA SEÇİLMEZ. Aktörü tanımak için public_id + kullanıcı adı yeter;
+// e-posta denetim listesinde toplu olarak dışarı akan kişisel veridir.
+// id DESC ikinci ölçüt: aynı milisaniyede yazılan iki kayıt sayfalar arasında
+// yer değiştirirse aynı satır iki sayfada birden görünür ya da hiç görünmez.
+func (q *Queries) ListAuditLogsForAdmin(ctx context.Context, arg ListAuditLogsForAdminParams) ([]ListAuditLogsForAdminRow, error) {
+	rows, err := q.db.Query(ctx, listAuditLogsForAdmin,
+		arg.EntityType,
+		arg.EntityID,
+		arg.Action,
+		arg.Actor,
+		arg.From,
+		arg.Until,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAuditLogsForAdminRow{}
+	for rows.Next() {
+		var i ListAuditLogsForAdminRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Action,
+			&i.EntityType,
+			&i.EntityID,
+			&i.Before,
+			&i.After,
+			&i.Ip,
+			&i.UserAgent,
+			&i.RequestID,
+			&i.CreatedAt,
+			&i.ActorPublicID,
+			&i.ActorUsername,
 		); err != nil {
 			return nil, err
 		}

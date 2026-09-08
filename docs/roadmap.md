@@ -208,10 +208,10 @@ sistem doğrulanamıyordu. Nitekim arayüzü bağlamak üç gerçek hatayı orta
 - [ ] `activation-reaper` işi — her sipariş sağlayıcıda kapatılır → **FR-412**
       ⚠️ *bkz. "Senden gerekenler" G5*
 - [ ] Redis Pub/Sub + SSE + keepalive → **FR-403, FR-411**
-- [ ] `order-poller` (30 sn, `GET /activations` `size=25` sayfalı) → **FR-404**
+- [x] `order-poller` (30 sn, `GET /activations` `size=25` sayfalı) → **FR-404**
 - [ ] `order-expirer` (otomatik iptal + iade) → **FR-405**
 - [ ] `orphan-hold-reaper` → **FR-408**
-- [ ] İptal + iade → **FR-406** · `provider-refund-retry` + `provider_refund_status` → **FR-406b**
+- [x] İptal + iade → **FR-406** · `provider-refund-retry` + `provider_refund_status` → **FR-406b**
 - [ ] **SSE sertleştirme** (`frontend-contract.md` §4): keepalive izleme, üstel geri çekilme,
       `visibilitychange`/`pageshow` senkronu, yoklama yedeği, terminal durumda kapatma
 - [ ] Caddy `flush_interval -1` + **yerel HTTPS/HTTP2 ile doğrulama**
@@ -241,9 +241,9 @@ sistem doğrulanamıyordu. Nitekim arayüzü bağlamak üç gerçek hatayı orta
 **Amaç:** Sistemi işletilebilir hale getirmek.
 
 - [ ] Migration: `deposit_methods` · `deposits` · `tickets` · `ticket_messages`
-- [ ] Havale ile yükleme + güvenli dosya yükleme (sihirli bayt, web kökü dışı) → **FR-500**
-- [ ] USDT ile yükleme (TX hash, manuel onay) → **FR-501**  ⚠️ *G6*
-- [ ] Onay/red — **POST**, idempotent, izinli, audit log'lu → **FR-502, FR-503**
+- [x] Havale ile yükleme + güvenli dosya yükleme (sihirli bayt, web kökü dışı) → **FR-500**
+- [x] USDT ile yükleme (TX hash, manuel onay) → **FR-501**  ⚠️ *G6*
+- [x] Onay/red — **POST**, idempotent, izinli, audit log'lu → **FR-502, FR-503**
 - [ ] Destek talebi sistemi → **FR-600**
 - [ ] Admin ekranları: kullanıcılar · sağlayıcılar · boyut eşleştirme · fiyat kuralları
       (canlı önizlemeli) · bakiye talepleri · denetim kaydı → **FR-700…FR-705**

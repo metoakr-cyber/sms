@@ -50,6 +50,22 @@ func (q *Queries) ConsumeQuote(ctx context.Context, arg ConsumeQuoteParams) (Pri
 	return i, err
 }
 
+const countActiveRulesByScope = `-- name: CountActiveRulesByScope :one
+SELECT count(*) FROM pricing_rules WHERE is_active AND scope = $1
+`
+
+// Bir kapsamdaki etkin kural sayısı.
+//
+// Son GLOBAL kuralın pasifleştirilmesini engellemek için kullanılır: GLOBAL
+// kural kalmazsa ListApplicableRules boş döner, SelectRule ErrNoRule verir ve
+// SİSTEM SATIŞ YAPAMAZ hâle gelir.
+func (q *Queries) CountActiveRulesByScope(ctx context.Context, scope PricingScope) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveRulesByScope, scope)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createPricingRule = `-- name: CreatePricingRule :one
 INSERT INTO pricing_rules
     (scope, service_id, country_id, product_id, margin_percent,
@@ -208,6 +224,71 @@ func (q *Queries) GetLatestFXRate(ctx context.Context, arg GetLatestFXRateParams
 		&i.Rate,
 		&i.Source,
 		&i.FetchedAt,
+	)
+	return i, err
+}
+
+const getPricingRule = `-- name: GetPricingRule :one
+SELECT id, scope, service_id, country_id, product_id, margin_percent, fixed_fee_minor, min_price_minor, is_active, valid_from, valid_to, note, created_by_user_id, created_at, updated_at FROM pricing_rules WHERE id = $1
+`
+
+func (q *Queries) GetPricingRule(ctx context.Context, id int64) (PricingRule, error) {
+	row := q.db.QueryRow(ctx, getPricingRule, id)
+	var i PricingRule
+	err := row.Scan(
+		&i.ID,
+		&i.Scope,
+		&i.ServiceID,
+		&i.CountryID,
+		&i.ProductID,
+		&i.MarginPercent,
+		&i.FixedFeeMinor,
+		&i.MinPriceMinor,
+		&i.IsActive,
+		&i.ValidFrom,
+		&i.ValidTo,
+		&i.Note,
+		&i.CreatedByUserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getPricingRuleLabels = `-- name: GetPricingRuleLabels :one
+SELECT
+    r.scope,
+    s.code AS service_code,
+    c.iso2 AS country_iso2,
+    p.duration_minutes AS product_duration_minutes
+FROM pricing_rules r
+LEFT JOIN services  s ON s.id = r.service_id
+LEFT JOIN countries c ON c.id = r.country_id
+LEFT JOIN products  p ON p.id = r.product_id
+WHERE r.id = $1
+`
+
+type GetPricingRuleLabelsRow struct {
+	Scope                  PricingScope
+	ServiceCode            *string
+	CountryIso2            *string
+	ProductDurationMinutes *int32
+}
+
+// Bir kuralın kapsamını İNSAN OKUR kodlarla verir.
+//
+// Denetim kaydının entity_id'si için gerekir: oraya sayısal kimlik yazmak
+// (Değişmez #10) kaydı hem okunmaz hem de kimlik yeniden kullanıldığında
+// yanıltıcı yapar. "SERVICE_COUNTRY:whatsapp:TR" bir yıl sonra da aynı şeyi
+// anlatır.
+func (q *Queries) GetPricingRuleLabels(ctx context.Context, id int64) (GetPricingRuleLabelsRow, error) {
+	row := q.db.QueryRow(ctx, getPricingRuleLabels, id)
+	var i GetPricingRuleLabelsRow
+	err := row.Scan(
+		&i.Scope,
+		&i.ServiceCode,
+		&i.CountryIso2,
+		&i.ProductDurationMinutes,
 	)
 	return i, err
 }
@@ -375,6 +456,131 @@ func (q *Queries) ListPricingRules(ctx context.Context) ([]PricingRule, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const listPricingRulesForAdmin = `-- name: ListPricingRulesForAdmin :many
+
+SELECT
+    r.id, r.scope, r.margin_percent, r.fixed_fee_minor, r.min_price_minor,
+    r.note, r.valid_from, r.valid_to, r.created_at,
+    s.code AS service_code,
+    c.iso2 AS country_iso2,
+    p.duration_minutes AS product_duration_minutes
+FROM pricing_rules r
+LEFT JOIN services  s ON s.id = r.service_id
+LEFT JOIN countries c ON c.id = r.country_id
+LEFT JOIN products  p ON p.id = r.product_id
+WHERE r.is_active
+ORDER BY r.scope DESC, r.id
+`
+
+type ListPricingRulesForAdminRow struct {
+	ID                     int64
+	Scope                  PricingScope
+	MarginPercent          pgtype.Numeric
+	FixedFeeMinor          int64
+	MinPriceMinor          int64
+	Note                   string
+	ValidFrom              *time.Time
+	ValidTo                *time.Time
+	CreatedAt              time.Time
+	ServiceCode            *string
+	CountryIso2            *string
+	ProductDurationMinutes *int32
+}
+
+// ─────────────────────── Fiyat kuralı yönetimi (FR-703) ───────────────────────
+// Yönetim listesi: etkin kurallar + kapsamın İNSAN OKUR karşılığı.
+//
+// `ListPricingRules` yalnız ham satırı döner; panelde "service_id 42" değil
+// "whatsapp × TR" yazmalı. Ad çözümlemesini Go tarafında N+1 sorguyla yapmak
+// yerine tek JOIN'de çözülür.
+func (q *Queries) ListPricingRulesForAdmin(ctx context.Context) ([]ListPricingRulesForAdminRow, error) {
+	rows, err := q.db.Query(ctx, listPricingRulesForAdmin)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPricingRulesForAdminRow{}
+	for rows.Next() {
+		var i ListPricingRulesForAdminRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Scope,
+			&i.MarginPercent,
+			&i.FixedFeeMinor,
+			&i.MinPriceMinor,
+			&i.Note,
+			&i.ValidFrom,
+			&i.ValidTo,
+			&i.CreatedAt,
+			&i.ServiceCode,
+			&i.CountryIso2,
+			&i.ProductDurationMinutes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockActiveRuleForScope = `-- name: LockActiveRuleForScope :one
+SELECT id, scope, service_id, country_id, product_id, margin_percent, fixed_fee_minor, min_price_minor, is_active, valid_from, valid_to, note, created_by_user_id, created_at, updated_at FROM pricing_rules
+WHERE is_active
+  AND scope = $1
+  AND service_id IS NOT DISTINCT FROM $2::bigint
+  AND country_id IS NOT DISTINCT FROM $3::bigint
+  AND product_id IS NOT DISTINCT FROM $4::bigint
+FOR UPDATE
+`
+
+type LockActiveRuleForScopeParams struct {
+	Scope     PricingScope
+	ServiceID *int64
+	CountryID *int64
+	ProductID *int64
+}
+
+// Bir kapsamdaki ETKİN kuralı KİLİTLER.
+//
+// Kural "güncelleme" yoktur: eski kural pasifleştirilip yenisi eklenir
+// (kısmi tekil indeksler aynı kapsamda iki etkin kurala izin vermez).
+// Kilit olmadan iki yönetici aynı anda kural yazdığında ikisi de eski satırı
+// görür, ikisi de INSERT eder ve biri 23505 ile düşer — hangisinin geçtiği
+// rastgele olur. FOR UPDATE bunu sıraya sokar.
+//
+// IS NOT DISTINCT FROM kullanılır: NULL = NULL karşılaştırması `=` ile
+// daima NULL döner ve GLOBAL kapsam (üç alanı da NULL) hiç eşleşmezdi.
+func (q *Queries) LockActiveRuleForScope(ctx context.Context, arg LockActiveRuleForScopeParams) (PricingRule, error) {
+	row := q.db.QueryRow(ctx, lockActiveRuleForScope,
+		arg.Scope,
+		arg.ServiceID,
+		arg.CountryID,
+		arg.ProductID,
+	)
+	var i PricingRule
+	err := row.Scan(
+		&i.ID,
+		&i.Scope,
+		&i.ServiceID,
+		&i.CountryID,
+		&i.ProductID,
+		&i.MarginPercent,
+		&i.FixedFeeMinor,
+		&i.MinPriceMinor,
+		&i.IsActive,
+		&i.ValidFrom,
+		&i.ValidTo,
+		&i.Note,
+		&i.CreatedByUserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const lockQuoteForConsumption = `-- name: LockQuoteForConsumption :one

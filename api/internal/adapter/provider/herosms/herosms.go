@@ -70,6 +70,8 @@ func baseOf(c port.Creds) string {
 // 🔴 URL LOG'A YAZILMAZ: API anahtarı sorgu dizesinde gider ve vekil/erişim
 // log'larına düşer (docs/design.md §12). Hata mesajlarında da yalnız action adı
 // geçer, tam URL değil.
+//
+// test: leak_test.go#TestLegacyCallNeverLogsAPIKey
 func (p *Provider) legacyGet(ctx context.Context, c port.Creds, action string, extra url.Values) ([]byte, error) {
 	q := url.Values{"api_key": {c.APIKey}, "action": {action}}
 	for k, v := range extra {

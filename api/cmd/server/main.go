@@ -22,16 +22,19 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/fake"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/herosms"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/redis"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/storage"
 	"github.com/ikmetrik/sms-platform/api/internal/config"
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
 	catalogsvc "github.com/ikmetrik/sms-platform/api/internal/service/catalog"
+	depositsvc "github.com/ikmetrik/sms-platform/api/internal/service/deposit"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	httptransport "github.com/ikmetrik/sms-platform/api/internal/transport/http"
+	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
 	"github.com/ikmetrik/sms-platform/api/internal/worker"
 )
 
@@ -149,6 +152,24 @@ func run() error {
 		Clock: port.RealClock{},
 	})
 
+	// Dekont deposu AÇILIŞTA kurulur ve yazılabilirliği burada doğrulanır.
+	//
+	// Hata dönerse süreç BAŞLAMAZ: ilk yükleme anında keşfedilen bir izin
+	// hatası kullanıcıya "beklenmeyen hata" olarak döner, dekont kaybolur ve
+	// sebebi günlerce aranmaz. Yapılandırma üretimde UPLOAD_DIR'i zorunlu
+	// kılıyor; burada gerçekten bir depo kurulmazsa o zorunluluk boş bir söz
+	// olurdu.
+	receiptStore, err := storage.NewLocal(cfg.UploadDir)
+	if err != nil {
+		return err
+	}
+	slog.Info("dekont deposu hazır", "dir", receiptStore.Root())
+
+	depositService := depositsvc.New(depositsvc.Deps{
+		TxRunner: txRunner, Wallet: walletService,
+		Clock: port.RealClock{}, Receipts: receiptStore,
+	})
+
 	authService := authsvc.New(authsvc.Deps{
 		TxRunner: txRunner, Sessions: sessions, Mailer: mail,
 		Captcha: cap, Limiter: limiter, Clock: port.RealClock{},
@@ -192,11 +213,36 @@ func run() error {
 	}
 
 	// 5) Sunucu
+	// Fiyat kuralı yönetimi (FR-703) ve katalog senkron tetikleyicisi.
+	//
+	// 🔴 BUNLAR BAĞLANMAZSA uçlar DERLENİR ama üretimde 500/503 döner:
+	// router.go nil gördüğünde uçları kapatıp açılışta uyarı basar.
+	// "Derleniyor" ile "çalışıyor" aynı şey değildir.
+	ruleService := pricingsvc.NewRuleService(pricingsvc.RuleDeps{
+		TxRunner: txRunner, FX: fxService, Clock: port.RealClock{},
+		FXSafetyMargin: safety,
+	})
+	syncRunner := handler.NewSyncRunner(func(ctx context.Context, providerID int64) error {
+		// Sıra ÖNEMLİ: boyutlar (ülke/servis eşleştirmeleri) olmadan teklif
+		// senkronu ürünü bulamaz; bakiye en sona bırakılır çünkü diğer ikisi
+		// başarısızsa bakiyeyi tazelemenin bir anlamı yok.
+		if _, err := catalogService.SyncDimensions(ctx, providerID); err != nil {
+			return err
+		}
+		if _, err := catalogService.SyncOffers(ctx, providerID); err != nil {
+			return err
+		}
+		return catalogService.SyncProviderBalance(ctx, providerID)
+	})
+
 	router := httptransport.NewRouter(httptransport.Deps{
 		Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
 		Sessions: sessions, Limiter: limiter, Secrets: secrets,
 		AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
 		OrderSvc: orderService, OrderBus: orderBus,
+		DepositSvc:   depositService,
+		RuleSvc:      ruleService,
+		CatalogSync:  syncRunner,
 		Metrics:      metricsHandler(metrics),
 		WebhookQueue: webhookQueue,
 	})

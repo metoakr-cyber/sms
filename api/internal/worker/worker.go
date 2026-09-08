@@ -2,11 +2,23 @@
 //
 // NEDEN AYRI BİR SÜREÇ DEĞİL (henüz): tek bir VPS'te iki süreç yönetmek,
 // kazandırdığından fazla operasyon yükü getiriyor. İşler sunucu süreci içinde
-// çalışır ama TEK ÖRNEK garantisi Redis kilidiyle sağlanır — ikinci bir sunucu
-// eklendiğinde iki poller aynı siparişi işlemez.
+// çalışır.
+//
+// 🔴 REDİS DAĞITIK KİLİDİ HENÜZ YOK. Bu yorum eskiden "TEK ÖRNEK garantisi
+// Redis kilidiyle sağlanır — ikinci bir sunucu eklendiğinde iki poller aynı
+// siparişi işlemez" diyordu; kodda öyle bir kilit hiç olmadı. Kodun
+// sağlamadığı bir garantiyi iddia eden yorum, tekil bir hatadan DAHA
+// TEHLİKELİDİR: okuyan kontrolün yapıldığını varsayar ve inceleme orada durur.
+//
+// Bugün tek örnek varsayımı OPERASYONELDİR, kodla zorlanmaz. İkinci bir sunucu
+// eklenmeden önce dağıtık kilit gerekir. O güne kadar her iş kendi
+// idempotensine dayanır: `order-poller` DeliverMessages'ın dedup'ına,
+// `provider-refund-retry` ile `activation-reaper` ise `ClaimOrderClose`
+// sahiplenmesine (queries/orders.sql).
 //
 // Her iş şu üç kurala uyar:
 //  1. Kendi hatasında DİĞER İŞLERİ ETKİLEMEZ (panik yakalanır).
+//     test: worker_test.go#TestJobPanicDoesNotStopOtherJobs
 //  2. Bir turda işlenen kayıt sayısı SINIRLIDIR — bir birikim tüm turu
 //     kilitlemesin.
 //  3. İdempotenttir: aynı tur iki kez çalışsa aynı sonucu verir.

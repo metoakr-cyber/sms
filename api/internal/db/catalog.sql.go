@@ -534,6 +534,67 @@ func (q *Queries) ListOffersForProduct(ctx context.Context, productID int64) ([]
 	return items, nil
 }
 
+const listOffersForProductAnyStock = `-- name: ListOffersForProductAnyStock :many
+SELECT o.provider_id, o.product_id, o.cost_micro, o.cost_currency, o.stock, o.is_available, o.synced_at, pr.name AS provider_name, pr.protocol, pr.priority, pr.cost_multiplier
+FROM provider_offers o
+JOIN providers pr ON pr.id = o.provider_id
+WHERE o.product_id = $1 AND pr.is_active
+ORDER BY o.cost_micro, pr.priority
+`
+
+type ListOffersForProductAnyStockRow struct {
+	ProviderID     int64
+	ProductID      int64
+	CostMicro      int64
+	CostCurrency   CurrencyCode
+	Stock          int32
+	IsAvailable    bool
+	SyncedAt       time.Time
+	ProviderName   string
+	Protocol       ProviderProtocol
+	Priority       int32
+	CostMultiplier pgtype.Numeric
+}
+
+// YALNIZ YÖNETİM ÖNİZLEMESİ İÇİN: stok koşulu yoktur.
+//
+// `ListOffersForProduct` stoksuz teklifleri eler — satış yolunda doğru olan
+// budur. Ama yönetici marjı değiştirirken stoğu tükenmiş bir ürünün fiyatını
+// da görebilmeli: maliyet biliniyor, satılamıyor olması fiyatı bilinmez
+// yapmaz. Bu sorgu SATIŞ YOLUNDA KULLANILMAZ.
+// test: internal/service/pricing/rules_integration_test.go#TestPreviewWorksWhenOutOfStock
+func (q *Queries) ListOffersForProductAnyStock(ctx context.Context, productID int64) ([]ListOffersForProductAnyStockRow, error) {
+	rows, err := q.db.Query(ctx, listOffersForProductAnyStock, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOffersForProductAnyStockRow{}
+	for rows.Next() {
+		var i ListOffersForProductAnyStockRow
+		if err := rows.Scan(
+			&i.ProviderID,
+			&i.ProductID,
+			&i.CostMicro,
+			&i.CostCurrency,
+			&i.Stock,
+			&i.IsAvailable,
+			&i.SyncedAt,
+			&i.ProviderName,
+			&i.Protocol,
+			&i.Priority,
+			&i.CostMultiplier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProvidersForAdmin = `-- name: ListProvidersForAdmin :many
 SELECT
     p.id, p.name, p.protocol, p.base_url, p.is_active, p.priority,

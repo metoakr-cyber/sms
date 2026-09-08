@@ -338,3 +338,17 @@ RETURNING id, name, protocol, base_url, is_active, priority, cost_multiplier;
 -- anahtarı yanlışlıkla silmesini imkânsız kılar.
 -- test: internal/transport/http/handler/admin_integration_test.go#TestSavingProviderSettingsDoesNotEraseAPIKey
 UPDATE providers SET api_key_enc = @api_key_enc, updated_at = now() WHERE id = @id;
+
+-- name: ListOffersForProductAnyStock :many
+-- YALNIZ YÖNETİM ÖNİZLEMESİ İÇİN: stok koşulu yoktur.
+--
+-- `ListOffersForProduct` stoksuz teklifleri eler — satış yolunda doğru olan
+-- budur. Ama yönetici marjı değiştirirken stoğu tükenmiş bir ürünün fiyatını
+-- da görebilmeli: maliyet biliniyor, satılamıyor olması fiyatı bilinmez
+-- yapmaz. Bu sorgu SATIŞ YOLUNDA KULLANILMAZ.
+-- test: internal/service/pricing/rules_integration_test.go#TestPreviewWorksWhenOutOfStock
+SELECT o.*, pr.name AS provider_name, pr.protocol, pr.priority, pr.cost_multiplier
+FROM provider_offers o
+JOIN providers pr ON pr.id = o.provider_id
+WHERE o.product_id = $1 AND pr.is_active
+ORDER BY o.cost_micro, pr.priority;

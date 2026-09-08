@@ -690,6 +690,8 @@ type Order struct {
 	CancelReason              string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
+	// Sağlayıcıda kapatma denemesinin sahiplenme damgası (kira). NULL = sahipsiz.
+	CloseClaimedAt *time.Time
 }
 
 type OrderMessage struct {

@@ -667,6 +667,60 @@ numara gelirse FR-306 kuralı yanlış ve satılabilir stoğu gizliyoruz demekti
 (`disabled`), etiketi "şu an stok yok". Kiralamada Türkiye hiç listelenmiyor —
 sağlayıcıda kiralık Türkiye ürünü yok.
 
+---
+
+### Teslim dalgası kararları (2026-09-08/09)
+
+**Üretim daha önce HİÇ AÇILAMIYORDU.** `config.go` üretimde
+`MAIL_PROVIDER="console"`u yasaklıyordu ama yazılmış tek adaptör console'du;
+başka bir değer verildiğinde `main.go` "adaptör yok" deyip çıkıyordu. SMTP ve
+Resend adaptörleri yazıldı. İki adaptörde de dönen hata metni sırlardan
+temizleniyor, çünkü `service/auth/emails.go` o hatayı `slog.Error` ile
+kaydediyor — sarmalama zinciri bilerek `errors.New` ile kesildi; `%w` ile
+taşınsaydı temizlik işe yaramazdı.
+
+**E2 — ters vekil arkasında webhook.** `router.go` yalnız loopback vekiline
+güveniyordu. Docker'da Caddy ayrı bir konteyner olduğu için api'nin gördüğü
+`RemoteAddr` her zaman Caddy'ninkiydi; HeroSMS'in gerçek IP'si hiç görünmüyor,
+her bildirim 200 dönerek sessizce eleniyordu. Sistem "çalışıyor" görünür,
+gelir sıfır olurdu. `TRUSTED_PROXIES` eklendi. **İki uç hatadan da kaçınıldı:**
+başlığa koşulsuz güvenmek (uydurulabilir) ve hiç bakmamak (vekil arkasında
+çalışmaz). Kural: başlığa yalnız bağlantı güvenilen bir vekilden geliyorsa
+bakılır, zincirde **sağdan sola** yürünür.
+
+> İlk yazdığım üretim kontrolü (`len(list) == 0`) **yetersizdi**: değişken
+> tanımsızken varsayılan loopback listesi dönüyor, liste hiç boş olmuyor ve
+> kontrol hiç tetiklenmiyordu. Kendi testim yakaladı. **Sessizce yanlış bir
+> varsayılan, eksik bir ayardan daha kötüdür.**
+
+**Fiyat kuralı: güncelleme yoktur, yeni kural yazılır.** Aynı kapsama yazılan
+yeni kural eskisini AYNI transaction içinde pasifleştirir. Böylece geçmiş kural
+silinmez (`price_quotes.pricing_rule_id` izlenebilir kalır) ve kapsam bir an
+bile kuralsız kalmaz. **Son GLOBAL kural pasifleştirilemez** (409): GLOBAL kural
+kalmazsa her teklif `NO_PRICING_RULE` ile düşer — site açık kalır ama hiçbir şey
+satılamaz.
+
+**Dekont doğrulaması yalnız sihirli bayta bakar.** Dosya adı ve `Content-Type`
+kanıt değil, ipucudur. `SaveReceipt` bir dosya adı parametresi **almaz** —
+dizin geçişi yapısal olarak imkânsız. Canlı doğrulandı: `image/jpeg` başlıklı
+PHP dosyası 422, yanlış `Content-Type`'lı gerçek JPEG kabul.
+
+### Denetleyiciyi genişletme denemesi — GERİ ALINDI
+
+`check-guarantees.py` regex'ine Türkçe olumsuz çekimler (`-maz/-mez`) eklendi:
+**54 yakalama**, çoğu CLAUDE.md değişmezlerine yapılan *atıf* veya geçmiş
+hatayı anlatan düz metin. Hatta bir ajanın "yanlış garanti" diye işaret ettiği
+`worker.go` satırı, o yanlışı **düzelten** yorumun kendisiydi.
+
+Genişletme geri alındı. **Gerekçe:** gürültülü bir kapı yok sayılan bir
+kapıdır ve tören niyetine test atıfı doldurmaya yol açar — denetleyicinin
+önlemek için yazıldığı hatanın ta kendisi (§3.15).
+
+**Ama denemenin bulduğu gerçek açık kapatıldı:** legacy sağlayıcı yolunda
+"URL log'a yazılmaz" garantisinin testi yoktu. `leak_test.go` yazıldı; hem
+log çıktısı hem dönen hata metni aranıyor (hata metinleri servis katmanında
+log'lanıyor, oraya sızan da sonunda log'a düşer). Sabotajla doğrulandı.
+
 ## 7. Bu dokümanı güncelleme kuralı
 
 - **Bir karar verildiğinde** → §1'e tarihiyle ve gerekçesiyle yaz

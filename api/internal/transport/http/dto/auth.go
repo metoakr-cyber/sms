@@ -420,6 +420,11 @@ type AdminProviderResponse struct {
 	CostMultiplier string   `json:"costMultiplier"`
 	Capabilities   []string `json:"capabilities"`
 	Balance        Money    `json:"balance"`
+
+	// Sync katalog senkronunun o anki durumu. Panel senkronu tetikledikten
+	// sonra bu listeyi yoklayarak ilerlemeyi görür — ayrı bir durum ucu
+	// yoktur ve tetikleme ucunu yoklamak yeni bir senkron başlatırdı.
+	Sync *ProviderSyncDTO `json:"sync,omitempty"`
 }
 
 type UpdateProviderRequest struct {

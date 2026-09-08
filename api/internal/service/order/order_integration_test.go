@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -75,10 +77,33 @@ type stubProvider struct {
 	statusMessages []port.RemoteMessage
 	expiresIn      time.Duration
 	now            func() time.Time
+
+	/* ── Toplu yoklama (port.BatchPoller) ── */
+
+	// activeMessages: remoteID → toplu yoklamada dönecek mesajlar. Anahtarın
+	// varlığı aktivasyonun ListActive sonucunda görüneceği anlamına gelir;
+	// mesaj listesi boş olabilir (kod henüz gelmedi).
+	activeMessages map[string][]port.RemoteMessage
+	// activeStates: sağlayıcının bildirdiği durum. Yazılmazsa StateWaiting.
+	activeStates    map[string]port.RemoteOrderState
+	listActiveCalls atomic.Int32
+	statusCalls     atomic.Int32
+
+	// cancelResults SIRAYLA tüketilir; tükendiğinde Cancel nil döner (mevcut
+	// davranış korunur, eski testler etkilenmez).
+	cancelResults []error
+	// cancelDelay Cancel çağrısına yapay gecikme ekler — eşzamanlılık
+	// testinde iki işçinin çağrıyı gerçekten üst üste bindirmesi için.
+	cancelDelay time.Duration
 }
 
 func newStub(now func() time.Time) *stubProvider {
-	return &stubProvider{expiresIn: 20 * time.Minute, now: now}
+	return &stubProvider{
+		expiresIn:      20 * time.Minute,
+		now:            now,
+		activeMessages: map[string][]port.RemoteMessage{},
+		activeStates:   map[string]port.RemoteOrderState{},
+	}
 }
 
 func (p *stubProvider) Protocol() string { return "FAKE" }
@@ -121,6 +146,7 @@ func (p *stubProvider) Purchase(_ context.Context, _ port.Creds, cmd port.Purcha
 }
 
 func (p *stubProvider) GetStatus(context.Context, port.Creds, string) (*port.RemoteStatus, error) {
+	p.statusCalls.Add(1)
 	p.mu.Lock()
 	msgs := append([]port.RemoteMessage(nil), p.statusMessages...)
 	p.mu.Unlock()
@@ -129,9 +155,77 @@ func (p *stubProvider) GetStatus(context.Context, port.Creds, string) (*port.Rem
 	}
 	return &port.RemoteStatus{State: port.StateCompleted, Messages: msgs}, nil
 }
+
+var _ port.BatchPoller = (*stubProvider)(nil)
+
+// ListActive gerçek sağlayıcının sayfalama sözleşmesini taklit eder: size
+// 25'e kırpılır, cursor 1 tabanlı sayfa numarası, son sayfada NextCursor boş.
+func (p *stubProvider) ListActive(_ context.Context, _ port.Creds, cursor string, size int) (port.ActivePage, error) {
+	p.listActiveCalls.Add(1)
+	const maxSize = 25
+	if size <= 0 || size > maxSize {
+		size = maxSize
+	}
+	page := 1
+	if cursor != "" {
+		n, err := strconv.Atoi(cursor)
+		if err != nil || n < 1 {
+			return port.ActivePage{}, fmt.Errorf("stub: geçersiz imleç %q", cursor)
+		}
+		page = n
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ids := make([]string, 0, len(p.activeMessages))
+	for id := range p.activeMessages {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	start := (page - 1) * size
+	if start > len(ids) {
+		start = len(ids)
+	}
+	end := start + size
+	if end > len(ids) {
+		end = len(ids)
+	}
+
+	items := make([]port.ActiveOrder, 0, end-start)
+	for _, id := range ids[start:end] {
+		msgs := append([]port.RemoteMessage(nil), p.activeMessages[id]...)
+		st := p.activeStates[id]
+		if st == "" {
+			st = port.StateWaiting
+		}
+		if len(msgs) > 0 {
+			st = port.StateCompleted
+		}
+		items = append(items, port.ActiveOrder{RemoteOrderID: id, State: st, Messages: msgs})
+	}
+	next := ""
+	if end < len(ids) {
+		next = strconv.Itoa(page + 1)
+	}
+	return port.ActivePage{Items: items, NextCursor: next}, nil
+}
+
 func (p *stubProvider) Cancel(context.Context, port.Creds, string) error {
 	p.cancels.Add(1)
-	return nil
+	p.mu.Lock()
+	delay := p.cancelDelay
+	var out error
+	if len(p.cancelResults) > 0 {
+		out = p.cancelResults[0]
+		p.cancelResults = p.cancelResults[1:]
+	}
+	p.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	return out
 }
 func (p *stubProvider) Finish(context.Context, port.Creds, string) error {
 	p.finishes.Add(1)
@@ -276,6 +370,92 @@ func (e *env) balance(t *testing.T) int64 {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// newPendingOrder bekleyen bir sipariş oluşturur (teklif + satın alma).
+func (e *env) newPendingOrder(t *testing.T) db.Order {
+	t.Helper()
+	q := e.makeQuote(t, 2500)
+	ord, err := e.svc.Create(context.Background(), ordersvc.CreateInput{UserID: e.userID, QuoteID: q})
+	if err != nil {
+		t.Fatalf("sipariş oluşturma: %v", err)
+	}
+	return ord
+}
+
+// seedRefundCandidate iade kuyruğunda bekleyen bir sipariş kurar.
+//
+// DURUM DOĞRUDAN SQL İLE KURULUR, servis üzerinden değil: `Cancel` ve `Expire`
+// kapatmayı bir GOROUTINE içinde tetikler (scheduleProviderClose) ve sağlayıcı
+// çağrı sayaçları testte kararsızlaşır.
+//
+// İKİ ADIMDA yazılır (PENDING→CANCELLED→REFUNDED): `orders_guard_transition`
+// tetikleyicisi doğrudan REFUNDED'a geçişi REDDEDER.
+func (e *env) seedRefundCandidate(
+	t *testing.T, st string, attempts int32, next *time.Time, closed bool,
+) db.Order {
+	t.Helper()
+	ctx := context.Background()
+	ord := e.newPendingOrder(t)
+	now := e.clock.Now()
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE orders SET status='CANCELLED', cancelled_at=$2 WHERE id=$1`, ord.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE orders SET status='REFUNDED', refunded_at=$2 WHERE id=$1`, ord.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	var closedAt *time.Time
+	if closed {
+		closedAt = &now
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE orders SET provider_refund_status=$2::refund_status, refund_attempts=$3,
+		                  refund_next_attempt_at=$4, provider_closed_at=$5
+		WHERE id=$1`, ord.ID, st, attempts, next, closedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := e.q.GetOrderForUser(ctx, db.GetOrderForUserParams{PublicID: ord.PublicID, UserID: e.userID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// refundRow iade eksenini tek sorguda okur.
+func (e *env) refundRow(t *testing.T, id int64) (status string, attempts int32, next, closedAt *time.Time) {
+	t.Helper()
+	if err := pool.QueryRow(context.Background(), `
+		SELECT provider_refund_status::text, refund_attempts, refund_next_attempt_at, provider_closed_at
+		FROM orders WHERE id=$1`, id).Scan(&status, &attempts, &next, &closedAt); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// orderStatus siparişin durumunu okur.
+func (e *env) orderStatus(t *testing.T, id int64) string {
+	t.Helper()
+	var s string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT status::text FROM orders WHERE id=$1`, id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// messageCount siparişin kayıtlı mesaj sayısı.
+func (e *env) messageCount(t *testing.T, id int64) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM order_messages WHERE order_id=$1`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func numeric(t *testing.T, s string) pgtype.Numeric {

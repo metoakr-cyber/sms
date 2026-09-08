@@ -119,3 +119,43 @@ check:
 	./scripts/check.sh
 
 .PHONY: db-test responsive commit help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover test-integration smoke lint check
+
+# ─────────────────────────── ÜRETİM ───────────────────────────
+#
+# Bu hedefler ÜRETİM SUNUCUSUNDA çalıştırılır, geliştirme makinesinde değil.
+# Bilerek ayrı bir COMPOSE dosyası kullanırlar — dev dosyasıyla karıştırmak
+# üretim verisine dev ayarlarıyla dokunmak demektir.
+PROD_COMPOSE := docker compose -f deploy/docker-compose.prod.yml
+
+## prod-build: üretim imajlarını derle (deploy/ altındaki Dockerfile'lar)
+prod-build:
+	docker build -f deploy/Dockerfile.api -t onay360-api:$(shell git rev-parse --short HEAD) .
+	docker build -f deploy/Dockerfile.web \
+		--build-arg NEXT_PUBLIC_SITE_URL=$${NEXT_PUBLIC_SITE_URL:?NEXT_PUBLIC_SITE_URL gerekli} \
+		-t onay360-web:$(shell git rev-parse --short HEAD) .
+
+## prod-config: üretim compose dosyasını doğrula (dağıtmadan önce)
+prod-config:
+	$(PROD_COMPOSE) config >/dev/null && echo "compose geçerli"
+	@command -v caddy >/dev/null && caddy validate --config deploy/Caddyfile || echo "(caddy yok — Caddyfile doğrulanmadı)"
+
+## prod-up: üretim yığınını başlat
+prod-up:
+	$(PROD_COMPOSE) up -d
+
+## prod-logs: üretim log'ları (son 15 dk, hatalar)
+prod-logs:
+	$(PROD_COMPOSE) logs --since=15m | grep -E 'level=(ERROR|WARN)' || echo "hata yok"
+
+## backup: şifreli yedek al (deploy/scripts/yedekle.sh)
+backup:
+	deploy/scripts/yedekle.sh
+
+## restore-drill: yedekten TATBİKAT veritabanına geri yükle (canlıya DOKUNMAZ)
+restore-drill:
+	@test -n "$(YEDEK)" || { echo "kullanım: make restore-drill YEDEK=/yol/dosya.dump.age"; exit 1; }
+	deploy/scripts/geri-yukle.sh "$(YEDEK)"
+
+## reconcile: defter mutabakatı (Σ ledger == balance)
+reconcile:
+	cd $(API) && go run ./cmd/cli wallet:reconcile

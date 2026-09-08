@@ -250,7 +250,7 @@ func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64, live 
 	//
 	// test: rental_quote_integration_test.go#TestRentalDurationsHaveDifferentPrices
 	if !live {
-		return cheapestCached(rows)
+		return cheapestCached(cachedRows(rows), true)
 	}
 
 	results := make([]offer, len(rows))
@@ -436,15 +436,60 @@ func (s *QuoteService) Consume(ctx context.Context, q *db.Queries, userID int64,
 
 var _ = fmt.Sprintf
 
+// offerRow iki farklı sorgunun ortak görünümü.
+//
+// Satış yolu `ListOffersForProduct`, yönetim önizlemesi
+// `ListOffersForProductAnyStock` döndürür ve sqlc bunlar için AYRI Go tipleri
+// üretir. Her tip için ayrı bir "en ucuzu seç" yazmak, aynı ürünün iki yolda
+// farklı sağlayıcıya ve farklı fiyata düşmesi demekti — sıralama TEK YERDE
+// kalsın diye satırlar önce bu görünüme indirgenir.
+type offerRow struct {
+	ProviderID     int64
+	ProviderName   string
+	CostMicro      int64
+	Stock          int32
+	Priority       int32
+	CostMultiplier pgtype.Numeric
+}
+
+func cachedRows(rows []db.ListOffersForProductRow) []offerRow {
+	out := make([]offerRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, offerRow{
+			ProviderID: r.ProviderID, ProviderName: r.ProviderName,
+			CostMicro: r.CostMicro, Stock: r.Stock, Priority: r.Priority,
+			CostMultiplier: r.CostMultiplier,
+		})
+	}
+	return out
+}
+
+func anyStockRows(rows []db.ListOffersForProductAnyStockRow) []offerRow {
+	out := make([]offerRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, offerRow{
+			ProviderID: r.ProviderID, ProviderName: r.ProviderName,
+			CostMicro: r.CostMicro, Stock: r.Stock, Priority: r.Priority,
+			CostMultiplier: r.CostMultiplier,
+		})
+	}
+	return out
+}
+
 // cheapestCached canlı sorgu yapmadan, önbellekteki tekliflerden en ucuzunu seçer.
 //
 // Sıralama canlı yoldakiyle AYNI ölçüte dayanır: maliyet × çarpan, eşitlikte
 // öncelik. İki farklı sıralama yazmak, aynı ürünün iki yolda farklı sağlayıcıya
 // düşmesi demekti.
-func cheapestCached(rows []db.ListOffersForProductRow) (offer, error) {
+//
+// requireStock=false YALNIZ yönetim önizlemesinde geçilir: stoğu tükenmiş bir
+// ürünün maliyeti de bilinir, fiyatı da hesaplanabilir. Satış yolu her zaman
+// true geçer — stoksuz bir sağlayıcı aday olamaz.
+// test: rules_integration_test.go#TestPreviewWorksWhenOutOfStock
+func cheapestCached(rows []offerRow, requireStock bool) (offer, error) {
 	valid := make([]offer, 0, len(rows))
 	for _, r := range rows {
-		if r.Stock <= 0 {
+		if requireStock && r.Stock <= 0 {
 			continue
 		}
 		cost := money.New(r.CostMicro, money.USD)

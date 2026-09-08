@@ -336,23 +336,63 @@ func (s *Service) scheduleProviderClose(ctx context.Context, ord db.Order) {
 	}()
 }
 
+// closeClaimLease bir kapatma denemesinin sahiplenme süresi.
+//
+// Sağlayıcı çağrısı en fazla providerTimeout (10 sn) sürer; kira çok daha
+// uzundur çünkü iki iş görür:
+//   - Çağrı sırasında ölen bir işçinin satırı sonsuza kadar bloke etmesini
+//     engeller (kira dolunca satır kendiliğinden yeniden uygun olur).
+//   - Başarısız bir denemenin hemen ardından ikincisini geciktirir. 2 dakika,
+//     sağlayıcının EARLY_CANCEL_DENIED için verdiği tipik süre (120 sn) ve
+//     `provider-refund-retry` turuyla aynıdır: 60 saniyede bir koşan reaper,
+//     sağlayıcının "daha erken olmaz" cevabını çiğneyemez.
+//
+// test: refund_retry_integration_test.go#TestConcurrentCloseSendsSingleProviderCall
+const closeClaimLease = 2 * time.Minute
+
 // CloseAtProvider siparişi sağlayıcıda kapatır (FR-412).
 //
 // Kod geldiyse Finish(), gelmediyse Cancel(). İkisi AYNI ŞEY DEĞİLDİR:
 // Cancel iade talep eder, Finish etmez.
 func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 	q := s.tx.Queries()
-	ord, err := q.GetOrderForUpdate(ctx, orderID)
+
+	// 🔴 SAHİPLENME — burada eskiden SAHTE BİR KİLİT vardı.
+	//
+	// Önceki kod `GetOrderForUpdate` çağırıyordu: `SELECT … FOR UPDATE` bir
+	// transaction DIŞINDA, havuz üzerinden tek deyim olarak koşar; deyim
+	// bittiği anda örtük transaction commit olur ve kilit BIRAKILIR. Yorum
+	// "kilit var" izlenimi veriyordu ama karşılıklı dışlama yoktu:
+	// activation-reaper, provider-refund-retry ve kullanıcı iptalinin arka
+	// plan goroutine'i aynı siparişe aynı anda Cancel/Finish gönderebilirdi.
+	//
+	// Gerçek bir transaction da çözüm DEĞİL: kapatma bir HTTP çağrısı içerir
+	// ve dış çağrı transaction içinde yapılmaz (değişmez #5). Bunun yerine
+	// satır koşullu bir UPDATE ile SAHİPLENİLİR; yarışı kaybeden işçi SIFIR
+	// satır alır ve sağlayıcıya hiç gitmez.
+	// test: refund_retry_integration_test.go#TestConcurrentCloseSendsSingleProviderCall
+	now := s.clock.Now()
+	staleBefore := now.Add(-closeClaimLease)
+	ord, err := q.ClaimOrderClose(ctx, db.ClaimOrderCloseParams{
+		ID: orderID, Now: &now, ClaimStaleBefore: &staleBefore,
+	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Ya sipariş zaten kapatılmış ya da başka bir işçi şu anda
+			// kapatıyor. İkisinde de yapılacak bir şey yoktur.
+			return nil
+		}
 		return apperr.Internal(err)
-	}
-	if ord.ProviderClosedAt != nil {
-		return nil // zaten kapalı
 	}
 	if !orderdom.Status(ord.Status).IsTerminal() &&
 		orderdom.Status(ord.Status) != orderdom.StatusCancelled &&
 		orderdom.Status(ord.Status) != orderdom.StatusFailed {
-		return nil // hâlâ beklemede — kapatılmaz
+		// Hâlâ beklemede — kapatılmaz. Kira boşuna tutulmaz: sipariş terminal
+		// olduğu anda kapatma denemesi beklemeden yapılabilmelidir.
+		if err := q.ReleaseOrderClose(ctx, orderID); err != nil {
+			return apperr.Internal(err)
+		}
+		return nil
 	}
 
 	count, err := q.CountOrderMessages(ctx, orderID)
@@ -391,8 +431,8 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 
 	// SADECE BAŞARIDAN SONRA işaretlenir. Başarısızken yazsaydık reaper bu
 	// siparişi bir daha hiç denemez ve aktivasyon sağlayıcıda açık kalırdı.
-	now := s.clock.Now()
-	if err := q.MarkProviderClosed(ctx, db.MarkProviderClosedParams{ID: orderID, Now: &now}); err != nil {
+	closedAt := s.clock.Now()
+	if err := q.MarkProviderClosed(ctx, db.MarkProviderClosedParams{ID: orderID, Now: &closedAt}); err != nil {
 		return apperr.Internal(err)
 	}
 
@@ -404,6 +444,19 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 		}); err != nil {
 			return apperr.Internal(err)
 		}
+		return nil
+	}
+
+	// Finish ile kapatıldı: sağlayıcıdan iade TALEP EDİLMEDİ, dolayısıyla iade
+	// ekseni de kapanır. Bu yazım olmadan satır `provider_refund_status`
+	// 'PENDING' kalır ve `provider-refund-retry` kuyruğunda sonsuza kadar
+	// döner — sipariş sağlayıcıda kapalı olduğu için hiçbir deneme durumu
+	// değiştiremez.
+	// test: refund_retry_integration_test.go#TestFinishedOrderLeavesRefundQueue
+	if err := q.SettleProviderRefund(ctx, db.SettleProviderRefundParams{
+		ID: orderID, ProviderRefundStatus: db.RefundStatusNOTAPPLICABLE,
+	}); err != nil {
+		return apperr.Internal(err)
 	}
 	return nil
 }

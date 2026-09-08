@@ -246,3 +246,119 @@ func TestConcurrentPurchasesRespectStock(t *testing.T) {
 		t.Fatalf("başarılı=%d stoksuz=%d, beklenen 5/15", ok, out)
 	}
 }
+
+/* ═══════════════════ Toplu yoklama ═══════════════════ */
+
+// TestFakeListActivePagesAtTwentyFive
+//
+// SÖZLEŞME: taklit sağlayıcı GERÇEK sağlayıcının sayfalama sınırına uyar
+// (size 25'e kırpılır, son sayfada NextCursor boş). Taklit daha cömert
+// olsaydı KK-404'ün sayfalama sınavı hiçbir şey ölçmezdi.
+func TestFakeListActivePagesAtTwentyFive(t *testing.T) {
+	ctx := context.Background()
+	p := fake.New(newClock())
+	p.SMSDelay = time.Hour // bu testte kod gelmesin
+	p.SetStock("tg", "RU", 100)
+
+	const total = 60
+	for i := 0; i < total; i++ {
+		if _, err := p.Purchase(ctx, port.Creds{}, port.PurchaseCmd{
+			ServiceCode: "tg", CountryCode: "RU", VerificationType: port.VerifySMS,
+			MaxCost: money.New(100_000_000, money.USD)}); err != nil {
+			t.Fatalf("satın alma %d: %v", i, err)
+		}
+	}
+
+	seen := map[string]bool{}
+	var sizes []int
+	cursor := ""
+	for round := 0; round < 10; round++ {
+		// size 1000 isteriz — sağlayıcı 25'e KIRPMALIDIR.
+		pg, err := p.ListActive(ctx, port.Creds{}, cursor, 1000)
+		if err != nil {
+			t.Fatalf("ListActive (sayfa %d): %v", round, err)
+		}
+		sizes = append(sizes, len(pg.Items))
+		for _, it := range pg.Items {
+			if seen[it.RemoteOrderID] {
+				t.Fatalf("aynı aktivasyon iki sayfada döndü: %s", it.RemoteOrderID)
+			}
+			seen[it.RemoteOrderID] = true
+		}
+		if pg.NextCursor == "" {
+			break
+		}
+		cursor = pg.NextCursor
+	}
+
+	want := []int{25, 25, 10}
+	if len(sizes) != len(want) {
+		t.Fatalf("sayfa boyutları = %v, %v bekleniyordu", sizes, want)
+	}
+	for i := range want {
+		if sizes[i] != want[i] {
+			t.Fatalf("sayfa boyutları = %v, %v bekleniyordu", sizes, want)
+		}
+	}
+	if len(seen) != total {
+		t.Errorf("%d benzersiz aktivasyon görüldü, %d bekleniyordu", len(seen), total)
+	}
+}
+
+// TestFakeListActiveMatchesGetStatus
+//
+// Toplu yol ile tekil yol AYNI simülasyondan beslenir; ikisi sessizce
+// ayrışamaz (docs/memory.md §3.15).
+func TestFakeListActiveMatchesGetStatus(t *testing.T) {
+	ctx := context.Background()
+	clk := newClock()
+	p := fake.New(clk)
+	p.SMSDelay = 30 * time.Second
+
+	res, err := p.Purchase(ctx, port.Creds{}, port.PurchaseCmd{
+		ServiceCode: "tg", CountryCode: "RU", VerificationType: port.VerifySMS,
+		MaxCost: money.New(100_000_000, money.USD)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Süre gelmeden: iki yol da mesajsız.
+	pg, err := p.ListActive(ctx, port.Creds{}, "", 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pg.Items) != 1 || len(pg.Items[0].Messages) != 0 {
+		t.Fatalf("erken yoklamada mesaj döndü: %+v", pg.Items)
+	}
+
+	clk.Advance(31 * time.Second)
+
+	pg, err = p.ListActive(ctx, port.Creds{}, "", 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pg.Items) != 1 || len(pg.Items[0].Messages) != 1 {
+		t.Fatalf("toplu yoklamada kod gelmedi: %+v", pg.Items)
+	}
+	st, err := p.GetStatus(ctx, port.Creds{}, res.RemoteOrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Messages) != 1 {
+		t.Fatalf("tekil yoklamada %d mesaj", len(st.Messages))
+	}
+	if st.Messages[0].Code != pg.Items[0].Messages[0].Code {
+		t.Errorf("toplu yol kodu %q, tekil yol kodu %q — iki simülasyon ayrışmış",
+			pg.Items[0].Messages[0].Code, st.Messages[0].Code)
+	}
+}
+
+// TestFakeListActiveRejectsBadCursor imleç doğrulaması gerçek adaptördeki
+// gibidir: anlamsız imleçle sessizce ilk sayfaya dönmek, sayfalama hatasını
+// sonsuz döngüye çevirirdi.
+func TestFakeListActiveRejectsBadCursor(t *testing.T) {
+	p := fake.New(newClock())
+	if _, err := p.ListActive(context.Background(), port.Creds{}, "abc", 25); err == nil {
+		t.Fatal("geçersiz imleç kabul edildi")
+	}
+}
