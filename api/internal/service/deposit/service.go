@@ -107,11 +107,36 @@ type CreateInput struct {
 	// Reference havalede açıklama/dekont numarası, kriptoda işlem hash'i.
 	Reference string
 	Note      string
+	// IdempotencyKey İSTEMCİDEN gelir (Idempotency-Key başlığı).
+	// Boşsa koruma devrede değildir — eski istemciler kırılmasın diye.
+	IdempotencyKey string
 }
 
 // Create yeni bir PENDING talep açar.
 func (s *Service) Create(ctx context.Context, in CreateInput) (db.Deposit, error) {
 	q := s.tx.Queries()
+
+	// 🔴 İDEMPOTENS ÖNCE KONTROL EDİLİR.
+	//
+	// Kullanıcı havaleyi yapmış, formu göndermiş, ağ yanıtı yutmuş olabilir.
+	// Tekrar denediğinde İKİNCİ bir talep oluşursa yönetici aynı havale için
+	// iki satır görür; ikisini de onaylarsa 500 ₺'lik havaleye 1000 ₺ yazılır.
+	// Defterin idempotency anahtarı bunu YAKALAMAZ: o anahtar talebin
+	// public_id'sinden türüyor ve iki talebin iki ayrı kimliği var.
+	//
+	// test: deposit_integration_test.go#TestDepositCreateIsIdempotent
+	anahtar := strings.TrimSpace(in.IdempotencyKey)
+	if anahtar != "" {
+		mevcut, err := q.GetDepositByIdempotencyKey(ctx, db.GetDepositByIdempotencyKeyParams{
+			UserID: in.UserID, IdempotencyKey: &anahtar,
+		})
+		if err == nil {
+			return mevcut, nil // aynı istek — yeni satır yazılmaz
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return db.Deposit{}, apperr.Internal(err)
+		}
+	}
 
 	m, err := q.GetDepositMethod(ctx, in.MethodPublicID)
 	if err != nil {
@@ -136,6 +161,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (db.Deposit, error
 		AmountMinor: in.AmountMinor,
 		UserNote:    strings.TrimSpace(in.Note),
 	}
+	if anahtar != "" {
+		params.IdempotencyKey = &anahtar
+	}
 
 	ref := strings.TrimSpace(in.Reference)
 	switch m.Kind {
@@ -155,6 +183,17 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (db.Deposit, error
 
 	dep, err := q.CreateDeposit(ctx, params)
 	if err != nil {
+		// Yarış: iki istek aynı anda geldi ve ikisi de kontrolü geçti.
+		// Tekil indeks birini reddeder; o zaman kazananı döneriz.
+		// test: deposit_integration_test.go#TestDepositCreateIsIdempotentUnderConcurrency
+		if anahtar != "" && isUniqueViolation(err, "deposits_idempotency_uniq") {
+			mevcut, gerr := q.GetDepositByIdempotencyKey(ctx, db.GetDepositByIdempotencyKeyParams{
+				UserID: in.UserID, IdempotencyKey: &anahtar,
+			})
+			if gerr == nil {
+				return mevcut, nil
+			}
+		}
 		return db.Deposit{}, mapDBErr(err)
 	}
 	return dep, nil

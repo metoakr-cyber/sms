@@ -26,6 +26,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
 	"github.com/ikmetrik/sms-platform/api/internal/db"
+	"github.com/ikmetrik/sms-platform/api/internal/testsupport"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/dto"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
 )
@@ -33,15 +34,17 @@ import (
 var pool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		if os.Getenv("ALLOW_SKIP_INTEGRATION") == "1" {
-			fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI")
-			os.Exit(0)
-		}
-		fmt.Fprintln(os.Stderr, "DATABASE_URL tanımsız — entegrasyon testleri çalıştırılamıyor.")
-		fmt.Fprintln(os.Stderr, "  Çözüm: `set -a; source .env; set +a`  veya  `make check`")
+	// 🔴 GÜVENLİK KAPISI: bu testler DELETE FROM yapar. Veritabanı adı
+	// "_test" ile bitmiyorsa süreç durur — kapı Makefile'da değil burada,
+	// çünkü `go test` komutunu elle yazan kişiyi Makefile korumaz.
+	url, err := testsupport.MustTestDatabaseURL()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if url == "" {
+		fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI")
+		os.Exit(0)
 	}
 	p, err := postgres.NewPool(context.Background(), url)
 	if err != nil {

@@ -874,6 +874,10 @@ LEFT JOIN orders o ON o.quote_id = q.id
 WHERE q.consumed_at IS NOT NULL
   AND q.consumed_at < $1
   AND o.id IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM ledger_entries le
+      WHERE le.idempotency_key = 'order:' || q.public_id::text || ':refund'
+  )
 ORDER BY q.consumed_at
 LIMIT $2
 `
@@ -891,6 +895,21 @@ type ListOrphanHoldsParams struct {
 // `consumed_at` eşiği, henüz T2'ye ulaşmamış NORMAL akışları yakalamamak için:
 // satın alma birkaç saniye sürer, hemen "yetim" ilan etmek çalışan bir siparişi
 // iade eder.
+//
+// 🔴 İADE EDİLMİŞ OLANLAR DIŞLANIR — yoksa bu sorgu KALICI OLARAK TIKANIR.
+//
+// Sağlayıcı hatasıyla düşen HER satın alma (stok yok, 5xx, geçmiş expiredAt)
+// tam olarak bu profilde bir satır bırakır: teklif tüketilmiş, iade `refundHold`
+// tarafından ZATEN yazılmış, sipariş satırı hiç oluşmamış. Bu satırları dışlayan
+// bir kolon yoktu; her başarısız satın alma sorguya kalıcı bir satır ekliyordu.
+// 100 böyle satır biriktiğinde (tek sağlayıcı kesintisinde dakikalar sürer)
+// `LIMIT` tümüyle ölü satırlarla dolar ve GERÇEKTEN iade edilmemiş yeni yetimler
+// hiç görülmez. Yani güvenlik ağı sessizce yırtılır.
+//
+// Ayrı bir kolon yerine DEFTERE bakılır: iade anahtarı zaten deterministik
+// (`order:{quote_public_id}:refund`, service/order/service.go:368) ve defter
+// değişmezdir — ikinci bir doğruluk kaynağı yaratmaktansa var olanı sorgularız.
+// test: order_integration_test.go#TestOrphanHoldQuerySkipsAlreadyRefunded
 func (q *Queries) ListOrphanHolds(ctx context.Context, arg ListOrphanHoldsParams) ([]PriceQuote, error) {
 	rows, err := q.db.Query(ctx, listOrphanHolds, arg.OlderThan, arg.Lim)
 	if err != nil {

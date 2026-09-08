@@ -187,7 +187,7 @@ export default function AdminUsersPage() {
                 setStatus(e.target.value as '' | UserStatus);
                 setOffset(0);
               }}
-              className="raised min-h-12 w-full rounded-xl border px-3 text-base outline-none
+              className="raised select-ok min-h-12 w-full rounded-xl border px-3 text-base outline-none
                          focus:border-brand-400 disabled:opacity-60"
             >
               {STATUS_FILTERS.map((s) => (

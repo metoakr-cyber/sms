@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/ikmetrik/sms-platform/api/internal/db"
 )
 
 type fakeQueue struct {
@@ -254,5 +256,32 @@ func TestIPv6MappedAddressIsAccepted(t *testing.T) {
 	post(r, "/webhooks/herosms/sirr", `{"activationId":1}`, "[::ffff:1.2.3.4]:5000")
 	if n := q.calls.Load(); n != 1 {
 		t.Fatalf("IPv6 eşlenmiş adres reddedildi (kuyruk çağrısı: %d)", n)
+	}
+}
+
+// TestRefundedOrderMessagesAreHidden
+//
+// 🔴 İADE EDİLMİŞ SİPARİŞİN KODU İKİ KANALDAN DA GÖSTERİLMEZ: GET /orders/:id
+// ve SSE akışı. Yalnız birini süzmek sızıntıyı kapatmaz.
+//
+// Mesaj veritabanında DURUR (iade tartışmasının kanıtı odur); süzgeç
+// sunumdadır.
+func TestRefundedOrderMessagesAreHidden(t *testing.T) {
+	msgs := []db.OrderMessage{{Code: "424242", Body: "Kodunuz 424242"}}
+
+	gizli := []db.OrderStatus{db.OrderStatusCANCELLED, db.OrderStatusREFUNDED}
+	for _, st := range gizli {
+		if got := visibleMessages(db.Order{Status: st}, msgs); len(got) != 0 {
+			t.Errorf("🔴 %s durumunda kod gösterildi (%d mesaj) — kullanıcı hem parayı hem numarayı alır", st, len(got))
+		}
+	}
+
+	// Test bir şey doğrulasın: ÖDENMİŞ siparişlerde kod GÖRÜNMELİ, yoksa
+	// "her şeyi gizle" diyen bozuk bir uygulama da bu testi geçerdi.
+	gorunur := []db.OrderStatus{db.OrderStatusCOMPLETED, db.OrderStatusPENDING}
+	for _, st := range gorunur {
+		if got := visibleMessages(db.Order{Status: st}, msgs); len(got) != 1 {
+			t.Errorf("%s durumunda kod gizlendi — ödenmiş siparişin kodu kullanıcının hakkıdır", st)
+		}
 	}
 }

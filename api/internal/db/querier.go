@@ -102,6 +102,12 @@ type Querier interface {
 	// Yönetim yolu: sahiplik kısıtı YOKTUR, izin kontrolü middleware'dedir
 	// (deposits:read / deposits:approve).
 	GetDeposit(ctx context.Context, publicID uuid.UUID) (Deposit, error)
+	// Tekrarlanan talep isteğinde MEVCUT talebi döner.
+	//
+	// Kullanıcı kapsamı sorgunun parçasıdır: iki kullanıcının aynı anahtarı
+	// üretmesi çakışma değil, ayrı işlemdir.
+	// test: deposit_integration_test.go#TestDepositCreateIsIdempotent
+	GetDepositByIdempotencyKey(ctx context.Context, arg GetDepositByIdempotencyKeyParams) (Deposit, error)
 	// SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7). Başkasının talebi ile
 	// var olmayan talep AYNI sonucu (sıfır satır) verir.
 	GetDepositForUser(ctx context.Context, arg GetDepositForUserParams) (Deposit, error)
@@ -226,6 +232,21 @@ type Querier interface {
 	// `consumed_at` eşiği, henüz T2'ye ulaşmamış NORMAL akışları yakalamamak için:
 	// satın alma birkaç saniye sürer, hemen "yetim" ilan etmek çalışan bir siparişi
 	// iade eder.
+	//
+	// 🔴 İADE EDİLMİŞ OLANLAR DIŞLANIR — yoksa bu sorgu KALICI OLARAK TIKANIR.
+	//
+	// Sağlayıcı hatasıyla düşen HER satın alma (stok yok, 5xx, geçmiş expiredAt)
+	// tam olarak bu profilde bir satır bırakır: teklif tüketilmiş, iade `refundHold`
+	// tarafından ZATEN yazılmış, sipariş satırı hiç oluşmamış. Bu satırları dışlayan
+	// bir kolon yoktu; her başarısız satın alma sorguya kalıcı bir satır ekliyordu.
+	// 100 böyle satır biriktiğinde (tek sağlayıcı kesintisinde dakikalar sürer)
+	// `LIMIT` tümüyle ölü satırlarla dolar ve GERÇEKTEN iade edilmemiş yeni yetimler
+	// hiç görülmez. Yani güvenlik ağı sessizce yırtılır.
+	//
+	// Ayrı bir kolon yerine DEFTERE bakılır: iade anahtarı zaten deterministik
+	// (`order:{quote_public_id}:refund`, service/order/service.go:368) ve defter
+	// değişmezdir — ikinci bir doğruluk kaynağı yaratmaktansa var olanı sorgularız.
+	// test: order_integration_test.go#TestOrphanHoldQuerySkipsAlreadyRefunded
 	ListOrphanHolds(ctx context.Context, arg ListOrphanHoldsParams) ([]PriceQuote, error)
 	// ─────────────────────────── İşçi sorguları ───────────────────────────
 	// `order-poller` için: kod bekleyen, süresi dolmamış siparişler.

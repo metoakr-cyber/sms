@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,20 +29,23 @@ import (
 	auditsvc "github.com/ikmetrik/sms-platform/api/internal/service/audit"
 	depositsvc "github.com/ikmetrik/sms-platform/api/internal/service/deposit"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
+	"github.com/ikmetrik/sms-platform/api/internal/testsupport"
 )
 
 var pool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		if os.Getenv("ALLOW_SKIP_INTEGRATION") == "1" {
-			fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI")
-			os.Exit(0)
-		}
-		fmt.Fprintln(os.Stderr, "DATABASE_URL tanımsız — entegrasyon testleri çalıştırılamıyor.")
-		fmt.Fprintln(os.Stderr, "  Çözüm: `set -a; source .env; set +a`  veya  `make check`")
+	// 🔴 GÜVENLİK KAPISI: bu testler DELETE FROM yapar. Veritabanı adı
+	// "_test" ile bitmiyorsa süreç durur — kapı Makefile'da değil burada,
+	// çünkü `go test` komutunu elle yazan kişiyi Makefile korumaz.
+	url, err := testsupport.MustTestDatabaseURL()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if url == "" {
+		fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI")
+		os.Exit(0)
 	}
 	p, err := postgres.NewPool(context.Background(), url)
 	if err != nil {
@@ -767,5 +771,130 @@ func TestApproveIsIdempotentUnderConcurrency(t *testing.T) {
 	}
 	if sum != balanceOf(t, uid) {
 		t.Fatalf("🔴 mutabakat bozuk: Σ defter = %d, bakiye = %d", sum, balanceOf(t, uid))
+	}
+}
+
+// TestDepositCreateIsIdempotent
+//
+// 🔴 BİR HAVALE, BİR TALEP.
+//
+// Kullanıcı 500 ₺ havale eder, formu gönderir, mobil ağda yanıt kaybolur.
+// Kullanıcı hata görür ve tekrar basar. Koruma yoksa iki bekleyen talep
+// oluşur; yönetici ikisini de onaylarsa 500 ₺'lik havaleye 1000 ₺ yazılır.
+//
+// Defterin idempotency anahtarı bunu YAKALAMAZ: o anahtar `deposit:{public_id}`
+// üzerinden türüyor ve iki talebin iki ayrı public_id'si var. Koruma TALEP
+// oluşturma anında olmalı.
+func TestDepositCreateIsIdempotent(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	uid := seedUser(t, "idempotens")
+	m := activeBank(t)
+
+	const anahtar = "istemci-anahtari-9f3c"
+	in := depositsvc.CreateInput{
+		UserID: uid, MethodPublicID: m.PublicID, AmountMinor: 50_000,
+		Reference: "Dekont 12345", IdempotencyKey: anahtar,
+	}
+
+	ilk, err := svc.Create(ctx, in)
+	if err != nil {
+		t.Fatalf("ilk talep: %v", err)
+	}
+	ikinci, err := svc.Create(ctx, in)
+	if err != nil {
+		t.Fatalf("ikinci talep hata verdi (geri alınmalıydı): %v", err)
+	}
+
+	if ilk.PublicID != ikinci.PublicID {
+		t.Errorf("🔴 aynı anahtarla İKİ AYRI talep oluştu (%s, %s) — "+
+			"yönetici ikisini de onaylarsa kullanıcıya iki kat yazılır",
+			ilk.PublicID, ikinci.PublicID)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM deposits WHERE user_id=$1`, uid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("🔴 %d talep satırı var, 1 bekleniyordu", n)
+	}
+
+	// Test bir şey doğrulasın: FARKLI anahtar AYRI talep açmalı — yoksa
+	// "her zaman ilkini döndür" diyen bozuk bir uygulama da geçerdi.
+	in2 := in
+	in2.IdempotencyKey = "baska-anahtar-0001"
+	ucuncu, err := svc.Create(ctx, in2)
+	if err != nil {
+		t.Fatalf("farklı anahtarlı talep: %v", err)
+	}
+	if ucuncu.PublicID == ilk.PublicID {
+		t.Error("🔴 farklı anahtar aynı talebi döndürdü — kullanıcı ikinci havalesini bildiremez")
+	}
+
+	// Anahtarsız istek eski davranışı korumalı (istemciler kırılmasın).
+	in3 := in
+	in3.IdempotencyKey = ""
+	if _, err := svc.Create(ctx, in3); err != nil {
+		t.Errorf("anahtarsız talep reddedildi: %v", err)
+	}
+}
+
+// TestDepositCreateIsIdempotentUnderConcurrency
+//
+// EŞZAMANLILIK TESTİ ZORUNLUDUR (CLAUDE.md, "Para hareketi ekleme" §4):
+// sıralı bir tekrar, tekil indeks olmadan da doğru sonuç verebilir. Yarış
+// ancak paralel çağrıda ortaya çıkar — iki istek "önce kontrol et" adımını
+// aynı anda geçer ve ikisi de yazmaya çalışır.
+//
+// Mobilde kullanıcı düğmeye iki kez basarsa tam olarak bu olur.
+func TestDepositCreateIsIdempotentUnderConcurrency(t *testing.T) {
+	svc := newService(t)
+	ctx := context.Background()
+	uid := seedUser(t, "eszamanli")
+	m := activeBank(t)
+
+	in := depositsvc.CreateInput{
+		UserID: uid, MethodPublicID: m.PublicID, AmountMinor: 50_000,
+		Reference: "Dekont 777", IdempotencyKey: "paralel-anahtar-0001",
+	}
+
+	const n = 12
+	var mu sync.Mutex
+	kimlikler := map[string]int{}
+	hatalar := 0
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dep, err := svc.Create(ctx, in)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				hatalar++
+				return
+			}
+			kimlikler[dep.PublicID.String()]++
+		}()
+	}
+	wg.Wait()
+
+	var satir int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM deposits WHERE user_id=$1`, uid).Scan(&satir); err != nil {
+		t.Fatal(err)
+	}
+	if satir != 1 {
+		t.Fatalf("🔴 %d paralel istek %d talep satırı üretti, 1 bekleniyordu — "+
+			"yönetici aynı havale için birden çok satır görür ve hepsini onaylayabilir", n, satir)
+	}
+	if len(kimlikler) != 1 {
+		t.Fatalf("🔴 %d farklı talep kimliği döndü: %v", len(kimlikler), kimlikler)
+	}
+	if hatalar > 0 {
+		t.Errorf("%d istek hata aldı — yarışı kaybeden istek de MEVCUT talebi almalıydı", hatalar)
 	}
 }

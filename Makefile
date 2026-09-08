@@ -89,7 +89,7 @@ worker:
 
 ## test: tüm testler
 test:
-	cd $(API) && go test ./... -race -count=1
+	cd $(API) && DATABASE_URL="$(TEST_DATABASE_URL)" go test ./... -race -count=1
 
 ## test-cover: kapsam raporu
 test-cover:
@@ -99,8 +99,13 @@ test-cover:
 # -p 1 ZORUNLU: bu testler TEK bir gerçek veritabanını paylaşıyor ve her paket
 # kendi kurulumunda katalog tablolarını temizliyor. Paralel koşarlarsa
 # birbirlerinin verisini silerler ve testler RASTGELE kırılır.
+# DATABASE_URL BURADA EZİLİR. Hedefin TEST_DATABASE_URL'i hesaplayıp export
+# etmesi yetmiyordu: Go testleri DATABASE_URL okuyor, TEST_DATABASE_URL'i değil.
+# Yani hedef .env'deki geliştirme veritabanına bağlanıp onu siliyordu.
+# İkinci savunma testin kendisinde (internal/testsupport/dbguard.go): adı
+# "_test" ile bitmeyen bir veritabanında testler HİÇ başlamaz.
 test-integration:
-	cd $(API) && go test -tags=integration -p 1 ./... -race -count=1
+	cd $(API) && DATABASE_URL="$(TEST_DATABASE_URL)" go test -tags=integration -p 1 ./... -race -count=1
 
 ## smoke: uçtan uca duman testi (sunucuyu başlatır, senaryoları koşar, temizler)
 smoke:
@@ -139,7 +144,12 @@ prod-build:
 		-t onay360-web:$(shell git rev-parse --short HEAD) .
 
 ## prod-config: üretim compose dosyasını doğrula (dağıtmadan önce)
+#
+# deploy/.env GEREKLİDİR: compose zorunlu değişkenleri `${VAR:?}` ile
+# işaretliyor. Dosya yoksa hedef "eksik değişken" der — bu doğru davranıştır,
+# çünkü o dosya olmadan dağıtım da yapılamaz.
 prod-config:
+	@test -f deploy/.env || { echo "deploy/.env yok — deploy/.env.prod.example'dan kopyalayıp doldurun"; exit 1; }
 	$(PROD_COMPOSE) config >/dev/null && echo "compose geçerli"
 	@command -v caddy >/dev/null && caddy validate --config deploy/Caddyfile || echo "(caddy yok — Caddyfile doğrulanmadı)"
 

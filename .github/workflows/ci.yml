@@ -205,5 +205,22 @@ jobs:
             --build-arg NEXT_PUBLIC_SITE_URL=https://ornek.test \
             -t onay360-web:ci .
 
+      # Compose dosyası `.env`'deki değişkenleri ikame eder ve zorunlu
+      # olanları `${VAR:?}` ile işaretler. Depoda .env YOKTUR (ve olmamalı),
+      # örnek dosyadaki yer tutucular da BOŞTUR — bu yüzden burada yalnız
+      # SÖZDİZİM doğrulaması için sahte değerler üretiriz.
+      # 🔴 Bunlar gerçek sır değildir ve hiçbir yere yazılmaz.
       - name: Compose sözdizimi
-        run: docker compose -f deploy/docker-compose.prod.yml config >/dev/null
+        run: |
+          cat > deploy/.env <<'EOF'
+          DOMAIN=ornek.test
+          ACME_EMAIL=ci@ornek.test
+          NEXT_PUBLIC_SITE_URL=https://ornek.test
+          POSTGRES_USER=ci
+          POSTGRES_PASSWORD=ci-sahte
+          POSTGRES_DB=ci
+          REDIS_PASSWORD=ci-sahte
+          IMAGE_TAG=ci
+          EOF
+          docker compose -f deploy/docker-compose.prod.yml config >/dev/null
+          rm -f deploy/.env

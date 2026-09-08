@@ -131,8 +131,11 @@ func (h *Wallet) AdjustBalance(c *gin.Context) {
 	// test: handler/auth_wallet_integration_test.go#TestAdjustIsIdempotent
 	idem := fmt.Sprintf("manual:%s:%s", target.PublicID, strings.TrimSpace(req.IdempotencyKey))
 
-	res, err := h.svc.Adjust(c.Request.Context(), adminID, target.ID,
-		money.New(req.AmountMinor, money.TRY), req.Note, idem)
+	res, err := h.svc.Adjust(c.Request.Context(), walletsvc.AdjustInput{
+		AdminID: adminID, UserID: target.ID, UserPublicID: target.PublicID.String(),
+		Amount: money.New(req.AmountMinor, money.TRY), Note: req.Note, IdemKey: idem,
+		Audit: auditMeta(c),
+	})
 	if err != nil {
 		h.r.Fail(c, err)
 		return

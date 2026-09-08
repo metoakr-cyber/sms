@@ -251,7 +251,9 @@ func statusEvent(d ordersvc.Detail) gin.H {
 		"orderId":   d.Order.PublicID.String(),
 		"status":    string(d.Order.Status),
 		"expiresAt": d.Order.ExpiresAt.Format(time.RFC3339),
-		"messages":  messageViews(d.Messages),
+		// SSE yolu da SÜZÜLÜR: kullanıcıya iki kanal var (GET ve akış),
+		// yalnız birini süzmek sızıntıyı kapatmaz.
+		"messages": visibleMessages(d.Order, d.Messages),
 	}
 }
 
@@ -308,6 +310,25 @@ func messageViews(msgs []db.OrderMessage) []dto.OrderMessageResponse {
 // Maliyetimizi ve hangi sağlayıcıyı kullandığımızı kullanıcıya söylemek,
 // hem ticari bilgidir hem de sağlayıcı seçimini manipüle etme denemelerine
 // zemin hazırlar.
+// visibleMessages kullanıcıya GÖSTERİLECEK mesajları döner.
+//
+// 🔴 İADE EDİLMİŞ SİPARİŞİN KODU GÖSTERİLMEZ. Süre dolumu ya da iptal sonrası
+// (durum CANCELLED/REFUNDED, para GERİ VERİLMİŞ) sağlayıcıdan gecikmeli bir
+// SMS gelebilir — CloseAtProvider bunu kaydeder ama açmaz. Göstermek,
+// kullanıcıya hem parayı hem numarayı vermek olurdu.
+//
+// Mesaj veritabanında DURUR: "kod gelmedi diye iade ettik ama aslında gelmişti"
+// tartışmasının tek kanıtı odur. Süzgeç sunumda, saklamada değil.
+//
+// test: ../../../service/order/order_integration_test.go#TestRefundedOrderDoesNotLeakCode
+func visibleMessages(o db.Order, msgs []db.OrderMessage) []dto.OrderMessageResponse {
+	switch o.Status {
+	case db.OrderStatusCANCELLED, db.OrderStatusREFUNDED:
+		return []dto.OrderMessageResponse{}
+	}
+	return messageViews(msgs)
+}
+
 func orderDTO(o db.Order, msgs []db.OrderMessage) dto.OrderResponse {
 	resp := dto.OrderResponse{
 		ID:          o.PublicID.String(),
@@ -326,7 +347,7 @@ func orderDTO(o db.Order, msgs []db.OrderMessage) dto.OrderResponse {
 		CancellableAt: o.CancellableAt.Format(time.RFC3339),
 		CancellableIn: int(time.Until(o.CancellableAt).Seconds()),
 		CreatedAt:     o.CreatedAt.Format(time.RFC3339),
-		Messages:      messageViews(msgs),
+		Messages:      visibleMessages(o, msgs),
 	}
 	if resp.ExpiresIn < 0 {
 		resp.ExpiresIn = 0

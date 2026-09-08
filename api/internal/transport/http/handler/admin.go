@@ -35,6 +35,7 @@ import (
 	depositdom "github.com/ikmetrik/sms-platform/api/internal/domain/deposit"
 	apperr "github.com/ikmetrik/sms-platform/api/internal/domain/errors"
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
+	auditsvc "github.com/ikmetrik/sms-platform/api/internal/service/audit"
 	depositsvc "github.com/ikmetrik/sms-platform/api/internal/service/deposit"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/dto"
@@ -164,6 +165,8 @@ func (a *Admin) SetUserStatus(c *gin.Context) {
 		}
 	}
 
+	onceki, _ := a.queries.GetUserByPublicID(c.Request.Context(), publicID)
+
 	u, err := a.queries.SetUserStatusByPublicID(c.Request.Context(), db.SetUserStatusByPublicIDParams{
 		PublicID: publicID, Status: st,
 	})
@@ -171,7 +174,36 @@ func (a *Admin) SetUserStatus(c *gin.Context) {
 		a.r.Fail(c, apperr.ErrNotFound)
 		return
 	}
+	// Askıya alma kullanıcının TÜM oturumlarını düşürür ve erişimini keser;
+	// kimin ne zaman yaptığı kayda geçmeli.
+	a.kaydet(c, auditsvc.Entry{
+		Action: "user.status", EntityType: "user", EntityID: u.PublicID.String(),
+		Before: map[string]any{"status": string(onceki.Status)},
+		After:  map[string]any{"status": string(u.Status)},
+	})
 	a.r.OK(c, gin.H{"id": u.PublicID.String(), "status": string(u.Status)})
+}
+
+// kaydet denetim kaydını yazar ve hatayı YUTMAZ ama isteği düşürmez.
+//
+// 🔴 DENGE KARARI: denetim kaydı yazılamadığında isteği reddetmek, log
+// tablosundaki geçici bir sorunu yönetim panelinin tümden çalışmamasına
+// çevirirdi. Buna karşılık sessizce geçmek de kabul edilemez — kayıt
+// tutulamadığı ERROR olarak bildirilir ve metrik üretir.
+//
+// Para hareketlerinde bu kural GEÇERSİZDİR: orada denetim kaydı defterle AYNI
+// transaction'dadır ve yazılamazsa işlem de geri alınır
+// (service/wallet/reconcile.go, service/deposit/review.go).
+func (a *Admin) kaydet(c *gin.Context, e auditsvc.Entry) {
+	if actor, ok := middleware.UserIDFrom(c); ok {
+		e.ActorUserID = &actor
+	}
+	e.Meta = auditMeta(c)
+	if err := auditsvc.Record(c.Request.Context(), a.queries, e); err != nil {
+		slog.Error("denetim kaydı yazılamadı — işlem yapıldı ama izi yok",
+			"action", e.Action, "entity", e.EntityID, "err", err,
+			"metric", "audit_write_failed_total")
+	}
 }
 
 /* ═══════════════════════════ Sağlayıcılar ═══════════════════════════ */
@@ -240,6 +272,15 @@ func (a *Admin) UpdateProvider(c *gin.Context) {
 		a.r.Fail(c, apperr.ErrNotFound)
 		return
 	}
+	// baseUrl değişimi sağlayıcı trafiğini başka bir sunucuya yönlendirebilir;
+	// iz bırakmadan yapılamamalı.
+	a.kaydet(c, auditsvc.Entry{
+		Action: "provider.update", EntityType: "provider",
+		EntityID: strconv.FormatInt(p.ID, 10),
+		After: map[string]any{
+			"baseUrl": p.BaseUrl, "isActive": p.IsActive, "priority": p.Priority,
+		},
+	})
 	a.r.OK(c, gin.H{"id": strconv.FormatInt(p.ID, 10), "name": p.Name, "isActive": p.IsActive})
 }
 
@@ -283,6 +324,15 @@ func (a *Admin) SetProviderAPIKey(c *gin.Context) {
 		a.r.Fail(c, apperr.Internal(err))
 		return
 	}
+	// 🔴 KAYDA ANAHTARIN KENDİSİ DEĞİL, DEĞİŞTİRİLDİĞİ OLGUSU GİRER.
+	// Maskeli hâli bile yazılmaz: denetim kaydı yönetim panelinden okunabiliyor
+	// ve maske anahtarın uçlarını verir.
+	a.kaydet(c, auditsvc.Entry{
+		Action: "provider.apikey", EntityType: "provider",
+		EntityID: strconv.FormatInt(id, 10),
+		After:    map[string]any{"changed": true},
+	})
+
 	// Maskeli önizleme: yöneticinin doğru anahtarı yapıştırdığını
 	// doğrulayabilmesi için yeterli, anahtarı ele vermek için değil.
 	a.r.OK(c, gin.H{"masked": crypto.Mask(key)})

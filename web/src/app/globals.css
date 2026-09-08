@@ -126,6 +126,31 @@
 
   /* Uzun kodların/numaraların taşmasını engeller; mobilde kritik */
   .break-anywhere { overflow-wrap: anywhere; }
+
+  /*
+   * Açılır liste oku.
+   *
+   * 🔴 NEDEN VAR: `<select>` yüksekliği WebKit'te yerel `menulist` görünümü
+   * tarafından hesaplanır ve `min-h-12` YOK SAYILIR — ölçümde kutu 25 px
+   * çıkıyor, yani 44 px dokunma hedefinin çok altında (frontend-contract §2.3).
+   * iOS'ta tüm tarayıcılar WebKit olduğu için bu üretimde canlı bir ihlaldir
+   * ve Chromium'da HİÇ GÖRÜNMEZ; göz kararıyla asla yakalanmaz.
+   *
+   * Çözüm `appearance: none` ama o da yerel oku kaldırır. Ok burada, TEK
+   * YERDE, arka plan görseli olarak çizilir — her ekranda ayrı bir <svg>
+   * yazmak, bir gün birinin unutmasıyla biter.
+   *
+   * data: URI CSP'de `img-src ... data:` ile zaten izinli.
+   */
+  .select-ok {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 1.15rem;
+  }
 }
 
 /* Hareket azaltma tercihi olan kullanıcıda animasyon yok */

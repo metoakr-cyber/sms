@@ -8,6 +8,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	apperr "github.com/ikmetrik/sms-platform/api/internal/domain/errors"
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
+	"github.com/ikmetrik/sms-platform/api/internal/service/audit"
 )
 
 // Drift bir kullanıcının defter toplamı ile önbelleklenmiş bakiyesi arasındaki fark.
@@ -66,26 +67,73 @@ func (s *Service) Reconcile(ctx context.Context, limit int32) (ReconcileReport, 
 	return rep, nil
 }
 
+// AdjustInput manuel bakiye düzeltmesinin girdisi.
+type AdjustInput struct {
+	AdminID int64
+	UserID  int64
+	// UserPublicID denetim kaydına yazılır: sayısal kimlik oraya da girmez.
+	UserPublicID string
+	Amount       money.Money
+	Note         string
+	IdemKey      string
+	Audit        audit.Meta
+}
+
 // Adjust admin tarafından manuel bakiye düzeltmesi (FR-504).
 //
 // Not ZORUNLUDUR: sebepsiz bir bakiye değişikliği denetlenemez.
-func (s *Service) Adjust(ctx context.Context, adminID, userID int64, amount money.Money, note, idemKey string) (Result, error) {
-	if note == "" {
+//
+// 🔴 DENETİM KAYDI DEFTERLE AYNI TRANSACTION'DA YAZILIR. Ayrı yazılsaydı ikisi
+// ayrışabilirdi: para değişir, izi kalmaz. Ele geçirilmiş bir `users:write`
+// hesabı `AmountMinor` üst sınırı olmadığı için istediği kadar bakiye basabilir;
+// tek caydırıcı ve tek kanıt bu satırdır.
+//
+// test: ../../transport/http/handler/auth_wallet_integration_test.go#TestAdjustIsAudited
+func (s *Service) Adjust(ctx context.Context, in AdjustInput) (Result, error) {
+	if in.Note == "" {
 		return Result{}, apperr.ErrValidation.WithMessage("Düzeltme için açıklama zorunludur.")
 	}
-	if idemKey == "" {
+	if in.IdemKey == "" {
 		return Result{}, apperr.Internal(fmt.Errorf("wallet: düzeltme için idempotency anahtarı zorunlu"))
 	}
-	return s.ApplyTx(ctx, Input{
-		UserID:          userID,
-		Amount:          amount,
-		Type:            db.LedgerTypeADJUSTMENT,
-		IdempotencyKey:  idemKey,
-		ReferenceType:   "manual",
-		ReferenceID:     idemKey,
-		CreatedByUserID: &adminID,
-		Note:            note,
+
+	var out Result
+	err := s.tx.InTx(ctx, func(q *db.Queries) error {
+		res, err := s.Apply(ctx, q, Input{
+			UserID:          in.UserID,
+			Amount:          in.Amount,
+			Type:            db.LedgerTypeADJUSTMENT,
+			IdempotencyKey:  in.IdemKey,
+			ReferenceType:   "manual",
+			ReferenceID:     in.IdemKey,
+			CreatedByUserID: &in.AdminID,
+			Note:            in.Note,
+		})
+		if err != nil {
+			return err
+		}
+		out = res
+
+		// Tekrarlanan çağrıda ikinci bir denetim satırı yazılmaz: işlem
+		// gerçekten olmadı, yalnız önceki sonuç döndürüldü.
+		if res.AlreadyApplied {
+			return nil
+		}
+		admin := in.AdminID
+		return audit.Record(ctx, q, audit.Entry{
+			ActorUserID: &admin,
+			Action:      "wallet.adjust",
+			EntityType:  "user",
+			EntityID:    in.UserPublicID,
+			After: map[string]any{
+				"amountMinor":  in.Amount.Minor(),
+				"balanceMinor": res.NewBalance.Minor(),
+				"note":         in.Note,
+			},
+			Meta: in.Audit,
+		})
 	})
+	return out, err
 }
 
 // Statement kullanıcının hareket dökümünü döner (FR-206).

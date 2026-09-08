@@ -61,6 +61,16 @@ services:
     # kopyası aynı ayarı okur ve ikisi de aynı siparişi yoklar. Bakiye
     # bozulmaz (iade idempotent), ama sağlayıcıda çift Cancel/Finish çağrısı
     # ve iki kat dış istek olur.
+    # Dekontlar KONTEYNER KATMANINDA DURAMAZ: her `docker compose up` yeni bir
+    # konteyner yaratır ve katman kaybolur — kullanıcıların yüklediği dekontlar
+    # silinir, yönetici parayı doğrulayamaz.
+    #
+    # Dizin ayrıca İMAJDA oluşturulup `uygulama` kullanıcısına verilmiştir
+    # (deploy/Dockerfile.api); Docker adlandırılmış volume'ü ilk bağlanışta
+    # oradaki sahiplikten tohumlar. O satır olmadan konteyner EACCES ile açılmaz.
+    volumes:
+      - uploads:${UPLOAD_DIR:-/var/lib/onay360/uploads}
+
     env_file:
       - .env
     environment:
@@ -253,3 +263,7 @@ volumes:
   redisdata:
   caddy_data:
   caddy_config:
+  # Dekontlar. Web kökünün DIŞINDA ve yalnız yetkili uçtan servis edilir;
+  # burada durması silinmemeleri içindir (konteyner yeniden yaratılınca
+  # katman kaybolur, volume kalır).
+  uploads:

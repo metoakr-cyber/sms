@@ -88,7 +88,7 @@ function normalizeMargin(input: string): { value: string } | { error: string } {
 }
 
 const selectClass =
-  'raised min-h-12 w-full rounded-xl border px-3 text-base outline-none ' +
+  'raised select-ok min-h-12 w-full rounded-xl border px-3 text-base outline-none ' +
   'focus:border-brand-400 disabled:opacity-60';
 
 /** Hata gösterimi — mesaj + alan hataları + istek numarası (§9). */

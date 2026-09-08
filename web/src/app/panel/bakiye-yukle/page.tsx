@@ -235,6 +235,25 @@ function ReceiptUploader({ depositId, onDone }: { depositId: string; onDone: () 
 
 /* ═══════════════════════════════ Ekran ═══════════════════════════════ */
 
+/**
+ * yeniAnahtar idempotens anahtarı üretir.
+ *
+ * `crypto.randomUUID` eski Safari'de ve güvenli olmayan bağlamda YOKTUR;
+ * o durumda getRandomValues'a, o da yoksa zaman+rastgele birleşimine düşeriz.
+ * Anahtarın gizli olması gerekmez — yalnız aynı kullanıcı içinde tekrarlamaması
+ * yeter (sunucudaki tekil indeks kullanıcı kapsamlıdır).
+ */
+function yeniAnahtar(): string {
+  const c = globalThis.crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  if (c?.getRandomValues) {
+    const b = new Uint8Array(16);
+    c.getRandomValues(b);
+    return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export default function DepositPage() {
   const qc = useQueryClient();
   const { user } = useSession();
@@ -264,17 +283,42 @@ export default function DepositPage() {
   const items = methods.data?.items ?? [];
   const method = items.find((m) => m.id === methodId) ?? null;
 
+  /*
+   * İDEMPOTENS ANAHTARI: form başına BİR kez üretilir ve talep GERÇEKTEN
+   * oluşana kadar korunur.
+   *
+   * 🔴 NEDEN GEREKLİ: kullanıcı havaleyi yapmış, formu göndermiş, mobil ağda
+   * yanıt kaybolmuş olabilir (tünel, zaman aşımı, uygulamayı arka plana alma).
+   * Sunucu talebi YAZDI ama kullanıcı hata gördü ve tekrar basıyor. Anahtar
+   * olmadan aynı havale için iki bekleyen talep oluşur; yönetici ikisini de
+   * onaylarsa kullanıcıya iki kat yazılır.
+   *
+   * Sunucu bu anahtarı `Idempotency-Key` başlığından okur ve tekrarda MEVCUT
+   * talebi geri döndürür (api/internal/service/deposit/service.go).
+   */
+  const [idemKey, setIdemKey] = React.useState(() => yeniAnahtar());
+
   const create = useMutation({
     mutationFn: (v: { methodId: string; amountMinor: number; reference: string; note: string }) =>
-      apiFetch<Deposit>('/wallet/deposits', { method: 'POST', body: v }),
-    // Talep oluşturmak İDEMPOTENT DEĞİLDİR: otomatik tekrar, yöneticinin
-    // kuyruğuna aynı ödemenin iki kaydını bırakır.
+      apiFetch<Deposit>('/wallet/deposits', { method: 'POST', body: v, idempotencyKey: idemKey }),
+    // Talep oluşturmak sunucuda idempotenttir ama OTOMATİK TEKRAR yine de
+    // yapılmaz: kullanıcı ne olduğunu görmeli ve kararı o vermeli.
     retry: false,
     onSuccess: (dep) => {
+      // Talep oluştu — sıradaki için YENİ anahtar.
+      setIdemKey(yeniAnahtar());
       qc.invalidateQueries({ queryKey: depositsKey });
       setCreated(dep);
       setAmount(''); setReference(''); setNote('');
       setErrors({});
+    },
+    onError: () => {
+      // 🔴 HATA YOLUNDA DA LİSTE TAZELENİR. İstek sunucuya ULAŞMIŞ ama yanıt
+      // kaybolmuş olabilir: talep oluştu, kullanıcı hata gördü. Listeyi
+      // tazelemezsek kullanıcı oluşmuş talebi göremez ve tekrar dener.
+      // (Anahtar aynı kaldığı için sunucu ikinciyi yutar, ama kullanıcının
+      //  ekranında ne olduğunu GÖRMESİ ayrı bir mesele.)
+      qc.invalidateQueries({ queryKey: depositsKey });
     },
   });
 

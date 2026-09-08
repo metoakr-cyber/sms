@@ -27,20 +27,23 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
+	"github.com/ikmetrik/sms-platform/api/internal/testsupport"
 )
 
 var pool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		if os.Getenv("ALLOW_SKIP_INTEGRATION") == "1" {
-			fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI")
-			os.Exit(0)
-		}
-		fmt.Fprintln(os.Stderr, "DATABASE_URL tanımsız — entegrasyon testleri çalıştırılamıyor.")
-		fmt.Fprintln(os.Stderr, "  Çözüm: `set -a; source .env; set +a`  veya  `make check`")
+	// 🔴 GÜVENLİK KAPISI: bu testler DELETE FROM yapar. Veritabanı adı
+	// "_test" ile bitmiyorsa süreç durur — kapı Makefile'da değil burada,
+	// çünkü `go test` komutunu elle yazan kişiyi Makefile korumaz.
+	url, err := testsupport.MustTestDatabaseURL()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if url == "" {
+		fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI")
+		os.Exit(0)
 	}
 	p, err := postgres.NewPool(context.Background(), url)
 	if err != nil {
@@ -245,6 +248,7 @@ type env struct {
 	userID int64
 	provID int64
 	prodID int64
+	pub    *kayitYayinci
 }
 
 func setup(t *testing.T, balanceMinor int64) *env {
@@ -339,10 +343,44 @@ func setup(t *testing.T, balanceMinor int64) *env {
 		}
 	}
 
+	pub := &kayitYayinci{}
 	svc := ordersvc.New(ordersvc.Deps{
 		TxRunner: tx, Registry: reg, Secrets: box, Wallet: wallet, Clock: c,
+		Publisher: pub,
 	})
-	return &env{svc: svc, stub: stub, clock: c, q: q, userID: userID, provID: prov.ID, prodID: prodID}
+	return &env{svc: svc, stub: stub, clock: c, q: q, userID: userID, provID: prov.ID, prodID: prodID, pub: pub}
+}
+
+// kayitYayinci yayınlanan olayları biriktirir.
+//
+// SSE ABONESİNİN GÖRDÜĞÜNÜ gözlemlemek için gerekli: kodun kullanıcıya
+// ulaşmasının İKİ kanalı var (GET yanıtı ve akış); yalnız veritabanına bakan
+// bir test akış kanalını hiç görmez.
+type kayitYayinci struct {
+	mu      sync.Mutex
+	olaylar []ordersvc.Event
+}
+
+func (k *kayitYayinci) Publish(_ context.Context, _ string, ev ordersvc.Event) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.olaylar = append(k.olaylar, ev)
+	return nil
+}
+
+// kodIcerenOlaylar yayınlanmış olaylardan içinde kod geçenleri sayar.
+func (k *kayitYayinci) kodIcerenOlaylar(kod string) int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	n := 0
+	for _, ev := range k.olaylar {
+		for _, m := range ev.Messages {
+			if m.Code == kod {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // makeQuote doğrudan bir teklif satırı yazar (fiyatlandırma servisini atlar).
@@ -815,5 +853,147 @@ func TestCompletedOrderIsFinishedNotCancelled(t *testing.T) {
 	}
 	if e.stub.finishes.Load() != 1 {
 		t.Errorf("kod gelmeyen siparişte Finish çağrıldı — iade hakkı yanardı")
+	}
+}
+
+// TestOrphanHoldQuerySkipsAlreadyRefunded
+//
+// 🔴 GÜVENLİK AĞININ SESSİZCE YIRTILMASI.
+//
+// `orphan-hold-reaper`, parası çekilmiş ama siparişi olmayan teklifleri bulup
+// iade eder. Sağlayıcı hatasıyla düşen HER satın alma tam olarak bu profilde
+// bir satır bırakır — ama iadesi `refundHold` tarafından ZATEN yazılmıştır.
+//
+// Bu satırlar dışlanmazsa sorgu kalıcı olarak tıkanır: `LIMIT` ölü satırlarla
+// dolar ve GERÇEKTEN iade edilmemiş yeni yetimler hiç görülmez. Tek bir
+// sağlayıcı kesintisi dakikalar içinde yüz böyle satır üretir.
+func TestOrphanHoldQuerySkipsAlreadyRefunded(t *testing.T) {
+	e := setup(t, 100_000)
+	ctx := context.Background()
+
+	// (1) İadesi YAPILMIŞ artık: teklif tüketilmiş, sipariş yok, defterde iade var.
+	iadeliQuote := e.makeQuote(t, 2_500)
+	// (2) GERÇEK yetim: teklif tüketilmiş, sipariş yok, iade YOK.
+	yetimQuote := e.makeQuote(t, 3_000)
+
+	eski := e.clock.Now().Add(-10 * time.Minute)
+	for _, q := range []uuid.UUID{iadeliQuote, yetimQuote} {
+		if _, err := pool.Exec(ctx,
+			`UPDATE price_quotes SET consumed_at = $1 WHERE public_id = $2`, eski, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Yalnız birincisine iade yaz — reaper'ın kullandığı ANAHTARIN AYNISIYLA.
+	tx := postgres.NewTxRunner(pool)
+	if err := tx.InTx(ctx, func(qq *db.Queries) error {
+		_, err := walletsvc.New(tx).Apply(ctx, qq, walletsvc.Input{
+			UserID: e.userID, Amount: money.New(2_500, money.TRY),
+			Type: db.LedgerTypeREFUND, IdempotencyKey: "order:" + iadeliQuote.String() + ":refund",
+			Note: "sağlayıcı hatası — iade",
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cutoff := e.clock.Now().Add(-2 * time.Minute)
+	rows, err := e.q.ListOrphanHolds(ctx, db.ListOrphanHoldsParams{OlderThan: &cutoff, Lim: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var bulunan []string
+	for _, r := range rows {
+		bulunan = append(bulunan, r.PublicID.String())
+	}
+	for _, id := range bulunan {
+		if id == iadeliQuote.String() {
+			t.Errorf("🔴 iadesi YAPILMIŞ teklif hâlâ kuyrukta — sorgu kalıcı olarak tıkanır "+
+				"ve gerçek yetimler LIMIT'in dışında kalır (bulunan: %v)", bulunan)
+		}
+	}
+	var gorunduMu bool
+	for _, id := range bulunan {
+		if id == yetimQuote.String() {
+			gorunduMu = true
+		}
+	}
+	if !gorunduMu {
+		t.Fatalf("🔴 GERÇEK yetim bulunamadı — güvenlik ağı hiç çalışmıyor (bulunan: %v)", bulunan)
+	}
+}
+
+// TestRefundedOrderDoesNotLeakCode
+//
+// 🔴 KULLANICI HEM PARAYI HEM NUMARAYI ALAMAZ.
+//
+// Süre dolar → `Expire` iadeyi yazar, durum terminal olur. Hemen ardından
+// sağlayıcıya iptal gider ve sağlayıcı "tam bu anda SMS geldi" diye reddeder
+// (NEW_OTP_RECEIVED). Eski davranış: kod siparişe yazılıyor ve `GET /orders`
+// onu duruma bakmadan döndürüyordu — kullanıcı iadesini almışken doğrulama
+// kodunu da görüyordu, yani hizmeti bedavaya alıyordu.
+//
+// Yeni davranış: mesaj KAYDEDİLİR (destek ve mutabakat için) ama kullanıcıya
+// AÇILMAZ ve durum değişmez.
+func TestRefundedOrderDoesNotLeakCode(t *testing.T) {
+	e := setup(t, 100_000)
+	ctx := context.Background()
+	ord := e.newPendingOrder(t)
+
+	bakiyeSatinAlmaSonrasi := e.balance(t)
+
+	// Süre dolsun ve iade yazılsın.
+	e.clock.Advance(25 * time.Minute)
+	if err := e.svc.Expire(ctx, ord.ID); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if got := e.balance(t); got <= bakiyeSatinAlmaSonrasi {
+		t.Fatalf("iade yazılmamış: %d → %d", bakiyeSatinAlmaSonrasi, got)
+	}
+	var durum string
+	if err := pool.QueryRow(ctx, `SELECT status FROM orders WHERE id=$1`, ord.ID).Scan(&durum); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("iade sonrası durum = %s", durum)
+
+	// Sağlayıcı iptali "kod geldi" diye reddetsin.
+	e.stub.mu.Lock()
+	e.stub.cancelResults = []error{port.NewOTPArrived(
+		[]port.RemoteMessage{{RemoteID: "otp-gec", Code: "424242", Body: "Kodunuz 424242"}},
+		fmt.Errorf("NEW_OTP_RECEIVED"),
+	)}
+	e.stub.mu.Unlock()
+
+	if err := e.svc.CloseAtProvider(ctx, ord.ID); err != nil {
+		t.Fatalf("CloseAtProvider: %v", err)
+	}
+
+	// (1) Mesaj KAYDEDİLMİŞ olmalı — kanıt saklanır.
+	var mesajSayisi int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM order_messages WHERE order_id=$1`, ord.ID).Scan(&mesajSayisi); err != nil {
+		t.Fatal(err)
+	}
+	if mesajSayisi != 1 {
+		t.Errorf("mesaj kaydedilmemiş (%d) — iade tartışmasının kanıtı kaybolur", mesajSayisi)
+	}
+
+	// (2) KOD SSE'YE YAYINLANMAMIŞ olmalı — akış ikinci sızıntı kanalıdır.
+	if n := e.pub.kodIcerenOlaylar("424242"); n != 0 {
+		t.Errorf("🔴 iade edilmiş siparişin kodu SSE ile YAYINLANDI (%d olay) — "+
+			"ekranı açık olan kullanıcı kodu görür", n)
+	}
+
+	// (3) DURUM DEĞİŞMEMİŞ olmalı: iade edilmiş sipariş COMPLETED'a dönmez.
+	var durumSonra string
+	if err := pool.QueryRow(ctx, `SELECT status FROM orders WHERE id=$1`, ord.ID).Scan(&durumSonra); err != nil {
+		t.Fatal(err)
+	}
+	if durumSonra != durum {
+		t.Fatalf("🔴 iade edilmiş siparişin durumu DEĞİŞTİ: %s → %s — "+
+			"kullanıcı hem parayı hem numarayı aldı", durum, durumSonra)
+	}
+	if durumSonra == "COMPLETED" {
+		t.Fatal("🔴 iade edilmiş sipariş COMPLETED oldu")
 	}
 }

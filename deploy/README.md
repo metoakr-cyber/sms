@@ -198,7 +198,7 @@ D="docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml"
 # 1) Sağlayıcı kaydı — API anahtarı ORTAMDAN okunur, komut satırından değil
 #    (argümanlar `ps` çıktısına ve kabuk geçmişine düşer).
 $D run --rm --entrypoint /app/cli api \
-  provider:add --name=herosms --protocol=REST --base-url=https://hero-sms.com \
+  provider:add --name=herosms --protocol=HEROSMS_V1 --base-url=https://hero-sms.com \
   --env-key=HEROSMS_API_KEY
 
 # Kayıt oluştu: artık HEROSMS_API_KEY satırını deploy/.env içinde BOŞALTIN.

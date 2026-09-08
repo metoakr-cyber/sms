@@ -108,6 +108,19 @@ exec "$@"
 GIRIS
 RUN chmod 0755 /app/giris.sh && chown -R uygulama:uygulama /app
 
+# Dekont dizini İMAJDA oluşturulur ve sahipliği verilir.
+#
+# 🔴 BU SATIR OLMADAN ÜRETİM HİÇ AÇILMAZ: main.go açılışta
+# storage.NewLocal(UPLOAD_DIR) ile dizini oluşturmayı dener; /var/lib
+# root:root olduğu için kök olmayan kullanıcı EACCES alır, süreç exit 1 verir
+# ve `restart: unless-stopped` sonsuz döngüye girer. Caddy de
+# `depends_on: api service_healthy` beklediği için site tümüyle kapalı kalır.
+#
+# Docker adlandırılmış bir volume'ü İLK bağlandığında imajdaki dizinin
+# sahipliğinden tohumlar; bu yüzden dizin burada var olmalı.
+RUN mkdir -p /var/lib/onay360/uploads \
+ && chown -R uygulama:uygulama /var/lib/onay360
+
 USER uygulama
 EXPOSE 8080
 ENTRYPOINT ["/app/giris.sh"]

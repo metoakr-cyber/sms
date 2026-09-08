@@ -9,10 +9,19 @@
 -- kullanıcının İKİNCİ havale talebi 23505 alır ve bir daha havale bildiremez.
 -- test: deposit_integration_test.go#TestBankTransferDepositLeavesTxHashNull
 INSERT INTO deposits (user_id, method_id, method_name, amount_minor,
-                      tx_hash, network, user_note)
+                      tx_hash, network, user_note, idempotency_key)
 VALUES (@user_id, sqlc.narg('method_id'), @method_name, @amount_minor,
-        sqlc.narg('tx_hash'), @network, @user_note)
+        sqlc.narg('tx_hash'), @network, @user_note, sqlc.narg('idempotency_key'))
 RETURNING *;
+
+-- name: GetDepositByIdempotencyKey :one
+-- Tekrarlanan talep isteğinde MEVCUT talebi döner.
+--
+-- Kullanıcı kapsamı sorgunun parçasıdır: iki kullanıcının aynı anahtarı
+-- üretmesi çakışma değil, ayrı işlemdir.
+-- test: deposit_integration_test.go#TestDepositCreateIsIdempotent
+SELECT * FROM deposits
+WHERE user_id = @user_id AND idempotency_key = @idempotency_key;
 
 -- name: GetDepositForUser :one
 -- SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7). Başkasının talebi ile

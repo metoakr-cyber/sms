@@ -100,3 +100,12 @@ func mapStorageErr(err error) error {
 		return apperr.Internal(err)
 	}
 }
+
+// isUniqueViolation belirli bir tekil indeks ihlali mi.
+func isUniqueViolation(err error, kısıt string) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, kısıt)
+}

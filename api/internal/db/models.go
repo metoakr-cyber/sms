@@ -598,6 +598,7 @@ type Deposit struct {
 	ReviewedAt       *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	IdempotencyKey   *string
 }
 
 type DepositMethod struct {

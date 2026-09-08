@@ -226,6 +226,44 @@ func (s *Service) transitionAndRefund(
 //
 // İŞ AT-LEAST-ONCE ÇALIŞIR: aynı mesaj sekiz kez gelebilir. Her adım
 // idempotenttir.
+// recordMessagesOnly mesajı YALNIZ kaydeder: durum değişmez, yayın yapılmaz.
+//
+// İade edilmiş bir siparişe kod geldiğinde kullanılır. Mesaj destek ve
+// mutabakat için saklanır ama kullanıcıya AÇILMAZ (DTO süzer). Silmek yerine
+// saklamak bilinçlidir: "kod gelmedi diye iade ettik ama aslında gelmişti"
+// tartışmasının tek kanıtı bu satırdır.
+//
+// test: order_integration_test.go#TestRefundedOrderDoesNotLeakCode
+func (s *Service) recordMessagesOnly(ctx context.Context, orderID int64, msgs []port.RemoteMessage) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	return s.tx.InTx(ctx, func(q *db.Queries) error {
+		now := s.clock.Now()
+		for _, m := range msgs {
+			otpID := m.RemoteID
+			if otpID == "" {
+				otpID = fmt.Sprintf("sha:%x", hashMessage(orderID, m))
+			}
+			received := m.ReceivedAt
+			if received.IsZero() {
+				received = now
+			}
+			_, err := q.InsertOrderMessage(ctx, db.InsertOrderMessageParams{
+				OrderID: orderID, ProviderOtpID: otpID,
+				Code: m.Code, Body: m.Body, Sender: m.Sender, ReceivedAt: received,
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue // zaten kayıtlı
+			}
+			if err != nil {
+				return apperr.Internal(err)
+			}
+		}
+		return nil
+	})
+}
+
 func (s *Service) DeliverMessages(ctx context.Context, orderID int64, msgs []port.RemoteMessage) error {
 	if len(msgs) == 0 {
 		return nil
@@ -414,11 +452,37 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 	}
 
 	if err != nil {
-		// Yeni kod geldi diye reddedildi: kodu KAYDET, sonra Finish ile kapat.
-		// "İptal başarısız" sayıp yeniden denersek gelmiş kod kullanıcıya
-		// hiç ulaşmaz.
 		if oe, ok := port.AsOTPArrived(err); ok {
-			if derr := s.DeliverMessages(ctx, orderID, oe.Messages); derr != nil {
+			// SMS tam iptal anında geldi. İki ayrı durum var ve ayrımı
+			// PARA belirler:
+			//
+			//  · Sipariş HÂLÂ ÖDENMİŞ (kod gelmemiş sayılıp iade YAZILMAMIŞ):
+			//    kullanıcı parasını ödedi, kod da geldi — hakkı olan şeydir,
+			//    kaydet ve Finish ile kapat.
+			//
+			//  · Sipariş İADE EDİLMİŞ (süre doldu ya da kullanıcı iptal etti;
+			//    para GERİ VERİLDİ): kodu kullanıcıya açmak, ona hem parayı
+			//    hem numarayı vermek demektir. 🔴 Bu bir SIZINTIDIR, ürün
+			//    kararı değil: kullanıcı iadesini almışken doğrulama kodunu
+			//    da görürse hizmeti bedavaya almış olur.
+			//
+			// Mesaj yine de KAYDEDİLİR (destek ve mutabakat için gerekli) ama
+			// kullanıcıya AÇILMAZ; DeliverMessages'ın yayın/durum yolu
+			// çalıştırılmaz. Sağlayıcıda Finish edilir — Cancel reddedildi ve
+			// aktivasyonun açık kalması bizim zararımızdır.
+			//
+			// test: order_integration_test.go#TestRefundedOrderDoesNotLeakCode
+			iadeEdilmis := orderdom.Status(ord.Status) == orderdom.StatusRefunded ||
+				orderdom.Status(ord.Status) == orderdom.StatusCancelled
+
+			if iadeEdilmis {
+				slog.Warn("iade edilmiş siparişe kod geldi — kullanıcıya AÇILMADI",
+					"order", ord.PublicID, "status", ord.Status,
+					"metric", "otp_after_refund_total")
+				if rerr := s.recordMessagesOnly(ctx, orderID, oe.Messages); rerr != nil {
+					return rerr
+				}
+			} else if derr := s.DeliverMessages(ctx, orderID, oe.Messages); derr != nil {
 				return derr
 			}
 			if ferr := adapter.Finish(ctx, creds, ord.RemoteOrderID); ferr != nil {

@@ -20,7 +20,7 @@ UPDATE deposits SET
     reviewed_by_user_id = $3,
     reviewed_at         = $4
 WHERE public_id = $5 AND status = 'PENDING'
-RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at
+RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key
 `
 
 type ApproveDepositParams struct {
@@ -64,6 +64,7 @@ func (q *Queries) ApproveDeposit(ctx context.Context, arg ApproveDepositParams) 
 		&i.ReviewedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -95,20 +96,21 @@ func (q *Queries) CountUserDeposits(ctx context.Context, userID int64) (int64, e
 const createDeposit = `-- name: CreateDeposit :one
 
 INSERT INTO deposits (user_id, method_id, method_name, amount_minor,
-                      tx_hash, network, user_note)
+                      tx_hash, network, user_note, idempotency_key)
 VALUES ($1, $2, $3, $4,
-        $5, $6, $7)
-RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at
+        $5, $6, $7, $8)
+RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key
 `
 
 type CreateDepositParams struct {
-	UserID      int64
-	MethodID    *int64
-	MethodName  string
-	AmountMinor int64
-	TxHash      *string
-	Network     string
-	UserNote    string
+	UserID         int64
+	MethodID       *int64
+	MethodName     string
+	AmountMinor    int64
+	TxHash         *string
+	Network        string
+	UserNote       string
+	IdempotencyKey *string
 }
 
 // Bakiye yükleme talepleri (FR-500 … FR-503).
@@ -128,6 +130,7 @@ func (q *Queries) CreateDeposit(ctx context.Context, arg CreateDepositParams) (D
 		arg.TxHash,
 		arg.Network,
 		arg.UserNote,
+		arg.IdempotencyKey,
 	)
 	var i Deposit
 	err := row.Scan(
@@ -149,12 +152,13 @@ func (q *Queries) CreateDeposit(ctx context.Context, arg CreateDepositParams) (D
 		&i.ReviewedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
 
 const getDeposit = `-- name: GetDeposit :one
-SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at FROM deposits WHERE public_id = $1
+SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key FROM deposits WHERE public_id = $1
 `
 
 // Yönetim yolu: sahiplik kısıtı YOKTUR, izin kontrolü middleware'dedir
@@ -181,12 +185,55 @@ func (q *Queries) GetDeposit(ctx context.Context, publicID uuid.UUID) (Deposit, 
 		&i.ReviewedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IdempotencyKey,
+	)
+	return i, err
+}
+
+const getDepositByIdempotencyKey = `-- name: GetDepositByIdempotencyKey :one
+SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key FROM deposits
+WHERE user_id = $1 AND idempotency_key = $2
+`
+
+type GetDepositByIdempotencyKeyParams struct {
+	UserID         int64
+	IdempotencyKey *string
+}
+
+// Tekrarlanan talep isteğinde MEVCUT talebi döner.
+//
+// Kullanıcı kapsamı sorgunun parçasıdır: iki kullanıcının aynı anahtarı
+// üretmesi çakışma değil, ayrı işlemdir.
+// test: deposit_integration_test.go#TestDepositCreateIsIdempotent
+func (q *Queries) GetDepositByIdempotencyKey(ctx context.Context, arg GetDepositByIdempotencyKeyParams) (Deposit, error) {
+	row := q.db.QueryRow(ctx, getDepositByIdempotencyKey, arg.UserID, arg.IdempotencyKey)
+	var i Deposit
+	err := row.Scan(
+		&i.ID,
+		&i.PublicID,
+		&i.UserID,
+		&i.MethodID,
+		&i.MethodName,
+		&i.AmountMinor,
+		&i.CreditedMinor,
+		&i.Status,
+		&i.TxHash,
+		&i.Network,
+		&i.ReceiptPath,
+		&i.UserNote,
+		&i.AdminNote,
+		&i.RejectionReason,
+		&i.ReviewedByUserID,
+		&i.ReviewedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
 
 const getDepositForUser = `-- name: GetDepositForUser :one
-SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at FROM deposits WHERE public_id = $1 AND user_id = $2
+SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key FROM deposits WHERE public_id = $1 AND user_id = $2
 `
 
 type GetDepositForUserParams struct {
@@ -218,12 +265,13 @@ func (q *Queries) GetDepositForUser(ctx context.Context, arg GetDepositForUserPa
 		&i.ReviewedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
 
 const listDepositsForAdmin = `-- name: ListDepositsForAdmin :many
-SELECT d.id, d.public_id, d.user_id, d.method_id, d.method_name, d.amount_minor, d.credited_minor, d.status, d.tx_hash, d.network, d.receipt_path, d.user_note, d.admin_note, d.rejection_reason, d.reviewed_by_user_id, d.reviewed_at, d.created_at, d.updated_at,
+SELECT d.id, d.public_id, d.user_id, d.method_id, d.method_name, d.amount_minor, d.credited_minor, d.status, d.tx_hash, d.network, d.receipt_path, d.user_note, d.admin_note, d.rejection_reason, d.reviewed_by_user_id, d.reviewed_at, d.created_at, d.updated_at, d.idempotency_key,
        u.public_id AS user_public_id,
        u.email     AS user_email,
        u.username  AS user_username
@@ -260,6 +308,7 @@ type ListDepositsForAdminRow struct {
 	ReviewedAt       *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	IdempotencyKey   *string
 	UserPublicID     uuid.UUID
 	UserEmail        string
 	UserUsername     string
@@ -294,6 +343,7 @@ func (q *Queries) ListDepositsForAdmin(ctx context.Context, arg ListDepositsForA
 			&i.ReviewedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IdempotencyKey,
 			&i.UserPublicID,
 			&i.UserEmail,
 			&i.UserUsername,
@@ -309,7 +359,7 @@ func (q *Queries) ListDepositsForAdmin(ctx context.Context, arg ListDepositsForA
 }
 
 const listUserDeposits = `-- name: ListUserDeposits :many
-SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at FROM deposits
+SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key FROM deposits
 WHERE user_id = $1
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $2
@@ -350,6 +400,7 @@ func (q *Queries) ListUserDeposits(ctx context.Context, arg ListUserDepositsPara
 			&i.ReviewedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IdempotencyKey,
 		); err != nil {
 			return nil, err
 		}
@@ -362,7 +413,7 @@ func (q *Queries) ListUserDeposits(ctx context.Context, arg ListUserDepositsPara
 }
 
 const lockDepositForUpdate = `-- name: LockDepositForUpdate :one
-SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at FROM deposits WHERE public_id = $1 FOR UPDATE
+SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key FROM deposits WHERE public_id = $1 FOR UPDATE
 `
 
 // ÇAĞIRANIN TRANSACTION'I İÇİNDE çağrılmalıdır. Kilit commit'e kadar tutulur;
@@ -392,6 +443,7 @@ func (q *Queries) LockDepositForUpdate(ctx context.Context, publicID uuid.UUID) 
 		&i.ReviewedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -404,7 +456,7 @@ UPDATE deposits SET
     reviewed_by_user_id = $3,
     reviewed_at         = $4
 WHERE public_id = $5 AND status = 'PENDING'
-RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at
+RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key
 `
 
 type RejectDepositParams struct {
@@ -444,6 +496,7 @@ func (q *Queries) RejectDeposit(ctx context.Context, arg RejectDepositParams) (D
 		&i.ReviewedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }
@@ -451,7 +504,7 @@ func (q *Queries) RejectDeposit(ctx context.Context, arg RejectDepositParams) (D
 const setDepositReceipt = `-- name: SetDepositReceipt :one
 UPDATE deposits SET receipt_path = $1
 WHERE public_id = $2 AND user_id = $3 AND status = 'PENDING'
-RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at
+RETURNING id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key
 `
 
 type SetDepositReceiptParams struct {
@@ -484,6 +537,7 @@ func (q *Queries) SetDepositReceipt(ctx context.Context, arg SetDepositReceiptPa
 		&i.ReviewedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }

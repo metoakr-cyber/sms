@@ -41,7 +41,7 @@ const CAP_LABELS: Record<string, string> = {
 const QUERY_KEY = ['admin-providers'] as const;
 
 const SELECT_CLASS =
-  'raised min-h-12 w-full rounded-xl border px-3 text-base outline-none ' +
+  'raised select-ok min-h-12 w-full rounded-xl border px-3 text-base outline-none ' +
   'focus:border-brand-400 disabled:opacity-60';
 
 function ErrorBox({ err, className }: { err: ApiError; className?: string }) {

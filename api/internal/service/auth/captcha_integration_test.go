@@ -17,11 +17,19 @@ import (
 	apperr "github.com/ikmetrik/sms-platform/api/internal/domain/errors"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	"github.com/ikmetrik/sms-platform/api/internal/testsupport"
 )
 
 var pool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
+	// 🔴 GÜVENLİK KAPISI: bu testler DELETE FROM yapar. Veritabanı adı
+	// "_test" ile bitmiyorsa süreç durur — kapı Makefile'da değil burada,
+	// çünkü `go test` komutunu elle yazan kişiyi Makefile korumaz.
+	if _, gerr := testsupport.MustTestDatabaseURL(); gerr != nil {
+		fmt.Fprintln(os.Stderr, gerr)
+		os.Exit(1)
+	}
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
 		// SESSİZ ATLAMA YOK.

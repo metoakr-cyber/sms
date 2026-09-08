@@ -43,14 +43,23 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${gelistirme ? " 'unsafe-eval'" : ''} https://www.google.com https://www.gstatic.com`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https://www.google.com https://www.gstatic.com",
+  // blob: ZORUNLU — dekont görüntüleyici. Dekont ucu ikili dosya döner ve
+  // apiBlob() `URL.createObjectURL` ile blob: şeması üretir; blob: olmadan
+  // yönetici dekontu GÖREMEDEN parayı onaylamak zorunda kalır.
+  // blob: yalnız SAYFANIN KENDİ ürettiği veriye işaret eder, dışarıdan
+  // yüklenemez — data: kadar bile geniş değildir.
+  "img-src 'self' data: blob: https://www.google.com https://www.gstatic.com",
   "font-src 'self' data:",
   // SSE dâhil tüm API çağrıları AYNI kökene gider (ters vekil topolojisi),
   // bu yüzden connect-src genişletilmez.
   "connect-src 'self'",
   "frame-src https://www.google.com",
   "worker-src 'self' blob:",
-  "object-src 'none'",
+  // object-src: PDF dekontlar <object> ile gösteriliyor. blob: SAYFANIN KENDİ
+  // ürettiği veriye işaret eder (apiBlob → URL.createObjectURL), dışarıdan
+  // yüklenemez. 'none' bırakılırsa yönetici PDF dekontu GÖREMEDEN parayı
+  // onaylamak zorunda kalır — para sisteminde kabul edilemez bir körlük.
+  "object-src blob:",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",

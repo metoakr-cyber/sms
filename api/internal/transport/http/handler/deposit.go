@@ -85,6 +85,9 @@ func (h *Deposit) Create(c *gin.Context) {
 	dep, err := h.svc.Create(c.Request.Context(), depositsvc.CreateInput{
 		UserID:         userID,
 		MethodPublicID: methodID,
+		// İstemci aynı talebi iki kez göndermesin diye: ağ yanıtı yutarsa
+		// kullanıcı tekrar dener ve ikinci istek AYNI talebi geri alır.
+		IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")),
 		AmountMinor:    req.AmountMinor,
 		Reference:      req.Reference,
 		Note:           req.Note,

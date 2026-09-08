@@ -306,3 +306,69 @@ func TestAdjustIsIdempotentUnderConcurrency(t *testing.T) {
 		t.Fatalf("🔴 mutabakat bozuk: Σ defter = %d, bakiye = %d", sum, balanceOf(t, uid))
 	}
 }
+
+// denetimKaydiSayisi belirli bir eylemin kaç kez kaydedildiğini döner.
+func denetimKaydiSayisi(t *testing.T, eylem, varlikID string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM audit_logs WHERE action=$1 AND entity_id=$2`,
+		eylem, varlikID).Scan(&n); err != nil {
+		t.Fatalf("denetim kaydı sayılamadı: %v", err)
+	}
+	return n
+}
+
+// TestAdjustIsAudited
+//
+// 🔴 PARA HAREKETİ İZ BIRAKMADAN YAPILAMAZ.
+//
+// `POST /admin/users/:id/balance` ucunda tutarın üst sınırı YOKTUR. Ele
+// geçirilmiş bir `users:write` hesabı istediği kadar bakiye basabilir; tek
+// caydırıcı ve tek kanıt denetim kaydıdır.
+//
+// Kayıt defterle AYNI transaction'da yazılır: ayrı yazılsaydı para değişip
+// izi kaybolabilirdi.
+func TestAdjustIsAudited(t *testing.T) {
+	adminID, _ := seedUser(t, "denetciyonetici")
+	uid, pub := seedUser(t, "denetcihedef")
+	rig := newWalletRig(t, adminID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM audit_logs WHERE entity_id=$1`, pub.String())
+	})
+
+	const key = "denetim-testi-0001"
+	w, body := rig.do(t, http.MethodPost, "/admin/users/"+pub.String()+"/balance",
+		dto.AdjustBalanceRequest{AmountMinor: 7_777, Note: "denetim testi", IdempotencyKey: key})
+	if w.Code != http.StatusOK {
+		t.Fatalf("durum = %d — gövde: %s", w.Code, body)
+	}
+	if got := balanceOf(t, uid); got != 7_777 {
+		t.Fatalf("bakiye = %d", got)
+	}
+
+	if n := denetimKaydiSayisi(t, "wallet.adjust", pub.String()); n != 1 {
+		t.Fatalf("🔴 bakiye düzeltmesi denetim kaydı bırakmadı (kayıt: %d) — "+
+			"sınırsız tutarda bakiye basan bir yönetici iz bırakmaz", n)
+	}
+
+	// Kayıtta TUTAR ve AÇIKLAMA olmalı; yoksa kayıt "bir şey oldu"dan ibaret olur.
+	var after []byte
+	if err := pool.QueryRow(context.Background(),
+		`SELECT after FROM audit_logs WHERE action='wallet.adjust' AND entity_id=$1`,
+		pub.String()).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	for _, alan := range []string{"amountMinor", "7777", "denetim testi"} {
+		if !strings.Contains(string(after), alan) {
+			t.Errorf("denetim kaydında %q yok: %s", alan, after)
+		}
+	}
+
+	// TEKRARLANAN çağrı ikinci kayıt YAZMAZ: işlem gerçekten olmadı.
+	rig.do(t, http.MethodPost, "/admin/users/"+pub.String()+"/balance",
+		dto.AdjustBalanceRequest{AmountMinor: 7_777, Note: "denetim testi", IdempotencyKey: key})
+	if n := denetimKaydiSayisi(t, "wallet.adjust", pub.String()); n != 1 {
+		t.Errorf("tekrarlanan çağrı ikinci denetim kaydı yazdı (%d) — kayıt yanıltıcı olur", n)
+	}
+}
