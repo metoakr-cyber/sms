@@ -1,0 +1,60 @@
+# Docker derleme bağlamı.
+#
+# Her iki imaj da DEPO KÖKÜNDEN derlenir (tek bağlam, tek yok sayma dosyası):
+#   docker build -f deploy/Dockerfile.api -t onay360-api .
+#   docker build -f deploy/Dockerfile.web -t onay360-web .
+# Bu yüzden buradaki her satır hem api hem web imajını etkiler.
+
+# ─── Sırlar ───
+# EN ÜSTTE duruyor: .env derleme bağlamına girerse SESSION_SECRET,
+# ENCRYPTION_KEY ve sağlayıcı API anahtarı imaj katmanında kalıcılaşır —
+# imajı çeken herkes okuyabilir ve `docker history` ile de görünür.
+# (docs/memory.md §3.13: bu projede bir kez sır sızdı.)
+.env
+.env.*
+!.env.example
+!.env.prod.example
+*.local
+deploy/.env
+deploy/backups/
+
+# ─── Sürüm kontrolü ve editör ───
+.git
+.gitignore
+.github
+.idea
+.vscode
+.DS_Store
+**/.DS_Store
+
+# ─── Go derleme çıktıları ───
+api/bin/
+api/tmp/
+**/*.test
+**/*.out
+coverage.*
+
+# Testler ve fixture'lar imajda yer tutmaz; `go build` zaten almaz ama
+# bağlamı küçültmek derleme süresini ve katman boyutunu düşürür.
+**/*_test.go
+api/testdata/
+
+# ─── Node / Next ───
+# node_modules ASLA kopyalanmaz: `npm ci` imajın içinde, hedef platform için
+# çalışır. Host'un macOS/arm64 modülleri linux imajında bozuk davranır.
+web/node_modules/
+web/.next/
+web/.next-check/
+web/out/
+web/.turbo/
+web/tsconfig.tsbuildinfo
+web/scripts/
+node_modules/
+
+# ─── Geliştirme ortamı artıkları ───
+.check-logs/
+deploy/data/
+scripts/
+docs/
+CLAUDE.md
+README.md

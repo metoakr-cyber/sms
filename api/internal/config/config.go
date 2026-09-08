@@ -51,6 +51,19 @@ type Config struct {
 	MailProvider string
 	MailFrom     string
 	ResendAPIKey string
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+
+	// WorkersInProcess arka plan işleri API süreci içinde mi koşsun.
+	//
+	// TEK ANAHTAR, İKİ SÜREÇ: `cmd/server` işleri yalnız bu değer true iken
+	// başlatır, `cmd/worker` ise yalnız false iken açılır. Böylece iki sürecin
+	// aynı işi aynı anda koşturduğu bir yapılandırma kombinasyonu kalmaz.
+	// Çift koşmak bakiyeyi bozmazdı (iade idempotency anahtarı deterministik)
+	// ama sağlayıcıya iki kat istek giderdi — bkz. cmd/worker/main.go.
+	WorkersInProcess bool
 
 	WebhookHeroSMSSecret     string
 	WebhookHeroSMSAllowedIPs []string
@@ -108,6 +121,12 @@ func Load() (*Config, error) {
 		MailProvider: v.oneOf("MAIL_PROVIDER", "console", "console", "resend", "smtp"),
 		MailFrom:     v.str("MAIL_FROM", "noreply@localhost"),
 		ResendAPIKey: v.str("RESEND_API_KEY", ""),
+		SMTPHost:     v.str("SMTP_HOST", ""),
+		SMTPPort:     v.port("SMTP_PORT", 587),
+		SMTPUsername: v.str("SMTP_USERNAME", ""),
+		SMTPPassword: v.str("SMTP_PASSWORD", ""),
+
+		WorkersInProcess: v.boolean("WORKERS_IN_PROCESS", true),
 
 		WebhookHeroSMSSecret:     v.str("WEBHOOK_HEROSMS_SECRET", ""),
 		WebhookHeroSMSAllowedIPs: v.csv("WEBHOOK_HEROSMS_ALLOWED_IPS"),
@@ -117,6 +136,18 @@ func Load() (*Config, error) {
 
 		SentryDSN:      v.str("SENTRY_DSN", ""),
 		MetricsEnabled: v.boolean("METRICS_ENABLED", true),
+	}
+
+	// ─── Sağlayıcıya bağlı zorunluluklar ───
+	// SMTP her ortamda tam bağlantı bilgisi ister: eksik bir alanla açılan
+	// süreç, e-postaları çalışma anında ve sessizce düşürür. Adaptör aynı
+	// kontrolü kendi içinde de yapar (adapter/mailer/smtp.go NewSMTP) — burada
+	// olması, arızanın kullanıcı kaydı sırasında değil AÇILIŞTA görünmesini
+	// sağlar.
+	if c.MailProvider == "smtp" {
+		v.require("SMTP_HOST", c.SMTPHost)
+		v.require("SMTP_USERNAME", c.SMTPUsername)
+		v.require("SMTP_PASSWORD", c.SMTPPassword)
 	}
 
 	// ─── Ortama bağlı zorunluluklar ───
@@ -254,6 +285,24 @@ func (v *validator) decimal(key, def string) string {
 		v.fail(key, fmt.Sprintf("ondalık sayı değil: %q", s))
 	}
 	return s
+}
+
+// port bir TCP port numarasını okur ve aralığını doğrular.
+func (v *validator) port(key string, def int) int {
+	s := v.str(key, "")
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		v.fail(key, fmt.Sprintf("port numarası değil: %q", s))
+		return def
+	}
+	if n < 1 || n > 65535 {
+		v.fail(key, fmt.Sprintf("port 1–65535 aralığında olmalı: %d", n))
+		return def
+	}
+	return n
 }
 
 func (v *validator) boolean(key string, def bool) bool {

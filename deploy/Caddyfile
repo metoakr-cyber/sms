@@ -1,0 +1,198 @@
+# Onay360 — üretim ters vekili.
+#
+# Topoloji (docs/design.md §16): TEK alan adı.
+#   /api/*  → api:8080   (Go)
+#   gerisi  → web:3000   (Next.js standalone)
+#
+# {$DOMAIN} ve {$ACME_EMAIL} caddy servisinin ortam değişkenlerinden gelir
+# (deploy/docker-compose.prod.yml). Sertifika, HTTP→HTTPS yönlendirmesi ve
+# yenileme Caddy'nin varsayılanıdır; elle yazılmaz.
+{
+	email {$ACME_EMAIL}
+
+	servers {
+		# HTTP/2 ZORUNLUDUR, süs değil.
+		#
+		# HTTP/1.1'de tarayıcı origin başına 6 eşzamanlı bağlantı açar. Her
+		# açık sipariş ekranı bir SSE bağlantısını sürekli açık tutar; 6
+		# sekmeden sonra 7.'nin HİÇBİR isteği çıkamaz ve uygulama tamamen
+		# kilitlenir — hata mesajı olmadan. Yerel geliştirme HTTP/1.1
+		# olduğu için bu tuzak yerelde FARK EDİLMEZ
+		# (docs/frontend-contract.md §4).
+		protocols h1 h2 h3
+	}
+}
+
+# ─────────────────────────── Parçacıklar ───────────────────────────
+
+# API'ye giden ters vekil. Argüman: yukarı akış adresi.
+(api_vekil) {
+	reverse_proxy {args[0]} {
+		# 🔴 SSE İÇİN ZORUNLU — sistemin en pahalı sessiz arızası burada.
+		#
+		# Varsayılan tamponlamada Caddy yanıtı biriktirir: sunucu "kod geldi"
+		# olayını yazar, kullanıcının ekranında HİÇBİR ŞEY olmaz, hata da
+		# çıkmaz, log da yazılmaz. Kullanıcı numarayı boşa harcar, süre
+		# dolar, iade edilir; sistem "çalışıyor" görünür ve gelir sıfırdır.
+		# Yerelde HTTP/1.1 ve vekilsiz çalışıldığı için FARK EDİLMEZ.
+		# Go tarafı üzerine düşeni yapıyor (X-Accel-Buffering: no,
+		# api/.../handler/order.go); eksik olan taraf buydu.
+		# Bkz. docs/frontend-contract.md §4 · docs/trd.md NFR-811
+		#
+		# DÜRÜSTLÜK NOTU (ölçüldü, tahmin değil): Caddy 2.10 bu satır
+		# OLMADAN da akışı tamponlamıyor — `text/event-stream` içerik tipini
+		# ve Content-Length'siz (chunked) yanıtı kendiliğinden algılayıp
+		# anında boşaltıyor. Satır yine de yazılıdır çünkü (a) o algılama
+		# yukarı akışın doğru Content-Type göndermesine bağlıdır ve bir gün
+		# başlık değişirse sessizce kaybolur, (b) vekil değiştirilirse
+		# (nginx, ALB, Cloudflare) otomatik algılama YOKTUR, (c) davranışın
+		# kazara değil bilinçli olduğunu belgeler. Yani bu satır bir
+		# yedektir; tek savunma olduğu iddia edilmiyor.
+		flush_interval -1
+
+		# Gerçek istemci IP'si yukarı akışa taşınır. Bu başlıklar istemcinin
+		# gönderdiğini EZER (header_up atar, eklemez), bu yüzden istemci
+		# kendi değerini geçiremez.
+		#
+		# ⚠️ BUGÜN ETKİSİZ: api/internal/transport/http/router.go yalnız
+		# 127.0.0.1 ve ::1'e güveniyor; Caddy ayrı bir konteyner olduğu için
+		# X-Forwarded-For oradan gelmez ve Gin bu başlıkları yok sayar.
+		# Sonuç: webhook IP izin listesi HeroSMS'in her bildirimini eler ve
+		# IP hız limiti tüm kullanıcıları tek kovaya koyar. Düzeltme api
+		# tarafındadır (TRUSTED_PROXIES) ve deploy/README.md "Bilinen
+		# engeller" bölümünde yazılıdır. Başlıklar şimdiden gönderiliyor ki
+		# api düzeltildiğinde vekil tarafında iş kalmasın.
+		# (X-Forwarded-For / -Proto / -Host Caddy'nin varsayılanıdır; elle
+		#  yazmak `caddy validate` uyarısı üretir.)
+		header_up X-Real-IP {http.request.remote.host}
+	}
+}
+
+(guvenlik_basliklari) {
+	header {
+		# HSTS — TLS'i sonlandıran katmanın işi, bu yüzden Next'te değil
+		# burada. preload listesine girmek GERİ ALINAMAZ; alan adının
+		# tamamı kalıcı olarak yalnız HTTPS olur.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+		# Aşağıdakiler `?` ile YALNIZ YOKSA eklenir.
+		#
+		# Next bu başlıkları kendi yanıtlarında zaten gönderiyor
+		# (web/next.config.ts headers()). `?` sayesinde Next'in değeri
+		# kazanır, buradaki yalnız Next'in dokunmadığı yanıtlar (Go'nun
+		# /api yanıtları, Caddy'nin kendi hata sayfaları) için yedek olur.
+		# Aynı başlığı iki yerde KOŞULSUZ yazmak, birini güncelleyip
+		# diğerini unuttuğunuz gün sessiz bir çelişki üretir.
+		#
+		# CSP'nin tek kaynağı web/next.config.ts'tir; oradaki yorum neyin
+		# neden gevşetildiğini (satır içi tema betiği, JSON-LD, Next
+		# hidrasyonu, reCAPTCHA) tek tek açıklar. Buradaki yedek politika
+		# sayfa üretmeyen yanıtlar için bilinçli olarak DAHA SIKIDIR.
+		?Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+		?X-Content-Type-Options "nosniff"
+		?X-Frame-Options "DENY"
+		?Referrer-Policy "strict-origin-when-cross-origin"
+
+		# Sunucu imzası saldırgana sürüm bilgisi verir.
+		-Server
+	}
+}
+
+(sse_guvenli_sikistirma) {
+	# 🔴 `text/*` JOKERİ KULLANILMAZ.
+	#
+	# Sıkıştırma tampon demektir: gzip/zstd çıktıyı blok blok üretir, bu
+	# yüzden `text/event-stream` sıkıştırılırsa flush_interval -1 doğru olsa
+	# bile akış durur. İçerik tipleri bu yüzden TEK TEK sayılır; listede
+	# olmayan bir tip sıkıştırılmadan geçer (yavaş ama doğru).
+	#
+	# DÜRÜSTLÜK NOTU (ölçüldü): Caddy 2.10 `text/*` jokeriyle bile
+	# event-stream'i sıkıştırmadı — modülün kendi SSE istisnası var. Açık
+	# liste yine de korunuyor: istisnaya güvenmek, onu kaldıran bir sürüm
+	# yükseltmesinde sessizce kaybedilecek bir bahis olur.
+	encode {
+		zstd
+		gzip
+		match {
+			header Content-Type text/html*
+			header Content-Type text/plain*
+			header Content-Type text/css*
+			header Content-Type text/xml*
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+			header Content-Type application/xml*
+			header Content-Type image/svg+xml*
+		}
+	}
+}
+
+# ─────────────────────────── www → kök ───────────────────────────
+# Tek kanonik ad. İki adres aynı içeriği sunarsa çerezler, canonical
+# etiketler ve arama sonuçları bölünür.
+www.{$DOMAIN} {
+	redir https://{$DOMAIN}{uri} permanent
+}
+
+# ─────────────────────────── Site ───────────────────────────
+{$DOMAIN} {
+	import guvenlik_basliklari
+	import sse_guvenli_sikistirma
+
+	# `route` sırayı KORUR.
+	#
+	# `handle` blokları tek başına kullanıldığında Caddy onları yol
+	# özgüllüğüne göre yeniden sıralar; adlandırılmış matcher'lar (@akis)
+	# bu sıralamaya giremez ve blok yanlış yere düşebilir. `route` içinde
+	# değerlendirme yukarıdan aşağıya, yazıldığı sırayladır.
+	route {
+		# ─── SSE: kendi bloğu, kendi kuralı ───
+		# Yol: /api/v1/orders/{public_id}/stream
+		# (api/internal/transport/http/router.go — /api/v1 grubu altında
+		#  auth.GET("/orders/:id/stream")).
+		# Ayrı blok, tamponlamasız vekilin YALNIZ burada geçerli olduğunu
+		# ve yanlışlıkla silinemeyeceğini görünür kılar.
+		@akis path_regexp ^/api/v1/orders/[^/]+/stream$
+		handle @akis {
+			import api_vekil api:8080
+		}
+
+		# ─── API ───
+		# Sıra önemli: /api Next'ten ÖNCE gelmeli. Aksi hâlde istekler
+		# Next'e düşer, Next'in kendi rewrite'ı üzerinden İKİNCİ bir vekil
+		# atlanır ve SSE o yolda Next tarafından tamponlanır.
+		handle /api/* {
+			import api_vekil api:8080
+		}
+
+		# Sağlık uçları yük dengeleyici / izleme için dışarıdan erişilebilir.
+		# /healthz canlılık (bağımlılığa bakmaz), /readyz hazırlık
+		# (postgres + redis ping).
+		handle /healthz {
+			import api_vekil api:8080
+		}
+		handle /readyz {
+			import api_vekil api:8080
+		}
+
+		# ─── /metrics ve /debug DIŞARIYA KAPALI ───
+		# Bu uçlar bugün YOK. Kapı şimdiden kuruldu ki eklendikleri gün
+		# varsayılan davranış "internete açık" olmasın; Prometheus'a
+		# konteyner ağı içinden (api:8080) erişilir.
+		handle /metrics* {
+			respond 404
+		}
+		handle /debug/* {
+			respond 404
+		}
+
+		# ─── Ön yüz ───
+		handle {
+			reverse_proxy web:3000
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

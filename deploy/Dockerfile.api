@@ -1,0 +1,114 @@
+# Go API imajı — çok aşamalı.
+#
+# Derleme bağlamı DEPO KÖKÜDÜR (kök .dockerignore geçerlidir):
+#   docker build -f deploy/Dockerfile.api -t onay360-api:<git-sha> .
+#
+# Taban sürümü api/go.mod'daki `go` satırıyla AYNI olmak zorunda. go.mod
+# "go 1.26.0" diyor; daha eski bir araç zinciri modülü derleyemez ve hata
+# ancak derlemenin ortasında görülür. (Görev tanımı 1.23 diyordu; go.mod
+# gerçeği başka — rapora yazıldı.)
+ARG GO_VERSION=1.26-alpine
+
+# ─────────────────────────── 1) Bağımlılıklar ───────────────────────────
+FROM golang:${GO_VERSION} AS deps
+WORKDIR /src
+# go.mod + go.sum AYRI katman: kaynak değiştiğinde modül indirmesi tekrar
+# etmesin (derleme dakikalarını değil saniyelerini konuşuyoruz, ama CI'da
+# her push'ta tekrar indirmek ağ kotası ve süre demek).
+COPY api/go.mod api/go.sum ./
+RUN go mod download
+
+# ─────────────────────────── 2) Derleme ───────────────────────────
+FROM deps AS build
+WORKDIR /src
+COPY api/ ./
+# CGO_ENABLED=0  → statik ikili, alpine'ın musl'ıyla uyuşmazlık yaşamaz
+# -trimpath      → ikilinin içinde derleyen makinenin ev dizini yolu kalmasın
+# -ldflags=-s -w → sembol tablosu ve DWARF atılır (~%25 küçük ikili)
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+# CLI ikilisi ÜRETİMDE ŞARTTIR: ilk yönetici hesabı, sağlayıcı kaydı, katalog
+# senkronu ve `wallet:reconcile` mutabakatı bu ikiliyle yapılır
+# (api/cmd/cli/main.go). Yedek tatbikatı da onu çağırır.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/cli ./cmd/cli
+# Arka plan işçisi. TEK İMAJ, farklı komut: server ve worker aynı kod ağacını
+# paylaşıyor, ayrı imaj tutmak ikisinin sürümünün ayrışmasına kapı açardı.
+#
+# 🔴 ÇİFT KOŞMA KAPISI: hangi sürecin işleri koşturacağını `WORKERS_IN_PROCESS`
+# belirler (api/cmd/worker/main.go paket yorumu).
+#   true (varsayılan) → server koşturur, worker AÇILMAZ (hata verip çıkar)
+#   false             → server koşturmaz, worker koşturur
+# İkisinin birden koşturduğu bir kombinasyon yoktur. Her iki konteynere de
+# AYNI değeri verin — compose bunu tek yerden yapıyor.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
+
+# ─────────────────────────── 3) goose (migration aracı) ───────────────────────────
+FROM golang:${GO_VERSION} AS goosebuild
+# Sürüm SABİTLENİR. `@latest` ile imaj her yeniden derlendiğinde migration
+# aracının davranışı sessizce değişebilir; şema aracının sürprizi para
+# tablolarında olur.
+ARG GOOSE_VERSION=v3.28.0
+RUN CGO_ENABLED=0 GOBIN=/out go install github.com/pressly/goose/v3/cmd/goose@${GOOSE_VERSION}
+
+# ─────────────────────────── 4) Çalışma imajı ───────────────────────────
+# distroless yerine alpine: açılışta `goose up` çalıştıran bir giriş betiği
+# ve compose healthcheck'i için kabuk + wget gerekiyor. distroless/static'te
+# ikisi de yok.
+FROM alpine:3.21 AS runtime
+
+# ca-certificates ZORUNLU: HeroSMS ve TCMB çağrıları HTTPS. Sertifika deposu
+# olmadan her dış çağrı x509 hatasıyla düşer ve bu ilk satın almaya kadar
+# fark edilmez.
+# wget → compose healthcheck. tzdata → Europe/Istanbul biçimlemesi.
+RUN apk add --no-cache ca-certificates tzdata wget
+
+# Kök olmayan kullanıcı. Konteynerden kaçış olursa saldırgan root olmasın.
+RUN adduser -D -H -u 10001 uygulama
+
+WORKDIR /app
+COPY --from=build     /out/server            /app/server
+COPY --from=build     /out/worker            /app/worker
+COPY --from=build     /out/cli               /app/cli
+COPY --from=goosebuild /out/goose            /usr/local/bin/goose
+COPY --from=build     /src/migrations        /app/migrations
+
+COPY <<'GIRIS' /app/giris.sh
+#!/bin/sh
+# Konteyner giriş noktası: önce şema, sonra süreç.
+set -eu
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "giris: DATABASE_URL tanımsız — başlatılmıyor" >&2
+  exit 1
+fi
+
+# Migration'ları TEK bir konteyner koşturur.
+#
+# İki konteyner (api ve worker) aynı anda `goose up` çalıştırırsa aynı şemaya
+# iki yazar girer. Compose'da worker MIGRATE=0 ile açılır ve api'nin sağlıklı
+# olmasını bekler; yani şema hazır olmadan iş görmeye başlamaz.
+if [ "${MIGRATE:-1}" = "0" ]; then
+  echo "giris: migration atlandı (MIGRATE=0)"
+  exec "$@"
+fi
+
+# Migration'lar sunucudan ÖNCE koşar ve başarısız olursa konteyner ayağa
+# KALKMAZ (docs/design.md §16). `|| true` yazmak, yarı göçmüş bir şemayla
+# çalışan bir para sistemi demektir; çalışmayan bir sistemden tehlikelidir.
+echo "giris: migration uygulanıyor..."
+if ! goose -dir /app/migrations postgres "$DATABASE_URL" up; then
+  echo "giris: migration BAŞARISIZ — süreç başlatılmıyor" >&2
+  exit 1
+fi
+echo "giris: migration tamam"
+
+# exec ile devir: sunucu PID 1 olur, SIGTERM doğrudan ona ulaşır ve
+# main.go'daki 20 saniyelik zarif kapanış gerçekten çalışır. `exec` olmadan
+# sinyal kabuğa gider, sunucu haberdar olmaz ve docker onu 10 sn sonra keser.
+exec "$@"
+GIRIS
+RUN chmod 0755 /app/giris.sh && chown -R uygulama:uygulama /app
+
+USER uygulama
+EXPOSE 8080
+ENTRYPOINT ["/app/giris.sh"]
+CMD ["/app/server"]

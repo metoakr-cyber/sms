@@ -1,0 +1,82 @@
+# Next.js web imajı — çok aşamalı, standalone çıktı.
+#
+# Derleme bağlamı DEPO KÖKÜDÜR (kök .dockerignore geçerlidir):
+#   docker build -f deploy/Dockerfile.web \
+#     --build-arg NEXT_PUBLIC_SITE_URL=https://onay360.com \
+#     --build-arg NEXT_PUBLIC_RECAPTCHA_SITE_KEY=6Lxxxxxxxxxxxxxxxx \
+#     -t onay360-web:<git-sha> .
+ARG NODE_VERSION=22-alpine
+
+# ─────────────────────────── 1) Bağımlılıklar ───────────────────────────
+FROM node:${NODE_VERSION} AS deps
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./
+# `npm ci` — `npm install` DEĞİL: kilit dosyasına birebir uyar ve onu
+# değiştirmez. `npm install` üretim imajında sessizce sürüm yükseltebilir;
+# o zaman yereldeki yeşil testlerin doğruladığı ağaç ile üretimdeki ağaç
+# farklı olur.
+RUN npm ci
+
+# ─────────────────────────── 2) Derleme ───────────────────────────
+FROM node:${NODE_VERSION} AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY web/ ./
+
+# 🔴 NEXT_PUBLIC_* DEĞİŞKENLERİ DERLEME ANINDA İSTEMCİ PAKETİNE GÖMÜLÜR.
+#
+# Bunlar çalışma zamanı ayarı DEĞİLDİR. Değerleri `npm run build` sırasında
+# üretilen JavaScript'in içine yazılır; imaj bir kez derlendikten sonra
+# değiştirilemez. Bu yüzden compose'un `environment:` bloğuna koymak HİÇBİR
+# İŞE YARAMAZ — hata da vermez, sessizce eski (veya boş) değerle kalır:
+#   • NEXT_PUBLIC_RECAPTCHA_SITE_KEY boş kalırsa reCAPTCHA istemcide HİÇ
+#     çizilmez (web/src/components/recaptcha.tsx), sunucu ise üretimde
+#     anahtarı zorunlu kıldığı için token bekler → kayıt formu sessizce
+#     çalışmaz. Bu, eski sistemde yaşanmış hatanın aynısıdır
+#     (docs/memory.md §3.10).
+#   • NEXT_PUBLIC_SITE_URL boş kalırsa robots.txt, sitemap.xml ve canonical
+#     etiketleri localhost adresi gösterir (web/src/app/robots.ts,
+#     sitemap.ts, layout.tsx).
+#
+# SONUÇ: alan adı veya reCAPTCHA anahtarı değiştiğinde web imajı YENİDEN
+# DERLENMEK ZORUNDADIR. Konteyneri yeniden başlatmak yetmez.
+#
+# 🔴 BURAYA SIR KONULMAZ. ARG değerleri imaj katmanlarında ve
+# `docker history` çıktısında görünür; NEXT_PUBLIC_* zaten tarayıcıya
+# gönderilir. RECAPTCHA_SECRET_KEY, SESSION_SECRET, ENCRYPTION_KEY ve
+# sağlayıcı API anahtarları ASLA build-arg olmaz — onlar yalnız api
+# konteynerinin çalışma zamanı ortamında bulunur.
+ARG NEXT_PUBLIC_SITE_URL
+ARG NEXT_PUBLIC_RECAPTCHA_SITE_KEY
+ENV NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
+ENV NEXT_PUBLIC_RECAPTCHA_SITE_KEY=${NEXT_PUBLIC_RECAPTCHA_SITE_KEY}
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+
+RUN npm run build
+
+# ─────────────────────────── 3) Çalışma imajı ───────────────────────────
+FROM node:${NODE_VERSION} AS runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+# 🔴 HOSTNAME=0.0.0.0 ZORUNLU: standalone sunucu varsayılan olarak
+# localhost'a bağlanır; o zaman konteyner içinden erişilir ama Caddy
+# `web:3000` adresine ulaşamaz ve hata "bağlantı reddedildi" olur —
+# uygulamanın kendisinde hiçbir sorun yokken.
+ENV HOSTNAME=0.0.0.0
+
+# standalone çıktısı üç parçadır ve ÜÇÜ DE gerekir:
+#   .next/standalone → server.js + yalnız kullanılan node_modules
+#   .next/static     → hash'li JS/CSS varlıkları (standalone'a DÂHİL DEĞİL)
+#   public           → statik dosyalar (logolar, favicon)
+COPY --from=build --chown=node:node /app/.next/standalone ./
+COPY --from=build --chown=node:node /app/.next/static ./.next/static
+COPY --from=build --chown=node:node /app/public ./public
+
+# node imajının hazır kök olmayan kullanıcısı.
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]

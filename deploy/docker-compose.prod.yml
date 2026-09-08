@@ -1,0 +1,255 @@
+# Onay360 — üretim yığını.
+#
+# Çalıştırma (deploy/ dizininden DEĞİL, depo kökünden):
+#   docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d
+#
+# Derleme bağlamı depo köküdür; bu yüzden compose'u da kökten çalıştırın.
+# Ayrıntılar ve sıfırdan kurulum: deploy/README.md
+
+name: smsplatform
+
+# ─────────────────────────── Ortak günlük ayarı ───────────────────────────
+# Sınırsız konteyner günlüğü, tek VPS'te diski dolduran bir numaralı sebeptir;
+# disk dolduğunda Postgres yazamaz ve para işlemleri durur.
+x-log: &gunluk
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ─────────────────────────── Ters vekil ───────────────────────────
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN tanımsız — deploy/.env dosyasına yazın}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL tanımsız — Let'\''s Encrypt bildirimleri buraya gider}
+    ports:
+      - "80:80"
+      - "443:443"
+      # HTTP/3 (QUIC) UDP üzerinden çalışır. TCP 443 açık olup UDP kapalıysa
+      # tarayıcı sessizce HTTP/2'ye düşer — arıza değil, ama beklenen değil.
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 🔴 caddy_data KALICI OLMALI: Let's Encrypt sertifikaları ve hesap
+      # anahtarı burada durur. Silinirse tüm sertifikalar yeniden istenir ve
+      # haftalık oran sınırına (alan adı başına 5) takılırsanız site
+      # SERTİFİKASIZ kalır. `docker compose down -v` bu yüzden yasaktır.
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [dis]
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    logging: *gunluk
+
+  # ─────────────────────────── Go API ───────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: ${API_IMAGE:-onay360-api}:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    # 🔴 BU SERVİS ASLA ÖLÇEKLENMEZ (`--scale api=2` YAPILMAZ).
+    #
+    # Arka plan işlerinin çift koşmasını `WORKERS_IN_PROCESS` engelliyor ama o
+    # anahtar SÜREÇ TÜRÜ ayrımı yapar, ÖRNEK SAYISI değil: aynı imajdan iki api
+    # kopyası aynı ayarı okur ve ikisi de aynı siparişi yoklar. Bakiye
+    # bozulmaz (iade idempotent), ama sağlayıcıda çift Cancel/Finish çağrısı
+    # ve iki kat dış istek olur.
+    env_file:
+      - .env
+    environment:
+      # DATABASE_URL ve REDIS_URL'in TEK KAYNAĞI burasıdır; .env'de
+      # tanımlanmazlar. Aynı bağlantı dizesini iki yerde tutmak, birini
+      # değiştirip diğerini unutmak demektir.
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      HTTP_ADDR: ":8080"
+      # 🔴 ÇİFT KOŞMA KAPISI — api ve worker AYNI değeri okumak zorunda,
+      # bu yüzden ikisi de aşağıdaki tek değişkenden besleniyor.
+      #   true  → işleri api koşturur, worker konteyneri hata verip çıkar
+      #   false → işleri worker koşturur, api yalnız HTTP sunar
+      # (api/cmd/worker/main.go paket yorumu bu sözleşmeyi tarif ediyor.)
+      WORKERS_IN_PROCESS: ${WORKERS_IN_PROCESS:-false}
+    expose:
+      - "8080"
+    networks: [dis, veri]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # /readyz postgres + redis'i gerçekten yoklar (router.go). /healthz
+      # yalnız sürecin ayakta olduğunu söyler; caddy'nin beklemesi gereken
+      # şey "istek alabilir" durumudur.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Migration'lar açılışta koşuyor; ilk açılışta 8 dosya uygulanır.
+      start_period: 60s
+    # main.go zarif kapanışa 20 saniye ayırıyor. Bu değer ondan BÜYÜK
+    # olmalı; küçük olursa docker süreci ortada keser ve devam eden bir
+    # sipariş işlemi yarıda kalır.
+    stop_grace_period: 30s
+    logging: *gunluk
+
+  # ─────────────────────────── Arka plan işçisi ───────────────────────────
+  #
+  # api ile AYNI imaj, farklı komut (deploy/Dockerfile.api iki ikili de üretir).
+  # Ayrı süreç olmasının kazancı: api'yi dağıtım için yeniden başlatmak devam
+  # eden bir sipariş yoklama turunu kesmez.
+  #
+  # 🔴 WORKERS_IN_PROCESS=true ise bu konteyner AÇILMAZ: worker açılışta
+  # anahtarı okur, "işler api sürecinde koşuyor" deyip çıkar. Bu bilinçlidir —
+  # sessizce ikinci bir poller başlatmaktansa gürültülü biçimde durur.
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: ${API_IMAGE:-onay360-api}:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    command: ["/app/worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      WORKERS_IN_PROCESS: ${WORKERS_IN_PROCESS:-false}
+      # Şemayı YALNIZ api göçürür; iki konteynerin aynı anda `goose up`
+      # çalıştırması aynı şemaya iki yazar sokar.
+      MIGRATE: "0"
+    # Yalnız veri ağı YETMEZ: işçi HeroSMS ve TCMB'ye HTTPS çağrısı yapıyor,
+    # `veri` ağı internal olduğu için oradan internete çıkılmaz.
+    networks: [dis, veri]
+    depends_on:
+      api:
+        condition: service_healthy
+    stop_grace_period: 45s
+    logging: *gunluk
+
+  # ─────────────────────────── Next.js ön yüz ───────────────────────────
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        # 🔴 Bunlar DERLEME ANINDA gömülür (bkz. deploy/Dockerfile.web).
+        # Değerleri değiştirmek için imajı YENİDEN DERLEMEK gerekir;
+        # konteyneri yeniden başlatmak hiçbir şey değiştirmez.
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?NEXT_PUBLIC_SITE_URL tanımsız}
+        NEXT_PUBLIC_RECAPTCHA_SITE_KEY: ${NEXT_PUBLIC_RECAPTCHA_SITE_KEY:-}
+    image: ${WEB_IMAGE:-onay360-web}:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    environment:
+      # API_ORIGIN ÇALIŞMA ZAMANI değişkenidir (web/src/lib/server-api.ts):
+      # sunucu bileşenleri Go'ya konteyner ağı üzerinden gider, internete
+      # çıkıp kendi alan adına geri dönmezler.
+      API_ORIGIN: http://api:8080
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    expose:
+      - "3000"
+    networks: [dis]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 15s
+    logging: *gunluk
+
+  # ─────────────────────────── PostgreSQL ───────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER tanımsız}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD tanımsız}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB tanımsız}
+    # 🔴 `ports:` YOK — BİLİNÇLİ.
+    # Geliştirme dosyası 55432'yi host'a yayınlıyor; o satırı buraya
+    # kopyalamak, VPS'te Postgres'i internete açmak demektir. Veritabanına
+    # erişim yalnız konteyner ağından ve `docker compose exec` ile olur.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [veri]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # Paralel sorgular ve büyük sıralamalar paylaşımlı belleği kullanır;
+    # varsayılan 64MB, pg_dump ve raporlarda yetersiz kalır.
+    shm_size: 256mb
+    stop_grace_period: 30s
+    logging: *gunluk
+
+  # ─────────────────────────── Redis ───────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 🔴 maxmemory-policy noeviction — BURASI ÖNBELLEK DEĞİL.
+    #
+    # Bu Redis'te oturumlar, hız limiti sayaçları, sipariş yayın kanalı
+    # (OrderBus) ve WEBHOOK KUYRUĞU duruyor. `allkeys-lru` gibi bir politika
+    # bellek dolduğunda anahtarları SESSİZCE siler: kuyruktaki "kod geldi"
+    # bildirimi kaybolur, kullanıcı kodu hiç görmez, hata da log da yoktur.
+    # `noeviction` ile bellek dolduğunda yazma GÜRÜLTÜLÜ biçimde başarısız
+    # olur — sessiz veri kaybı yerine görünür arıza.
+    #
+    # appendonly + everysec: yeniden başlatmada en fazla 1 saniyelik kayıp.
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-256mb}"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD tanımsız}"
+    environment:
+      # redis-cli parolayı buradan okur; komut satırına yazmak `ps` çıktısına
+      # ve konteyner denetim kayıtlarına sır düşürür.
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    # `ports:` YOK — postgres ile aynı gerekçe.
+    volumes:
+      - redisdata:/data
+    networks: [veri]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    stop_grace_period: 15s
+    logging: *gunluk
+
+networks:
+  # Caddy · api · web. İnternete çıkış buradan olur (api'nin HeroSMS, TCMB,
+  # reCAPTCHA ve e-posta çağrıları).
+  dis:
+    driver: bridge
+  # Postgres · Redis · api. `internal: true` → bu ağdaki konteynerlerin
+  # internete çıkışı YOKTUR. Veritabanı sunucusunun dışarıya bağlanması
+  # gereken hiçbir durum yok; sızma sonrası veri dışarı taşımayı zorlaştırır.
+  veri:
+    driver: bridge
+    internal: true
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

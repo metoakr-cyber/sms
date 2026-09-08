@@ -16,6 +16,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/fx"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/mailer"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/obs"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/fake"
@@ -49,7 +50,19 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	setupLogger(cfg)
+	// Sentry log'lamadan ÖNCE kurulur: açılışta oluşan bir hata da izlenebilsin.
+	// config üretimde SENTRY_DSN'i zorunlu kılıyor; burada gerçekten bir istemci
+	// kurulmazsa o zorunluluk boş bir söz olurdu.
+	sentryAdapter, err := setupSentry(cfg)
+	if err != nil {
+		return err
+	}
+	if sentryAdapter != nil {
+		defer sentryAdapter.Flush(5 * time.Second)
+	}
+	setupLogger(cfg, sentryAdapter)
+
+	metrics := setupMetrics(cfg)
 
 	slog.Info("başlatılıyor", "env", cfg.Env, "addr", cfg.HTTPAddr)
 
@@ -82,15 +95,9 @@ func run() error {
 	// Mailer YAPILANDIRMAYA göre seçilir. Koşulsuz console kablolaması,
 	// config'in üretimde koyduğu yasağı ETKİSİZ kılardı: süreç ayağa kalkar,
 	// hiçbir kullanıcı e-posta almaz ve kimse fark etmez.
-	var mail port.Mailer
-	switch cfg.MailProvider {
-	case "console":
-		mail = mailer.NewConsole(cfg.MailFrom)
-	default:
-		// Sessizce console'a DÜŞMEYİZ. Desteklenmeyen bir sağlayıcı
-		// yapılandırıldıysa süreç başlamaz.
-		return fmt.Errorf("main: MAIL_PROVIDER=%q için adaptör yok — "+
-			"süreç başlatılmıyor (e-postasız çalışmak sessiz arızadır)", cfg.MailProvider)
+	mail, err := buildMailer(cfg)
+	if err != nil {
+		return err
 	}
 
 	var cap port.Captcha = captcha.Disabled{}
@@ -150,26 +157,52 @@ func run() error {
 
 	// 4) Arka plan işleri
 	//
-	// SUNUCU SÜRECİ İÇİNDE çalışırlar. Ayrı bir işçi süreci, tek VPS'te
-	// kazandırdığından fazla operasyon yükü getiriyordu. İkinci bir sunucu
-	// eklendiğinde bu işler Redis kilidiyle tek örneğe indirilmelidir —
-	// aksi hâlde iki poller aynı siparişi işler.
-	jobs := worker.New(worker.AllWithWebhook(worker.Deps{
-		TxRunner: txRunner, Orders: orderService, FX: fxService,
-		Wallet: walletService, Catalog: catalogService, Clock: port.RealClock{},
-	}, webhookQueue, "herosms")...)
-	jobs.Start(ctx)
+	// VARSAYILAN olarak SUNUCU SÜRECİ İÇİNDE çalışırlar: ayrı bir işçi süreci,
+	// tek VPS'te kazandırdığından fazla operasyon yükü getiriyordu.
+	// WORKERS_IN_PROCESS=false verildiğinde işler burada başlatılmaz ve
+	// `cmd/worker` süreci devralır — aynı işin iki süreçte birden koşmaması
+	// bu tek anahtara bağlıdır (bkz. cmd/worker/main.go).
+	//
+	// İkinci bir SUNUCU örneği eklendiğinde bu işler Redis kilidiyle tek
+	// örneğe indirilmelidir — aksi hâlde iki poller aynı siparişi işler.
+	if cfg.WorkersInProcess {
+		jobs := worker.New(worker.AllWithWebhook(worker.Deps{
+			TxRunner: txRunner, Orders: orderService, FX: fxService,
+			Wallet: walletService, Catalog: catalogService, Clock: port.RealClock{},
+		}, webhookQueue, "herosms")...)
+		jobs.Start(ctx)
+	} else {
+		// Sessiz kalmayız: işçi süreci unutulduysa iadeler hiç işlenmez ve
+		// bu, haftalar sonra "para asılı kalmış" olarak fark edilir.
+		slog.Warn("arka plan işleri bu süreçte KOŞMUYOR (WORKERS_IN_PROCESS=false) — " +
+			"ayrı bir `worker` süreci çalışıyor olmalı")
+	}
+
+	// Kuyruk derinliği yalnız SORULARAK öğrenilir; periyodik örnekleme
+	// sunucuda kalır çünkü LLEN maliyeti sabittir ve işçi süreci HTTP açmaz.
+	if metrics != nil {
+		metrics.StartSampler(ctx, 15*time.Second, func(ctx context.Context) {
+			n, err := webhookQueue.Len(ctx)
+			if err != nil {
+				slog.Warn("kuyruk derinliği okunamadı", "err", err)
+				return
+			}
+			metrics.SetQueueDepth("webhook", float64(n))
+		})
+	}
 
 	// 5) Sunucu
+	router := httptransport.NewRouter(httptransport.Deps{
+		Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
+		Sessions: sessions, Limiter: limiter, Secrets: secrets,
+		AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
+		OrderSvc: orderService, OrderBus: orderBus,
+		WebhookQueue: webhookQueue,
+	})
+
 	srv := &http.Server{
-		Addr: cfg.HTTPAddr,
-		Handler: httptransport.NewRouter(httptransport.Deps{
-			Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
-			Sessions: sessions, Limiter: limiter, Secrets: secrets,
-			AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
-			OrderSvc: orderService, OrderBus: orderBus,
-			WebhookQueue: webhookQueue,
-		}),
+		Addr:              cfg.HTTPAddr,
+		Handler:           withMetricsEndpoint(router, metrics),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// SSE akışları uzun sürer; WriteTimeout bilinçli olarak kapalıdır.
@@ -203,7 +236,77 @@ func run() error {
 	return nil
 }
 
-func setupLogger(cfg *config.Config) {
+// buildMailer MAIL_PROVIDER'a göre adaptörü seçer.
+//
+// Sessizce console'a DÜŞÜLMEZ: desteklenmeyen ya da yarım yapılandırılmış bir
+// sağlayıcıda süreç hata verip çıkar. Koşulsuz console kablolaması, config'in
+// üretimde koyduğu yasağı ETKİSİZ kılardı: süreç ayağa kalkar, hiçbir kullanıcı
+// e-posta almaz ve kimse fark etmez.
+func buildMailer(cfg *config.Config) (port.Mailer, error) {
+	switch cfg.MailProvider {
+	case "console":
+		return mailer.NewConsole(cfg.MailFrom), nil
+	case "smtp":
+		return mailer.NewSMTP(mailer.SMTPConfig{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+			From: cfg.MailFrom,
+		})
+	case "resend":
+		return mailer.NewResend(cfg.ResendAPIKey, cfg.MailFrom)
+	default:
+		return nil, fmt.Errorf("main: MAIL_PROVIDER=%q için adaptör yok — "+
+			"süreç başlatılmıyor (e-postasız çalışmak sessiz arızadır)", cfg.MailProvider)
+	}
+}
+
+// setupSentry DSN varsa hata izlemeyi kurar.
+//
+// DSN yoksa nil döner ve süreç devam eder: config üretimde DSN'i zaten zorunlu
+// kılıyor, geliştirmede ise Sentry'siz çalışmak normaldir.
+func setupSentry(cfg *config.Config) (*obs.Sentry, error) {
+	if cfg.SentryDSN == "" {
+		return nil, nil
+	}
+	s, err := obs.NewSentry(obs.SentryConfig{
+		DSN:         cfg.SentryDSN,
+		Environment: string(cfg.Env),
+	})
+	if err != nil {
+		// Yapılandırılmış ama kurulamayan bir izleme, izleme yokluğundan
+		// daha tehlikelidir: kurulduğu sanılır.
+		return nil, err
+	}
+	return s, nil
+}
+
+func setupMetrics(cfg *config.Config) *obs.Metrics {
+	if !cfg.MetricsEnabled {
+		return nil
+	}
+	return obs.NewMetrics()
+}
+
+// withMetricsEndpoint /metrics ucunu uygulamanın ÖNÜNE takar.
+//
+// 🔶 GEÇİCİ KABLOLAMA: uç asıl olarak router.go'da tanımlanmalı (Deps'e bir
+// MetricsHandler alanı + `r.GET("/metrics", gin.WrapH(...))`). Bu dalgada
+// router.go başka bir çalışmanın altında olduğu için uç burada, sarmalayarak
+// veriliyor; router.go'ya taşındığında bu fonksiyon silinmelidir.
+//
+// 🔴 Bu uç DIŞARIYA AÇILMAMALI: ters vekilde /metrics yalnız iç ağdan
+// erişilebilir olmalıdır (deploy/Caddyfile).
+func withMetricsEndpoint(app http.Handler, m *obs.Metrics) http.Handler {
+	if m == nil {
+		return app
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", m.Handler())
+	mux.Handle("/", app)
+	return mux
+}
+
+func setupLogger(cfg *config.Config, sen *obs.Sentry) {
 	var level slog.Level
 	switch cfg.LogLevel {
 	case "debug":
@@ -222,6 +325,12 @@ func setupLogger(cfg *config.Config) {
 		h = slog.NewTextHandler(os.Stdout, opts)
 	} else {
 		h = slog.NewJSONHandler(os.Stdout, opts)
+	}
+	// Sentry slog'un ÜSTÜNE takılır: kod tabanı hataları zaten slog.Error ile
+	// bildiriyor, ayrı bir çağrı eklemek her yeni hata yolunda unutulabilecek
+	// ikinci bir adım olurdu.
+	if sen != nil {
+		h = sen.SlogHandler(h)
 	}
 	slog.SetDefault(slog.New(h))
 }

@@ -628,6 +628,45 @@ satın alma bunu ortaya çıkarır. O anda `count` bir havuz sayacıdır ve kira
 stok gösterimi güvenilmez demektir.
 **Ne yapılmalı:** ilk canlı kiralık satın almadan sonra bu madde kapatılmalı.
 
+---
+
+### H23 — Türkiye numarası: sağlayıcının sitesi veriyor, API'si vermiyor
+
+**Soru (kullanıcıdan, 2026-09-08):** "Kendi sitesinde HeroSMS Türkiye numarası
+veriyor." Bizim panelde Türkiye "stok yok" görünüyor. Hangisi doğru?
+
+**Ölçüm (canlı, 2026-09-08, salt okunur):**
+
+| kaynak | Türkiye (ülke kodu 62) |
+|---|---|
+| `/activations/offers/sms` toplu uç | 122 servis · **Σ physical = 0** · Σ total = 9.828.957 |
+| `GetPriceAndStock` tek tek (abb, ah, fb, vi, tg, wa, ot) | hepsinde **physical = 0** |
+| `?action=serviceCountRent` (wa, tg, ot, vi, fb) | Türkiye teklifi **YOK** (0 kayıt) |
+| ülke kaydı bayrakları | `rent: true`, `retry: true` |
+
+Kıyas — `physical` seyrek dolan bir alan DEĞİL: **195 ülkenin 67'sinde > 0**.
+İngiltere Σ 12.388.568 · Endonezya Σ 10.632.444 · Brezilya Σ 4.862.433.
+Yani alan çalışıyor; sıfır olan yalnız Türkiye.
+
+**Sağlayıcının kendi sitesindeki sayaçlar** (hero-sms.com, giriş yapmadan):
+"Google,youtube,Gmail — 64.619.676 adet", "Whatsapp — 21.944.479 adet". Kendi
+ipucu metinleri şunu diyor: *"Fiziksel numaralar — 8.721.190 adet, sanal
+numaralar — **-8.642.940** adet"*. **Negatif** bir sayı. Site iki sayacı
+birbirinden çıkarıyor ve eksi değer üretiyor — bu sayılar envanter değil.
+
+**Sonuç:** API üzerinden bu hesaba Türkiye numarası SATILMIYOR. Sitedeki
+"Türk sanal numara" ifadesi ya havuz sayacına dayanıyor ya da API'ye açılmayan
+ayrı bir stoktan geliyor.
+
+**Kesin kanıt eksik:** tek belirleyici test, Türkiye için gerçek bir satın alma
+denemesidir (en ucuz servis ≈ 0,05 USD). `NO_NUMBERS` dönerse `physical` doğru;
+numara gelirse FR-306 kuralı yanlış ve satılabilir stoğu gizliyoruz demektir.
+**Kullanıcı onayı bekliyor.**
+
+**Bugünkü davranış:** Türkiye ülke listesinde **en üstte** ama seçilemez
+(`disabled`), etiketi "şu an stok yok". Kiralamada Türkiye hiç listelenmiyor —
+sağlayıcıda kiralık Türkiye ürünü yok.
+
 ## 7. Bu dokümanı güncelleme kuralı
 
 - **Bir karar verildiğinde** → §1'e tarihiyle ve gerekçesiyle yaz
