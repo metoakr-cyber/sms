@@ -15,14 +15,25 @@ type Querier interface {
 	// Tek kullanımlıktır: UPDATE ... RETURNING ile atomik olarak tüketilir.
 	// Ayrı SELECT + UPDATE yapılsaydı iki eşzamanlı istek aynı token'ı kullanabilirdi.
 	ConsumeAuthToken(ctx context.Context, arg ConsumeAuthTokenParams) (AuthToken, error)
+	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteExpiredAuthTokens(ctx context.Context) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	EmailExists(ctx context.Context, email string) (bool, error)
+	FindLedgerEntriesByReference(ctx context.Context, arg FindLedgerEntriesByReferenceParams) ([]LedgerEntry, error)
+	// Cüzdan sorguları.
+	//
+	// BU DOSYADAKİ SIRALAMA KRİTİKTİR ve wallet servisinde birebir uygulanır:
+	//   1) idempotency kontrolü  →  2) satır KİLİDİ  →  3) yeterlilik  →  4) yazım
+	// Kilitsiz bir okuma-değiştir-yazma döngüsü eşzamanlı isteklerde bakiyeyi bozar
+	// (docs/memory.md §3.6 — eski prototipin hatası).
+	// İdempotency: bu anahtarla daha önce işlem yapıldıysa sonucu döner.
+	FindLedgerEntryByKey(ctx context.Context, idempotencyKey string) (LedgerEntry, error)
 	GetRoleByName(ctx context.Context, name string) (Role, error)
 	GetSession(ctx context.Context, id string) (Session, error)
+	GetUserBalance(ctx context.Context, id int64) (int64, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id int64) (User, error)
 	GetUserByPublicID(ctx context.Context, publicID uuid.UUID) (User, error)
@@ -30,16 +41,30 @@ type Querier interface {
 	GetUserRoles(ctx context.Context, userID int64) ([]Role, error)
 	GrantPermissionToRole(ctx context.Context, arg GrantPermissionToRoleParams) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) (LedgerEntry, error)
 	InvalidateUserTokens(ctx context.Context, arg InvalidateUserTokensParams) error
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	// Kullanıcının hareket dökümü. SAHİPLİK sorgunun parçasıdır: user_id ayrı bir
+	// if kontrolü değil, WHERE koşuludur (docs/design.md §10).
+	ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error)
+	// Mutabakat: defter toplamı ile önbelleklenmiş bakiyenin uyuşmadığı kullanıcılar.
+	// Boş dönmesi beklenir; dönmezse ALARM üretilir (docs/trd.md FR-205).
+	ListReconciliationDrift(ctx context.Context, limit int32) ([]ListReconciliationDriftRow, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	// Kullanıcı satırını KİLİTLER. Bu satır olmadan çift harcama mümkündür:
+	// iki eşzamanlı istek aynı bakiyeyi okuyup ikisi de yeterli sanabilir.
+	// Kilit, transaction bitene kadar tutulur.
+	LockUserForUpdate(ctx context.Context, id int64) (LockUserForUpdateRow, error)
 	MarkEmailVerified(ctx context.Context, id int64) error
 	ReplaceUserRoles(ctx context.Context, arg ReplaceUserRolesParams) error
 	RevokeAllUserSessions(ctx context.Context, userID int64) error
 	RevokeRole(ctx context.Context, arg RevokeRoleParams) error
 	RevokeSession(ctx context.Context, id string) error
+	SetUserBalance(ctx context.Context, arg SetUserBalanceParams) error
 	SetUserStatus(ctx context.Context, arg SetUserStatusParams) error
+	// Kâr raporu ve muhasebe özeti girdisi.
+	SumLedgerByType(ctx context.Context, arg SumLedgerByTypeParams) ([]SumLedgerByTypeRow, error)
 	TouchSession(ctx context.Context, id string) error
 	UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) error
 	UpsertPermission(ctx context.Context, arg UpsertPermissionParams) (Permission, error)

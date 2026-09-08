@@ -15,6 +15,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/middleware"
 )
@@ -27,7 +28,8 @@ type Deps struct {
 	Queries  *db.Queries
 	Sessions port.SessionStore
 	Limiter  port.RateLimiter
-	AuthSvc  *authsvc.Service
+	AuthSvc   *authsvc.Service
+	WalletSvc *walletsvc.Service
 }
 
 // NewRouter uygulamanın HTTP yönlendiricisini kurar.
@@ -61,6 +63,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	secureCookie := !d.Config.Env.IsDevelopment()
 
 	authH := handler.NewAuth(d.AuthSvc, d.Queries, responder, d.Config.SessionTTL, secureCookie)
+	walletH := handler.NewWallet(d.WalletSvc, d.Queries, responder)
 
 	requireAuth := middleware.RequireAuth(middleware.AuthDeps{
 		Sessions: d.Sessions, Queries: d.Queries,
@@ -93,6 +96,17 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.GET("/me", authH.Me)
 		auth.GET("/me/sessions", authH.ListSessions)
 		auth.DELETE("/me/sessions/:id", authH.RevokeSession)
+
+		// Cüzdan — sahiplik sorgunun parçasıdır, ayrı bir izin gerekmez.
+		auth.GET("/wallet/balance", walletH.Balance)
+		auth.GET("/wallet/entries", walletH.Statement)
+	}
+
+	// ─── Yönetim: izin ZORUNLU ───
+	admin := rg.Group("/admin", requireAuth)
+	{
+		admin.POST("/users/:id/balance",
+			middleware.RequirePermission("users:write", Fail), walletH.AdjustBalance)
 	}
 
 	// M2: /wallet/*  ·  M4: /catalog/*  ·  M5: /orders/*  ·  M6: /admin/*

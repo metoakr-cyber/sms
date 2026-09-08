@@ -63,11 +63,19 @@ test:
 test-cover:
 	cd $(API) && go test ./... -race -coverprofile=coverage.out -covermode=atomic && go tool cover -func=coverage.out | tail -1
 
+## test-integration: gerçek Postgres'e karşı entegrasyon testleri
+test-integration:
+	cd $(API) && go test -tags=integration ./... -race -count=1
+
+## smoke: uçtan uca duman testi (sunucuyu başlatır, senaryoları koşar, temizler)
+smoke:
+	./scripts/smoke-auth.sh
+
 ## lint: statik analiz
 lint:
 	cd $(API) && go vet ./... && golangci-lint run
 
 ## check: birleştirmeden önce çalıştır
-check: gen-check lint test
+check: gen-check lint test test-integration
 
-.PHONY: help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover lint check
+.PHONY: help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover test-integration smoke lint check

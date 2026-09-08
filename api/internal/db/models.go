@@ -13,6 +13,94 @@ import (
 	"github.com/google/uuid"
 )
 
+type CurrencyCode string
+
+const (
+	CurrencyCodeTRY CurrencyCode = "TRY"
+	CurrencyCodeUSD CurrencyCode = "USD"
+)
+
+func (e *CurrencyCode) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = CurrencyCode(s)
+	case string:
+		*e = CurrencyCode(s)
+	default:
+		return fmt.Errorf("unsupported scan type for CurrencyCode: %T", src)
+	}
+	return nil
+}
+
+type NullCurrencyCode struct {
+	CurrencyCode CurrencyCode
+	Valid        bool // Valid is true if CurrencyCode is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullCurrencyCode) Scan(value interface{}) error {
+	if value == nil {
+		ns.CurrencyCode, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.CurrencyCode.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullCurrencyCode) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.CurrencyCode), nil
+}
+
+type LedgerType string
+
+const (
+	LedgerTypeDEPOSIT    LedgerType = "DEPOSIT"
+	LedgerTypePURCHASE   LedgerType = "PURCHASE"
+	LedgerTypeREFUND     LedgerType = "REFUND"
+	LedgerTypeADJUSTMENT LedgerType = "ADJUSTMENT"
+	LedgerTypeCOMMISSION LedgerType = "COMMISSION"
+	LedgerTypeCHARGEBACK LedgerType = "CHARGEBACK"
+)
+
+func (e *LedgerType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = LedgerType(s)
+	case string:
+		*e = LedgerType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for LedgerType: %T", src)
+	}
+	return nil
+}
+
+type NullLedgerType struct {
+	LedgerType LedgerType
+	Valid      bool // Valid is true if LedgerType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullLedgerType) Scan(value interface{}) error {
+	if value == nil {
+		ns.LedgerType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.LedgerType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullLedgerType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.LedgerType), nil
+}
+
 type TokenPurpose string
 
 const (
@@ -120,6 +208,29 @@ type AuthToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type LedgerEntry struct {
+	ID                int64
+	UserID            int64
+	AmountMinor       int64
+	Currency          CurrencyCode
+	EntryType         LedgerType
+	ReferenceType     *string
+	ReferenceID       *string
+	BalanceAfterMinor int64
+	IdempotencyKey    string
+	CreatedByUserID   *int64
+	Note              *string
+	CreatedAt         time.Time
+}
+
+type LedgerReconciliation struct {
+	UserID        int64
+	Email         string
+	CachedBalance int64
+	LedgerBalance int64
+	Drift         int32
 }
 
 type Permission struct {

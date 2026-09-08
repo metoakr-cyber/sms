@@ -173,3 +173,45 @@ func validateUsername(s string) string {
 	}
 	return ""
 }
+
+// ─────────────────────────── Cüzdan ───────────────────────────
+
+type BalanceResponse struct {
+	Balance Money `json:"balance"`
+}
+
+type LedgerEntryResponse struct {
+	ID           string `json:"id"`
+	Type         string `json:"type"`
+	TypeLabel    string `json:"typeLabel"` // Türkçe, kullanıcıya gösterilir
+	Amount       Money  `json:"amount"`
+	BalanceAfter Money  `json:"balanceAfter"`
+	Reference    string `json:"reference,omitempty"`
+	Note         string `json:"note,omitempty"`
+	CreatedAt    string `json:"createdAt"`
+}
+
+type StatementResponse struct {
+	Items  []LedgerEntryResponse `json:"items"`
+	Total  int64                 `json:"total"`
+	Limit  int32                 `json:"limit"`
+	Offset int32                 `json:"offset"`
+}
+
+type AdjustBalanceRequest struct {
+	// AmountMinor kuruş cinsinden; pozitif ekler, negatif düşer.
+	// Çıplak ondalık sayı KABUL EDİLMEZ (docs/trd.md §9).
+	AmountMinor int64  `json:"amountMinor"`
+	Note        string `json:"note"`
+}
+
+func (r *AdjustBalanceRequest) Validate() []FieldError {
+	var errs []FieldError
+	if r.AmountMinor == 0 {
+		errs = append(errs, FieldError{"amountMinor", "Tutar sıfır olamaz."})
+	}
+	if len(strings.TrimSpace(r.Note)) < 5 {
+		errs = append(errs, FieldError{"note", "Düzeltme sebebi en az 5 karakter olmalıdır."})
+	}
+	return errs
+}

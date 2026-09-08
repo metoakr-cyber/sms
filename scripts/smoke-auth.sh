@@ -16,7 +16,19 @@ psql() { docker exec smsplatform-dev-postgres-1 psql -U smsplatform -d smsplatfo
 
 # ── temiz başlangıç ──
 pkill -f '/tmp/smoke-api' 2>/dev/null; sleep 0.5
+
+# Test verisini temizle.
+#
+# ledger_entries DEĞİŞMEZDİR ve users'a referans verir; bu yüzden kullanıcılar
+# defter kaydı silinmeden silinemez. Bu ÜRETİMDE İSTENEN davranıştır — mali
+# kayıt kendini korur. Test ortamında tetikleyiciyi geçici olarak kapatıyoruz.
+psql -c "ALTER TABLE ledger_entries DISABLE TRIGGER ledger_no_delete;" >/dev/null 2>&1
+psql -c "DELETE FROM ledger_entries;" >/dev/null 2>&1
+psql -c "ALTER TABLE ledger_entries ENABLE TRIGGER ledger_no_delete;" >/dev/null 2>&1
 psql -c "DELETE FROM users;" >/dev/null 2>&1
+
+REMAIN=$(psql -c "SELECT count(*) FROM users;" 2>/dev/null)
+[ "$REMAIN" = "0" ] || { echo "temizlik başarısız: $REMAIN kullanıcı kaldı"; exit 1; }
 docker exec smsplatform-dev-redis-1 redis-cli FLUSHDB >/dev/null 2>&1
 
 (cd api && go build -o /tmp/smoke-api ./cmd/server) || { echo "derleme başarısız"; exit 1; }
@@ -118,6 +130,48 @@ S=$(code "$API/me" -b /tmp/cj)
 S=$(code -X POST "$API/auth/login" -H 'Content-Type: application/json' \
   -d '{"email":"ali@ornek.com","password":"yepyeni-guclu-sifre"}' -c /tmp/cj)
 [ "$S" = 200 ] && pass "yeni şifreyle giriş yapılabiliyor" || fail "yeni şifre" "HTTP $S $(body)"
+
+echo "─── Cüzdan (M2) ───"
+S=$(code "$API/wallet/balance" -b /tmp/cj)
+B=$(python3 -c "import json;print(json.load(open('/tmp/sm.body'))['balance']['formatted'])" 2>/dev/null)
+[ "$S" = 200 ] && [ "$B" = "0,00 ₺" ] && pass "yeni kullanıcı bakiyesi 0,00 ₺" || fail "bakiye" "HTTP $S $(body)"
+
+# admin rolü ver ve manuel yükleme yap
+psql -c "INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE u.email='ali@ornek.com' AND r.name='admin' ON CONFLICT DO NOTHING;" >/dev/null
+PUB=$(psql -c "SELECT public_id FROM users WHERE email='ali@ornek.com';")
+
+S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' \
+  -d '{"amountMinor":25050,"note":"hos geldin bakiyesi"}')
+B=$(python3 -c "import json;print(json.load(open('/tmp/sm.body'))['balance']['formatted'])" 2>/dev/null)
+[ "$S" = 200 ] && [ "$B" = "250,50 ₺" ] && pass "admin bakiye yükledi → $B" || fail "bakiye düzeltme" "HTTP $S $(body)"
+
+S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' \
+  -d '{"amountMinor":100,"note":"kisa"}')
+[ "$(field code)" = VALIDATION ] && pass "kısa açıklama reddedildi (denetlenebilirlik)" || fail "not zorunluluğu" "$(body)"
+
+S=$(code "$API/wallet/entries" -b /tmp/cj)
+N=$(python3 -c "import json;d=json.load(open('/tmp/sm.body'));print(d['total'],d['items'][0]['typeLabel'],d['items'][0]['amount']['formatted'])" 2>/dev/null)
+[ "$S" = 200 ] && pass "hareket dökümü → $N" || fail "döküm" "HTTP $S $(body)"
+
+DRIFT=$(psql -c "SELECT coalesce(sum(abs(drift)),0) FROM ledger_reconciliation;")
+[ "$DRIFT" = "0" ] && pass "mutabakat sapması sıfır (KK-200)" || fail "mutabakat" "sapma=$DRIFT"
+
+# yetkisiz kullanıcı bakiye değiştiremez
+S=$(code -X POST "$API/auth/register" -H 'Content-Type: application/json' \
+  -d '{"email":"sivil@ornek.com","username":"sivil","password":"bagimsiz-uzun-parola","acceptTerms":true}')
+[ "$S" = 200 ] || fail "ikinci kullanıcı kaydı" "HTTP $S $(body)"
+psql -c "UPDATE users SET status='ACTIVE', email_verified_at=now() WHERE email='sivil@ornek.com';" >/dev/null
+rm -f /tmp/cj2
+S=$(code -X POST "$API/auth/login" -H 'Content-Type: application/json' -c /tmp/cj2 \
+  -d '{"email":"sivil@ornek.com","password":"bagimsiz-uzun-parola"}')
+[ "$S" = 200 ] || fail "ikinci kullanıcı girişi" "HTTP $S $(body)"
+S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj2 -H 'Content-Type: application/json' \
+  -d '{"amountMinor":999999,"note":"kendime para"}')
+[ "$(field code)" = FORBIDDEN ] && pass "izinsiz kullanıcı bakiye değiştiremiyor → 403" || fail "RBAC" "HTTP $S $(body)"
+
+S=$(code "$API/wallet/entries" -b /tmp/cj2)
+N=$(python3 -c "import json;print(json.load(open('/tmp/sm.body'))['total'])" 2>/dev/null)
+[ "$N" = "0" ] && pass "kullanıcı başkasının hareketlerini göremiyor (KK-206)" || fail "sahiplik" "total=$N"
 
 echo "─── Askıya alma (KK-104) ───"
 psql -c "UPDATE users SET status='SUSPENDED' WHERE email='ali@ornek.com';" >/dev/null

@@ -74,15 +74,20 @@ Geliştirme aşamasında — `docs/roadmap.md`'ye bakın.
 - [x] **M2 (kısmi)** `domain/money` — tam sayı para, kayıpsız oran aritmetiği.
       **%95,5 kapsam**, KK-304 altın testi geçiyor: `0,35 USD × 43,20 × 1,40 = 2117 kuruş`
 - [x] **M1** Kimlik: kayıt · e-posta doğrulama · giriş · oturum (Redis) · şifre sıfırlama ·
-      RBAC · hız limiti. **Uçtan uca 19/19 duman testi geçiyor** (`./scripts/smoke-auth.sh`)
-- [ ] M2 Ledger · M3 Sağlayıcı · M4 Fiyat · M5 Sipariş+SSE · M6 Panel
+      RBAC · hız limiti
+- [x] **M2** Ledger: değişmez defter · `FOR UPDATE` kilidi · idempotency · mutabakat ·
+      hareket dökümü · admin düzeltme.
+      **KK-200…KK-203 gerçek PostgreSQL'e karşı ispatlandı** (`make test-integration`)
+- [ ] M3 Sağlayıcı · M4 Fiyat · M5 Sipariş+SSE · M6 Panel
+
+**Uçtan uca 26/26 duman testi geçiyor** (`make smoke`)
 
 ### Duman testi
 
 ```bash
-make up && ./scripts/smoke-auth.sh
+make up && make smoke              # uçtan uca: kimlik + cüzdan (26 senaryo)
+make test-integration              # eşzamanlılık: KK-200..KK-203
 ```
-Sunucuyu başlatır, kimlik akışının tamamını gerçek Postgres + Redis üzerinde koşar, temizler.
 
 ### Yerel portlar
 

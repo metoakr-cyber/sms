@@ -19,6 +19,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	httptransport "github.com/ikmetrik/sms-platform/api/internal/transport/http"
 )
 
@@ -77,6 +78,8 @@ func run() error {
 		slog.Warn("reCAPTCHA devre dışı — yalnız geliştirme için kabul edilebilir")
 	}
 
+	walletService := walletsvc.New(txRunner)
+
 	authService := authsvc.New(authsvc.Deps{
 		TxRunner: txRunner, Sessions: sessions, Mailer: mail,
 		Captcha: cap, Limiter: limiter, Clock: port.RealClock{},
@@ -88,7 +91,8 @@ func run() error {
 		Addr: cfg.HTTPAddr,
 		Handler: httptransport.NewRouter(httptransport.Deps{
 			Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
-			Sessions: sessions, Limiter: limiter, AuthSvc: authService,
+			Sessions: sessions, Limiter: limiter,
+			AuthSvc: authService, WalletSvc: walletService,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
