@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	apperr "github.com/ikmetrik/sms-platform/api/internal/domain/errors"
+	"github.com/ikmetrik/sms-platform/api/internal/transport/http/dto"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/middleware"
 )
 
@@ -66,3 +67,23 @@ func Created(c *gin.Context, body any) { c.JSON(http.StatusCreated, body) }
 
 // NoContent 204 yanıtı yazar.
 func NoContent(c *gin.Context) { c.Status(http.StatusNoContent) }
+
+// FieldErrorBody alan bazlı doğrulama hatalarının biçimi.
+type FieldErrorBody struct {
+	Error  ErrorDetail      `json:"error"`
+	Fields []dto.FieldError `json:"fields"`
+}
+
+// FailFields alan bazlı doğrulama hatalarını yazar.
+// İstemci hangi alanın neden reddedildiğini bilir; genel bir mesaj yeterli değildir.
+func FailFields(c *gin.Context, fields []dto.FieldError) {
+	reqID := middleware.RequestIDFrom(c.Request.Context())
+	c.AbortWithStatusJSON(http.StatusUnprocessableEntity, FieldErrorBody{
+		Error: ErrorDetail{
+			Code:      apperr.ErrValidation.Code,
+			Message:   apperr.ErrValidation.Message,
+			RequestID: reqID,
+		},
+		Fields: fields,
+	})
+}

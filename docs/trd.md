@@ -526,7 +526,10 @@ iade tutarı, sağlayıcı bazlı kırılım.
 - Sağlayıcı API anahtarları DB'de AES-GCM ile şifreli
 - Durum değiştiren tüm işlemler `POST`/`PATCH`/`DELETE`
 - CSRF koruması aktif
-- Hız limiti: `/auth/*` 10 istek/dk/IP · `/catalog/quote` 60/dk/kullanıcı · `/orders` 10/dk/kullanıcı
+- Hız limiti: `/auth/*` **30 istek/dk/IP** · `/catalog/quote` 60/dk/kullanıcı · `/orders` 10/dk/kullanıcı
+  > ⚠️ IP bazlı limit **kaba bir emniyet supabıdır**. Türkiye'de mobil operatörler binlerce
+  > aboneyi tek IP'nin (CGNAT) arkasına koyar; sıkı bir IP limiti meşru kullanıcıları kilitler.
+  > Kaba kuvvete karşı **asıl savunma hesap bazlı kilittir**: 5 başarısız deneme / 15 dk (KK-102).
 - `govulncheck` ve `npm audit` CI'da; yüksek/kritik açık derlemeyi durdurur
 - **Webhook uç noktası:** IP izin listesi + tahmin edilemez yol + auth middleware yok +
   her zaman `200` + hız limiti (FR-410)

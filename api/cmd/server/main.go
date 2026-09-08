@@ -11,9 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ikmetrik/sms-platform/api/internal/config"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/captcha"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/mailer"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/redis"
+	"github.com/ikmetrik/sms-platform/api/internal/config"
+	"github.com/ikmetrik/sms-platform/api/internal/db"
+	"github.com/ikmetrik/sms-platform/api/internal/port"
+	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
 	httptransport "github.com/ikmetrik/sms-platform/api/internal/transport/http"
 )
 
@@ -52,10 +57,39 @@ func run() error {
 	defer func() { _ = rdb.Close() }()
 	slog.Info("redis bağlandı")
 
-	// 3) Sunucu
+	// 3) Bağımlılık grafiği — kablolama TEK YERDE, açıkça.
+	//    Servisler somut adaptörleri değil port arayüzlerini görür; bu sayede
+	//    testte sahte adaptörlerle aynı grafiği kurabiliriz.
+	queries := db.New(pool)
+	txRunner := postgres.NewTxRunner(pool)
+	sessions := redis.NewSessionStore(rdb)
+	limiter := redis.NewRateLimiter(rdb)
+
+	var mail port.Mailer = mailer.NewConsole(cfg.MailFrom)
+
+	var cap port.Captcha = captcha.Disabled{}
+	if cfg.RecaptchaSecretKey != "" {
+		cap = captcha.NewReCaptcha(cfg.RecaptchaSecretKey)
+	}
+	if !cap.Enabled() {
+		// Üretimde config paketi anahtarı zorunlu kılıyor; buraya yalnız
+		// geliştirmede düşeriz. Yine de sessiz kalmayız.
+		slog.Warn("reCAPTCHA devre dışı — yalnız geliştirme için kabul edilebilir")
+	}
+
+	authService := authsvc.New(authsvc.Deps{
+		TxRunner: txRunner, Sessions: sessions, Mailer: mail,
+		Captcha: cap, Limiter: limiter, Clock: port.RealClock{},
+		SessionTTL: cfg.SessionTTL, BaseURL: cfg.PublicBaseURL,
+	})
+
+	// 4) Sunucu
 	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httptransport.NewRouter(httptransport.Deps{Config: cfg, Pool: pool, Redis: rdb}),
+		Addr: cfg.HTTPAddr,
+		Handler: httptransport.NewRouter(httptransport.Deps{
+			Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
+			Sessions: sessions, Limiter: limiter, AuthSvc: authService,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// SSE akışları uzun sürer; WriteTimeout bilinçli olarak kapalıdır.
@@ -79,7 +113,7 @@ func run() error {
 		slog.Info("kapatma sinyali alındı")
 	}
 
-	// 4) Zarif kapanış: devam eden istekler tamamlansın.
+	// 5) Zarif kapanış: devam eden istekler tamamlansın.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
