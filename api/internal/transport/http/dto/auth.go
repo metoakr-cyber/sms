@@ -1,6 +1,6 @@
 // Package dto HTTP istek/yanıt yapılarını içerir.
 //
-// Domain modelleri ASLA doğrudan serileştirilmez ve istek gövdesi ASLA doğrudan
+// Domain modelleri doğrudan serileştirilmez ve istek gövdesi doğrudan
 // bir domain/db yapısına bağlanmaz (mass assignment koruması — docs/design.md §15).
 package dto
 
@@ -106,7 +106,8 @@ func (r *ResetPasswordRequest) Validate() []FieldError {
 
 // Money para değerlerinin DEĞİŞMEZ gösterimi.
 //
-// Çıplak ondalık sayı ASLA gönderilmez: JavaScript'te float'a dönüşür ve
+// Çıplak ondalık sayı gönderilmez (test: scripts/smoke-auth.sh — bakiye
+// yanıtı {minor,currency,formatted}): JavaScript'te float'a dönüşür ve
 // 12.50 değeri 12.499999... olabilir (docs/trd.md §9).
 type Money struct {
 	Minor     int64  `json:"minor"`
@@ -126,8 +127,11 @@ type UserResponse struct {
 }
 
 type SessionResponse struct {
+	// ID bir HANDLE'dır, ham oturum kimliği DEĞİL. Ham kimlik bir taşıyıcı
+	// token'dır ve dışarı verilmez (docs/design.md §10).
 	ID         string `json:"id"`
 	UserAgent  string `json:"userAgent"`
+	IP         string `json:"ip,omitempty"`
 	CreatedAt  string `json:"createdAt"`
 	LastSeenAt string `json:"lastSeenAt"`
 	Current    bool   `json:"current"`
@@ -178,6 +182,10 @@ func validateUsername(s string) string {
 
 type BalanceResponse struct {
 	Balance Money `json:"balance"`
+	// AlreadyApplied true ise bu istek bir TEKRAR'dı ve yeni bir hareket
+	// oluşmadı. Bu bilgi olmadan yönetici "işlem geçti mi geçmedi mi"
+	// ayrımını yapamaz ve tekrar denemeye yönelir.
+	AlreadyApplied bool `json:"alreadyApplied,omitempty"`
 }
 
 type LedgerEntryResponse struct {
@@ -201,8 +209,16 @@ type StatementResponse struct {
 type AdjustBalanceRequest struct {
 	// AmountMinor kuruş cinsinden; pozitif ekler, negatif düşer.
 	// Çıplak ondalık sayı KABUL EDİLMEZ (docs/trd.md §9).
-	AmountMinor int64  `json:"amountMinor"`
+	AmountMinor int64 `json:"amountMinor"`
 	Note        string `json:"note"`
+
+	// IdempotencyKey ZORUNLUDUR ve İSTEMCİ tarafından üretilir.
+	//
+	// Sunucu tarafında üretilen bir korelasyon kimliğinden (X-Request-Id)
+	// türetilemez: o kimlik her istekte yenilenir, dolayısıyla ağ hatası
+	// sonrası tekrar gönderilen aynı düzeltme İKİ KEZ uygulanırdı.
+	// Anahtar mantıksal işlemi tanımlamalı, taşıyıcısını değil.
+	IdempotencyKey string `json:"idempotencyKey"`
 }
 
 func (r *AdjustBalanceRequest) Validate() []FieldError {
@@ -212,6 +228,12 @@ func (r *AdjustBalanceRequest) Validate() []FieldError {
 	}
 	if len(strings.TrimSpace(r.Note)) < 5 {
 		errs = append(errs, FieldError{"note", "Düzeltme sebebi en az 5 karakter olmalıdır."})
+	}
+	if k := strings.TrimSpace(r.IdempotencyKey); k == "" {
+		errs = append(errs, FieldError{"idempotencyKey",
+			"Çift işlem koruması için benzersiz bir anahtar gönderilmelidir."})
+	} else if len(k) < 8 || len(k) > 64 {
+		errs = append(errs, FieldError{"idempotencyKey", "Anahtar 8-64 karakter olmalıdır."})
 	}
 	return errs
 }

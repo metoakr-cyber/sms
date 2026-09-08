@@ -43,6 +43,7 @@ func mapUniqueViolation(err error) error {
 
 // wrapDBErr uygulama hatalarını olduğu gibi geçirir, ham veritabanı hatalarını
 // sarmalar. Ham hata kullanıcıya asla gösterilmez.
+// test: scripts/smoke-auth.sh — hata yanıtlarında yalnız katalog metni döner
 func wrapDBErr(err error) error {
 	if err == nil {
 		return nil

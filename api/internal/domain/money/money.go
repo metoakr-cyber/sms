@@ -1,6 +1,7 @@
 // Package money para değerlerini TAM SAYI en küçük birim olarak temsil eder.
 //
 // Temel kural: para asla float64 ile taşınmaz veya hesaplanmaz.
+// test: money_test.go#TestNoFloatDrift
 // Kayan noktalı aritmetik ikili tabanda 0.1 gibi ondalıkları temsil edemez;
 // bir ödeme sisteminde bu birikimli hata ve mutabakat sapması demektir.
 //

@@ -57,6 +57,7 @@ CREATE INDEX ledger_type_idx         ON ledger_entries (entry_type, created_at D
 
 -- ─────────────────────── DEĞİŞMEZLİK ───────────────────────
 -- Defter kaydı ASLA güncellenmez veya silinmez (FR-204).
+-- test: scripts/smoke-auth.sh — ledger koruma tetikleyicisi doğrulaması
 -- Düzeltme, ters yönlü bir ADJUSTMENT kaydıyla yapılır.
 --
 -- Bu kural uygulamada da var ama veritabanında DA zorlanır: elle açılan bir

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -29,7 +30,16 @@ func RateLimit(limiter port.RateLimiter, name string, cfg RateLimitConfig, fail 
 		allowed, retryAfter, err := limiter.Allow(c.Request.Context(), key, cfg.Limit, cfg.Window)
 		if err != nil {
 			// Limitleyici çökerse isteği REDDETMEYİZ: Redis arızası tüm siteyi
-			// kapatmamalı. Ama log'larız — sessiz bir güvenlik kaybıdır.
+			// kapatmamalı (fail-open). Ama SESSİZ KALMAYIZ — bu bir güvenlik
+			// korumasının devre dışı kalmasıdır ve alarm üretmelidir.
+			//
+			// Not: oturum deposu AYNI arızada fail-CLOSED davranır (401).
+			// Fark bilinçlidir: hız limiti bir koruma, oturum bir kimliktir.
+			// docs/design.md §12'de tablo halinde kayıtlı.
+			//
+			// test: ratelimit_test.go#TestFailOpenIsLogged
+			slog.Error("HIZ LİMİTİ ÇALIŞMIYOR — koruma devre dışı",
+				"limiter", name, "path", c.FullPath(), "err", err)
 			c.Next()
 			return
 		}

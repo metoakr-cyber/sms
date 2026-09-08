@@ -6,7 +6,9 @@
 --
 -- Kaçış kapısı: yalnız testler için, oturum düzeyinde açık izin gerekir:
 --   SET LOCAL app.allow_ledger_truncate = 'on';
--- Üretim yapılandırmasında bu değişken hiçbir zaman ayarlanmaz.
+-- Üretim yapılandırmasında bu değişken ayarlanmaz; yalnız test temizliğinde
+-- ve tek transaction içinde (SET LOCAL) kullanılır.
+-- test: scripts/smoke-auth.sh — ortam kapısı + koruma doğrulaması
 CREATE OR REPLACE FUNCTION ledger_truncate_guard() RETURNS trigger AS $$
 BEGIN
     IF current_setting('app.allow_ledger_truncate', true) = 'on' THEN

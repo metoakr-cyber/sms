@@ -126,6 +126,20 @@ devam etme, sor.
 
 27. **`maxPrice` gönderilir, `fixedPrice` GÖNDERİLMEZ** (`fixedPrice` = sabit fiyat, tavan değil).
 
+29. **Bir yorum garanti veriyorsa, aynı blokta o garantiyi doğrulayan bir test
+    referansı olmalıdır.** `// test: dosya_test.go#TestAdi`
+
+    Gerekçe: kod incelemesinde **beş** yerde yorumun kodun sağlamadığı bir söz
+    verdiği bulundu — "aynı istek tekrarlanırsa bakiye iki kez değişmez" (her
+    tekrar yeni UUID üretiyordu), "Ama log'larız" (log yoktu), "config üretimde
+    reddeder" (main config'i okumuyordu), "JavaScript okuyamaz" (aynı değer
+    JSON'da dönüyordu). Bu, tekil hatalardan **daha tehlikelidir**: okuyan
+    kişi yorumu okuyup kontrolün yapıldığını varsayar ve inceleme orada durur.
+    Beş vakanın hepsinde yorum **doğru tasarımı** tarif ediyordu; sadece koda
+    bağlanmamıştı.
+
+    `scripts/check-guarantees.py` bunu zorlar ve `make check` ile CI'da koşar.
+
 28. **Legacy sağlayıcı yolunda `StatusCode == 200` başarı demek DEĞİLDİR** — `BAD_KEY`,
     `NO_NUMBERS` vb. 200 gövdesinde düz metin gelir. Legacy çağrı URL'leri **log'a yazılmaz**.
 

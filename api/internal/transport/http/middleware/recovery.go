@@ -10,6 +10,7 @@ import (
 
 // Recovery panic'i yakalar, yığın izini LOG'a yazar ve istemciye genel bir
 // hata döner. Yığın izi asla istemciye gitmez.
+// test: recovery_test.go#TestPanicDoesNotLeakStack
 func Recovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {

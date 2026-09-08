@@ -114,9 +114,15 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.GET("/wallet/balance", walletH.Balance)
 		auth.GET("/wallet/entries", walletH.Statement)
 
-		// Teklif oturum gerektirir ve hız limitlidir: her istek sağlayıcılara
-		// canlı sorgu yapar (docs/trd.md NFR-802).
+		// Teklif: oturum + DOĞRULANMIŞ E-POSTA + hız limiti.
+		//
+		// E-posta doğrulaması FR-101 gereğidir: doğrulanmamış hesap satın alma
+		// yapamaz. Ara katman yazılmıştı ama HİÇBİR YERE BAĞLANMAMIŞTI —
+		// tasarım biliniyordu, koda bağlanmamıştı.
+		//
+		// test: scripts/smoke-auth.sh (doğrulanmamış kullanıcı teklif alamıyor)
 		auth.GET("/catalog/quote",
+			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "quote", middleware.RateLimitConfig{
 				Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
@@ -124,7 +130,13 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	}
 
 	// ─── Yönetim: izin ZORUNLU ───
-	admin := rg.Group("/admin", requireAuth)
+	// Yönetim uçları da hız limitlidir: yetkili bir hesabın ele geçirilmesi
+	// veya bir betik hatası, sınırsız bakiye düzeltmesi anlamına gelmemeli.
+	adminLimit := middleware.RateLimit(d.Limiter, "admin", middleware.RateLimitConfig{
+		Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
+	}, Fail)
+
+	admin := rg.Group("/admin", requireAuth, adminLimit)
 	{
 		admin.POST("/users/:id/balance",
 			middleware.RequirePermission("users:write", Fail), walletH.AdjustBalance)

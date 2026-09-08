@@ -1,6 +1,7 @@
 // Package errors uygulamanın hata taksonomisini tanımlar.
 //
-// Kural: kullanıcıya ASLA ham hata mesajı gösterilmez. Her hatanın
+// Kural: kullanıcıya ASLA ham hata mesajı gösterilmez (test: scripts/smoke-auth.sh
+// — tek biçim hata yanıtı). Her hatanın
 //   - makine okunur bir Code'u (istemci dallanması için),
 //   - Türkçe, kullanıcıya gösterilebilir bir Message'ı,
 //   - ve bir HTTP durum kodu eşlemesi vardır.

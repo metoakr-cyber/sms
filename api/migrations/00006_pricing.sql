@@ -73,7 +73,8 @@ CREATE INDEX fx_rates_lookup_idx ON fx_rates (base, quote, fetched_at DESC);
 -- ─────────────────────── FİYAT TEKLİFİ ───────────────────────
 -- "Gösterilen fiyat = tahsil edilen fiyat" güvencesinin taşıyıcısı.
 --
--- İstemciye YALNIZ public_id gönderilir. provider_id ve maliyet ASLA
+-- İstemciye YALNIZ public_id gönderilir (test: scripts/smoke-auth.sh —
+-- teklif yanıtında sağlayıcı/maliyet aranır). provider_id ve maliyet ASLA
 -- gönderilmez: eski prototipte istemci hangi sağlayıcıdan alacağını ve hangi
 -- fiyata alacağını gövdede belirleyebiliyordu (docs/memory.md §3.8).
 CREATE TABLE price_quotes (

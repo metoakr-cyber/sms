@@ -14,6 +14,7 @@ const TokenBytes = 32
 // Token e-posta doğrulama ve şifre sıfırlama için tek kullanımlık bir sırdır.
 type Token struct {
 	// Plain kullanıcıya e-posta ile gönderilen değer. ASLA saklanmaz.
+	// test: auth_test.go#TestTokenLifecycle · scripts/smoke-auth.sh
 	Plain string
 	// Hash veritabanında saklanan SHA-256 özeti.
 	// Veritabanı sızarsa token'lar kullanılamaz olsun diye ham değer tutulmaz.

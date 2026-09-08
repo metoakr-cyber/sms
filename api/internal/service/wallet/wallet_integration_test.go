@@ -70,11 +70,19 @@ func newUser(t *testing.T, balanceMinor int64) int64 {
 			return
 		}
 		defer c.Release()
-		_, _ = c.Exec(context.Background(), `SET LOCAL app.allow_ledger_truncate = 'on'`)
-		_, _ = c.Exec(context.Background(), `ALTER TABLE ledger_entries DISABLE TRIGGER ledger_no_delete`)
-		_, _ = c.Exec(context.Background(), `DELETE FROM ledger_entries WHERE user_id = $1`, id)
-		_, _ = c.Exec(context.Background(), `ALTER TABLE ledger_entries ENABLE TRIGGER ledger_no_delete`)
-		_, _ = c.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, id)
+		// ALTER TABLE ... DISABLE TRIGGER KULLANILMAZ: test yarıda kesilirse
+		// koruma KALICI olarak kapalı kalır. Bunun yerine tek transaction
+		// içinde oturum kapsamlı kaçış kapısı (migration 00004) kullanılır —
+		// SET LOCAL transaction bitince kendiliğinden düşer.
+		tx, err := c.Begin(context.Background())
+		if err != nil {
+			return
+		}
+		_, _ = tx.Exec(context.Background(), `SET LOCAL app.allow_ledger_truncate = 'on'`)
+		_, _ = tx.Exec(context.Background(), `SET LOCAL session_replication_role = 'replica'`)
+		_, _ = tx.Exec(context.Background(), `DELETE FROM ledger_entries WHERE user_id = $1`, id)
+		_, _ = tx.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, id)
+		_ = tx.Commit(context.Background())
 	})
 	return id
 }

@@ -24,7 +24,8 @@ type ErrorDetail struct {
 
 // Fail bir hatayı istemciye yazar.
 //
-// Ham hata mesajı ASLA gövdeye konmaz — eski prototip err.Message'ı doğrudan
+// Ham hata mesajı ASLA gövdeye konmaz (test: scripts/smoke-auth.sh) —
+// eski prototip err.Message'ı doğrudan
 // HTML'e basıyordu (yansımalı XSS + bilgi sızıntısı). Burada yalnız katalogdaki
 // Türkçe metin gider; gerçek sebep log'a yazılır.
 func Fail(c *gin.Context, err error) {

@@ -203,12 +203,15 @@ func (h *Auth) ListSessions(c *gin.Context) {
 	}
 	out := make([]dto.SessionResponse, 0, len(rows))
 	for _, s := range rows {
+		// ID olarak HANDLE verilir. Ham oturum kimliği bir taşıyıcı token'dır
+		// ve JSON'a konursa çerezin httpOnly korumasını etkisiz kılar.
 		out = append(out, dto.SessionResponse{
-			ID:         s.ID,
+			ID:         authsvc.SessionHandle(s.ID),
 			UserAgent:  s.UserAgent,
+			IP:         ipString(s.Ip),
 			CreatedAt:  s.CreatedAt.Format(time.RFC3339),
 			LastSeenAt: s.LastSeenAt.Format(time.RFC3339),
-			Current:    s.ID == currentID,
+			Current:    s.ID == currentID, // karşılaştırma SUNUCU tarafında
 		})
 	}
 	h.r.OK(c, gin.H{"items": out})

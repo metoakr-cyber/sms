@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Kimlik akışının uçtan uca duman testi.
 # Sunucuyu başlatır, senaryoları koşar, sonuçları raporlar, temizler.
+# set -e KULLANILMIYOR: bu betik KASITLI olarak başarısız çağrılar yapar
+# (401/403/409 senaryoları). Koruma `set -e`'den değil, aşağıdaki AÇIK
+# ortam kapılarından gelir — onlar başarısızlıkta doğrudan exit 1 der.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 set -a && source .env && set +a
@@ -13,26 +16,98 @@ PASS=0; FAIL=0
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
 fail() { printf '  \033[31m✗\033[0m %s\n     %s\n' "$1" "${2:-}"; FAIL=$((FAIL+1)); }
 # Yerelde Docker konteynerine, CI'da doğrudan servise bağlanırız.
+#
+# Docker yolunda bile DATABASE_URL onurlandırılır: sabit bir veritabanı adı
+# kullanmak, betiğin uygulamadan FARKLI bir veritabanına konuşmasına yol açar
+# ve aşağıdaki ortam kapısını anlamsızlaştırır.
+#
+# Konteynerin içinden host portuna (localhost:55432) erişilemez; bu yüzden
+# docker yolunda URL'i olduğu gibi kullanamayız. Ama VERİTABANI ADINI URL'den
+# alırız — kapının denetlediği şey budur.
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q smsplatform-dev-postgres-1; then
-  psql()  { docker exec smsplatform-dev-postgres-1 psql -U smsplatform -d smsplatform -qtA "$@"; }
+  DB_FROM_URL="${DATABASE_URL##*/}"; DB_FROM_URL="${DB_FROM_URL%%\?*}"
+  psql()  { docker exec -i smsplatform-dev-postgres-1 psql -U smsplatform -d "$DB_FROM_URL" -qtA "$@"; }
   rediscli() { docker exec smsplatform-dev-redis-1 redis-cli "$@"; }
 else
   psql()  { command psql "$DATABASE_URL" -qtA "$@"; }
   rediscli() { command redis-cli -u "$REDIS_URL" "$@"; }
 fi
 
+# ─────────────────────── ORTAM KAPISI ───────────────────────
+# Bu betik VERİ SİLER. 'make check' zincirinde olduğu için her gün çalışıyor.
+# Yanlış bir .env (staging/üretim) ile çalıştırılması geri alınamaz kayıp demektir.
+# Bu yüzden iki bağımsız kontrol var ve ikisi de geçmeden hiçbir şey silinmez.
+[ "${APP_ENV:-}" = "development" ] || {
+  echo "✗ smoke YALNIZ development'ta çalışır (APP_ENV=${APP_ENV:-tanımsız})"
+  echo "  Bu betik veri siler; yanlış ortamda çalıştırılmasına izin verilmez."
+  exit 1
+}
+DBNAME=$(psql -c "SELECT current_database();" 2>/dev/null | tr -d '[:space:]' || true)
+case "$DBNAME" in
+  smsplatform|smsplatform_test) : ;;
+  *) echo "✗ beklenmeyen veritabanı: '${DBNAME:-okunamadı}' — silme yapılmadı"; exit 1 ;;
+esac
+
 # ── temiz başlangıç ──
-pkill -f '/tmp/smoke-api' 2>/dev/null; sleep 0.5
+pkill -f '/tmp/smoke-api' 2>/dev/null || true
+sleep 0.5
 
 # Test verisini temizle.
 #
 # ledger_entries DEĞİŞMEZDİR ve users'a referans verir; bu yüzden kullanıcılar
-# defter kaydı silinmeden silinemez. Bu ÜRETİMDE İSTENEN davranıştır — mali
-# kayıt kendini korur. Test ortamında tetikleyiciyi geçici olarak kapatıyoruz.
-psql -c "ALTER TABLE ledger_entries DISABLE TRIGGER ledger_no_delete;" >/dev/null 2>&1
-psql -c "DELETE FROM ledger_entries;" >/dev/null 2>&1
-psql -c "ALTER TABLE ledger_entries ENABLE TRIGGER ledger_no_delete;" >/dev/null 2>&1
-psql -c "DELETE FROM users;" >/dev/null 2>&1
+# defter kaydı silinmeden silinemez. Bu ÜRETİMDE İSTENEN davranıştır.
+#
+# ALTER TABLE ... DISABLE TRIGGER KULLANILMAZ: betik iki ALTER arasında
+# kesilirse koruma KALICI olarak kapalı kalır ve kimse fark etmez.
+# Onun yerine migration 00004'teki oturum kapsamlı kaçış kapısı kullanılır:
+# SET LOCAL yalnız o transaction içinde geçerlidir, sızması imkânsızdır.
+# test: aşağıdaki "ledger koruma tetikleyicisi" doğrulaması her koşuda çalışır
+# TRUNCATE ... CASCADE KULLANILMAZ: pricing_rules ve diğer tablolar users'a
+# referans verdiği için cascade migration TOHUM VERİSİNİ de siler (varsayılan
+# GLOBAL fiyat kuralı dahil) ve sonraki testler gizemli şekilde kırılır.
+# Yalnız bu betiğin ürettiği veriyi, doğru sırada sileriz.
+clean_test_data() {
+  psql -q -c "BEGIN;
+              SET LOCAL app.allow_ledger_truncate = 'on';
+              SET LOCAL session_replication_role = 'replica';
+              DELETE FROM ledger_entries;
+              DELETE FROM price_quotes;
+              DELETE FROM sessions;
+              DELETE FROM auth_tokens;
+              DELETE FROM user_roles;
+              DELETE FROM audit_logs;
+              UPDATE pricing_rules SET created_by_user_id = NULL;
+              DELETE FROM users;
+              COMMIT;" >/dev/null
+}
+clean_test_data
+
+# Tohum verisi KORUNMUŞ olmalı — cascade kazası olmadığının kanıtı.
+SEED=$(psql -c "SELECT count(*) FROM pricing_rules WHERE scope='GLOBAL' AND is_active;")
+[ "$SEED" = "1" ] || { echo "✗ GLOBAL fiyat kuralı kayboldu (temizlik tohum verisini sildi)"; exit 1; }
+ROLES=$(psql -c "SELECT count(*) FROM roles;")
+[ "$ROLES" -ge 2 ] || { echo "✗ rol tohumu kayboldu"; exit 1; }
+
+# Korumanın hâlâ AÇIK olduğunu doğrula.
+#
+# BOŞ bir tabloda BEFORE DELETE tetikleyicisi ateşlenmez (silinecek satır yok),
+# bu yüzden önce bir satır yazıp sonra silmeyi denemek gerekir. Aksi halde
+# "koruma çalışıyor" sonucu yalancı olurdu.
+GUARD_UID=$(psql -c "INSERT INTO users (email,username,password_hash,status)
+                     VALUES ('guard@test.local','guardcheck','x','ACTIVE') RETURNING id;")
+psql -c "INSERT INTO ledger_entries
+           (user_id,amount_minor,entry_type,balance_after_minor,idempotency_key)
+         VALUES ($GUARD_UID,1,'ADJUSTMENT',1,'guard-check');" >/dev/null
+GUARD=$(psql -c "DELETE FROM ledger_entries WHERE idempotency_key='guard-check';" 2>&1 || true)
+case "$GUARD" in
+  *degistirilemez*) : ;;  # beklenen: tetikleyici engelledi
+  *) echo "✗ ledger koruma tetikleyicisi ETKİN DEĞİL — durduruldu"; exit 1 ;;
+esac
+# Kontrol satırını temizle (yalnız izinli yoldan)
+psql -q -c "BEGIN;
+         SET LOCAL app.allow_ledger_truncate = 'on';
+         TRUNCATE ledger_entries, users RESTART IDENTITY CASCADE;
+         COMMIT;" >/dev/null
 
 REMAIN=$(psql -c "SELECT count(*) FROM users;" 2>/dev/null)
 [ "$REMAIN" = "0" ] || { echo "temizlik başarısız: $REMAIN kullanıcı kaldı"; exit 1; }
@@ -152,13 +227,32 @@ B=$(python3 -c "import json;print(json.load(open('/tmp/sm.body'))['balance']['fo
 psql -c "INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE u.email='ali@ornek.com' AND r.name='admin' ON CONFLICT DO NOTHING;" >/dev/null
 PUB=$(psql -c "SELECT public_id FROM users WHERE email='ali@ornek.com';")
 
-S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' \
-  -d '{"amountMinor":25050,"note":"hos geldin bakiyesi"}')
+ADJ='{"amountMinor":25050,"note":"hos geldin bakiyesi","idempotencyKey":"smoke-adj-0001"}'
+S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' -d "$ADJ")
 B=$(python3 -c "import json;print(json.load(open('/tmp/sm.body'))['balance']['formatted'])" 2>/dev/null)
 [ "$S" = 200 ] && [ "$B" = "250,50 ₺" ] && pass "admin bakiye yükledi → $B" || fail "bakiye düzeltme" "HTTP $S $(body)"
 
+# Aynı anahtarla TEKRAR: bakiye DEĞIŞMEMELİ, tek kayıt olmalı.
+S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' -d "$ADJ")
+B2=$(python3 -c "import json;d=json.load(open('/tmp/sm.body'));print(d['balance']['formatted'],d.get('alreadyApplied'))" 2>/dev/null)
+N=$(psql -c "SELECT count(*) FROM ledger_entries WHERE entry_type='ADJUSTMENT';")
+[ "$N" = "1" ] && [ "$B2" = "250,50 ₺ True" ] \
+  && pass "aynı anahtarla tekrar → tek kayıt, alreadyApplied=true" \
+  || fail "idempotency" "kayıt=$N yanıt=$B2"
+
+# FARKLI anahtar AYRI işlemdir — sessizce yutulmamalı.
 S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' \
-  -d '{"amountMinor":100,"note":"kisa"}')
+  -d '{"amountMinor":25050,"note":"ikinci mesru duzeltme","idempotencyKey":"smoke-adj-0002"}')
+N=$(psql -c "SELECT count(*) FROM ledger_entries WHERE entry_type='ADJUSTMENT';")
+[ "$N" = "2" ] && pass "farklı anahtar → ayrı işlem (sessiz yutma yok)" || fail "farklı anahtar" "kayıt=$N $(body)"
+
+# Anahtarsız istek REDDEDİLMELİ.
+S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' \
+  -d '{"amountMinor":100,"note":"anahtarsiz istek"}')
+[ "$(field code)" = VALIDATION ] && pass "idempotencyKey'siz istek reddedildi" || fail "anahtar zorunluluğu" "$(body)"
+
+S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj -H 'Content-Type: application/json' \
+  -d '{"amountMinor":100,"note":"kisa","idempotencyKey":"smoke-adj-0003"}')
 [ "$(field code)" = VALIDATION ] && pass "kısa açıklama reddedildi (denetlenebilirlik)" || fail "not zorunluluğu" "$(body)"
 
 S=$(code "$API/wallet/entries" -b /tmp/cj)
@@ -184,6 +278,31 @@ S=$(code -X POST "$API/admin/users/$PUB/balance" -b /tmp/cj2 -H 'Content-Type: a
 S=$(code "$API/wallet/entries" -b /tmp/cj2)
 N=$(python3 -c "import json;print(json.load(open('/tmp/sm.body'))['total'])" 2>/dev/null)
 [ "$N" = "0" ] && pass "kullanıcı başkasının hareketlerini göremiyor (KK-206)" || fail "sahiplik" "total=$N"
+
+# FR-101: DOĞRULANMAMIŞ e-postayla satın alma/teklif YAPILAMAZ.
+psql -c "UPDATE users SET email_verified_at = NULL, status='PENDING_VERIFICATION'
+         WHERE email='sivil@ornek.com';" >/dev/null
+S=$(code "$API/catalog/quote?serviceCode=tg&countryIso=RU" -b /tmp/cj2)
+[ "$(field code)" = EMAIL_NOT_VERIFIED ] \
+  && pass "doğrulanmamış kullanıcı teklif alamıyor (FR-101)" \
+  || fail "e-posta doğrulama kapısı" "HTTP $S $(body)"
+
+# Oturum listesi ham token SIZDIRMAMALI.
+SID=$(awk '$6=="sid"{print $7}' /tmp/cj 2>/dev/null | tail -1)
+S=$(code "$API/me/sessions" -b /tmp/cj)
+LEAK=$(SID="$SID" python3 -c "
+import json, os
+d = json.load(open('/tmp/sm.body'))
+sid = os.environ.get('SID', '')
+print('SIZDI' if sid and any(i['id'] == sid for i in d.get('items', [])) else 'temiz')" 2>/dev/null)
+[ "$S" = 200 ] && [ "$LEAK" = "temiz" ] \
+  && pass "oturum listesi ham token sızdırmıyor (httpOnly korunuyor)" \
+  || fail "oturum token sızıntısı" "HTTP $S sonuç=$LEAK"
+
+# Handle bir kimlik değildir: oturum çerezi olarak kullanılamamalı.
+HANDLE=$(python3 -c "import json;d=json.load(open('/tmp/sm.body'));print(d['items'][0]['id'])" 2>/dev/null)
+S=$(code "$API/me" -H "Cookie: sid=$HANDLE")
+[ "$S" = 401 ] && pass "handle oturum çerezi olarak kullanılamıyor" || fail "handle kabul edildi" "HTTP $S"
 
 echo "─── Askıya alma (KK-104) ───"
 psql -c "UPDATE users SET status='SUSPENDED' WHERE email='ali@ornek.com';" >/dev/null

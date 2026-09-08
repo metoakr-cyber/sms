@@ -144,7 +144,8 @@ CREATE TABLE provider_offers (
     cost_currency currency_code NOT NULL DEFAULT 'USD',
 
     -- GERÇEK stok. HeroSMS'te counts.physical'a karşılık gelir.
-    -- counts.total ASLA kullanılmaz: canlı ölçümde WhatsApp×TR için
+    -- counts.total ASLA kullanılmaz (test: catalog/sync_integration_test.go#
+    -- TestSyncOffersPopulatesCatalog): canlı ölçümde WhatsApp×TR için
     -- total=56964 iken physical=0 geldi (docs/provider-herosms.md §3.3).
     stock        INT NOT NULL DEFAULT 0,
     is_available BOOLEAN NOT NULL DEFAULT false,

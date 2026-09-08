@@ -137,9 +137,9 @@ func (s *QuoteService) Create(ctx context.Context, req QuoteRequest) (Quote, err
 		// Kural yoksa satış YAPILMAZ. Sessizce maliyetine satmak,
 		// eski prototipin hatasıydı.
 		slog.Error("FİYAT KURALI YOK — satış yapılamıyor",
-			"service", svc.Code, "country", ctry.Iso2)
-		return Quote{}, apperr.ErrFxUnavailable.WithMessage(
-			"Fiyatlar şu an hesaplanamıyor. Lütfen birazdan tekrar deneyin.")
+			"service", svc.Code, "country", ctry.Iso2,
+			"ipucu", "en az bir GLOBAL kural bulunmalı (migration 00006 tohumu)")
+		return Quote{}, apperr.ErrNoPricingRule.Wrap(err)
 	}
 
 	multiplier, err := numericToRate(best.CostMultiplier)

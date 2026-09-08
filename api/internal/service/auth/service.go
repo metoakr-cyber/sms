@@ -6,8 +6,11 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"log/slog"
 	"strings"
 	"time"
@@ -276,8 +279,13 @@ func (s *Service) createSession(ctx context.Context, userID int64, ip, ua string
 
 	// Veritabanı kopyası "aktif oturumlarım" listesi içindir (FR-104).
 	// Yazılamazsa giriş BAŞARISIZ SAYILMAZ — kaynak doğruluk Redis'tir.
+	var ipAddr *netip.Addr
+	if a, err := netip.ParseAddr(ip); err == nil {
+		ipAddr = &a
+	}
 	if _, err := s.tx.Queries().CreateSession(ctx, db.CreateSessionParams{
-		ID: id, UserID: userID, UserAgent: sess.UserAgent, ExpiresAt: sess.ExpiresAt,
+		ID: id, UserID: userID, Ip: ipAddr,
+		UserAgent: sess.UserAgent, ExpiresAt: sess.ExpiresAt,
 	}); err != nil {
 		slog.Warn("oturum veritabanına yazılamadı", "user_id", userID, "err", err)
 	}
@@ -408,16 +416,40 @@ func (s *Service) ListSessions(ctx context.Context, userID int64) ([]db.Session,
 	return rows, nil
 }
 
+// SessionHandle bir oturum kimliğinin DIŞARI VERİLEBİLİR karşılığıdır.
+//
+// Ham oturum kimliği bir TAŞIYICI TOKEN'dır: onu bilen kişi o oturumdur.
+// Çerez httpOnly olduğu için JavaScript okuyamaz — ama listeleme uç noktası
+// aynı değeri JSON'da dönerse bu koruma tümüyle etkisiz kalır: tek bir XSS
+// veya kötü niyetli bağımlılık, kullanıcının TÜM cihazlarındaki oturumları
+// çalabilir.
+//
+// Handle tek yönlüdür: listelemeye ve iptale yeter, kimlik doğrulamaya yetmez.
+//
+// test: handler/auth_integration_test.go#TestSessionListDoesNotLeakToken
+func SessionHandle(sessionID string) string {
+	sum := sha256.Sum256([]byte("session-handle:" + sessionID))
+	return hex.EncodeToString(sum[:8])
+}
+
 // RevokeSession bir oturumu sonlandırır. SAHİPLİK kontrolü burada yapılır:
 // kullanıcı yalnız kendi oturumunu düşürebilir.
-func (s *Service) RevokeSession(ctx context.Context, userID int64, sessionID string) error {
-	sess, err := s.sessions.Get(ctx, sessionID)
-	if err != nil || sess.UserID != userID {
-		// Var olmayan ve başkasına ait oturum AYNI hatayı döner:
-		// oturum kimliğinin varlığı sızdırılmaz.
-		return apperr.ErrNotFound
+//
+// Parametre bir HANDLE'dır, ham oturum kimliği değil. Kullanıcının kendi
+// oturumları taranıp handle eşleşmesi aranır; böylece sahiplik kontrolü
+// aramanın PARÇASI olur ve atlanamaz.
+func (s *Service) RevokeSession(ctx context.Context, userID int64, handle string) error {
+	rows, err := s.tx.Queries().ListUserSessions(ctx, userID)
+	if err != nil {
+		return apperr.Internal(err)
 	}
-	return s.Logout(ctx, sessionID)
+	for _, row := range rows {
+		if SessionHandle(row.ID) == handle {
+			return s.Logout(ctx, row.ID)
+		}
+	}
+	// Var olmayan ve başkasına ait oturum AYNI hatayı döner.
+	return apperr.ErrNotFound
 }
 
 // SuspendUser kullanıcıyı askıya alır ve TÜM oturumlarını anında düşürür (KK-104).

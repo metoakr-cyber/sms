@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -121,9 +123,13 @@ func (h *Wallet) AdjustBalance(c *gin.Context) {
 		return
 	}
 
-	// İdempotency anahtarı istek kimliğinden türer: aynı istek ağ hatası
-	// nedeniyle tekrarlanırsa bakiye iki kez değişmez.
-	idem := "manual:" + middleware.RequestIDFrom(c.Request.Context())
+	// Anahtar İSTEĞİN İÇERİĞİNDEN türer, taşıyıcısından değil.
+	//
+	// Hedef kullanıcı kapsama dahildir: aynı anahtarın farklı bir kullanıcı
+	// için kullanılması artık çakışma değil, ayrı bir işlemdir.
+	//
+	// test: handler/wallet_integration_test.go#TestAdjustIsIdempotent
+	idem := fmt.Sprintf("manual:%s:%s", target.PublicID, strings.TrimSpace(req.IdempotencyKey))
 
 	res, err := h.svc.Adjust(c.Request.Context(), adminID, target.ID,
 		money.New(req.AmountMinor, money.TRY), req.Note, idem)
@@ -131,7 +137,10 @@ func (h *Wallet) AdjustBalance(c *gin.Context) {
 		h.r.Fail(c, err)
 		return
 	}
-	h.r.OK(c, dto.BalanceResponse{Balance: moneyDTO(res.NewBalance)})
+	h.r.OK(c, dto.BalanceResponse{
+		Balance:        moneyDTO(res.NewBalance),
+		AlreadyApplied: res.AlreadyApplied,
+	})
 }
 
 // ledgerTypeLabel hareket tipinin kullanıcıya gösterilecek Türkçe adı.

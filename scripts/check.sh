@@ -23,6 +23,7 @@ step() {
 }
 
 echo "─── kontroller ───"
+step "garanti yorumları"    python3 scripts/check-guarantees.py
 step "sqlc üretimi güncel"  bash -c 'cd api && sqlc diff'
 step "go vet"               bash -c 'cd api && go vet ./...'
 step "go vet (integration)" bash -c 'cd api && go vet -tags=integration ./...'

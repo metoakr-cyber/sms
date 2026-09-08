@@ -17,6 +17,7 @@ CREATE TABLE users (
 
     -- Bakiye TÜRETİLMİŞ bir önbellektir; kaynak doğruluk ledger_entries tablosudur (M2).
     -- Negatif bakiye veritabanı düzeyinde de imkânsızdır (docs/trd.md FR-203).
+    -- test: wallet_integration_test.go#TestKK203_CannotGoNegative
     balance_minor        BIGINT      NOT NULL DEFAULT 0
                                      CONSTRAINT users_balance_non_negative CHECK (balance_minor >= 0),
 

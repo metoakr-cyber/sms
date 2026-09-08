@@ -57,6 +57,15 @@ var (
 	ErrFxUnavailable = NewStatus(KindInfra, "FX_UNAVAILABLE",
 		"Fiyatlar şu an hesaplanamıyor. Lütfen birazdan tekrar deneyin.",
 		http.StatusServiceUnavailable)
+	// ErrNoPricingRule fiyat kuralı bulunamadı.
+	//
+	// Kullanıcıya gösterilen metin FX_UNAVAILABLE ile aynıdır (ikisi de
+	// "fiyat hesaplanamıyor"), ama KOD farklıdır. Aynı kodu kullanmak
+	// operatörü yanlış yere gönderir: kur sağlayıcısını kontrol ederken
+	// asıl sorun eksik bir kuraldır.
+	ErrNoPricingRule = NewStatus(KindInfra, "NO_PRICING_RULE",
+		"Fiyatlar şu an hesaplanamıyor. Lütfen birazdan tekrar deneyin.",
+		http.StatusServiceUnavailable)
 
 	// ─── Sipariş ───
 	ErrInvalidStateTransition = NewStatus(KindDomain, "INVALID_STATE",

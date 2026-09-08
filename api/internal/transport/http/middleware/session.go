@@ -65,6 +65,7 @@ func RequireAuth(d AuthDeps) gin.HandlerFunc {
 
 		// Askıya alınan kullanıcının açık sekmesindeki bir sonraki istek
 		// anında reddedilir (docs/trd.md KK-104).
+		// test: scripts/smoke-auth.sh — "askıya alınan kullanıcının açık oturumu düştü"
 		if user.Status == db.UserStatusSUSPENDED {
 			_ = d.Sessions.RevokeAllForUser(c.Request.Context(), user.ID)
 			ClearSessionCookie(c)
@@ -94,6 +95,7 @@ func RequireAuth(d AuthDeps) gin.HandlerFunc {
 }
 
 // RequireVerifiedEmail e-postası doğrulanmamış kullanıcıyı engeller.
+// test: scripts/smoke-auth.sh — doğrulanmamış kullanıcı teklif alamıyor
 // Satın alma ve bakiye yükleme bu kontrolü gerektirir (docs/trd.md FR-101).
 func RequireVerifiedEmail(fail func(*gin.Context, error)) gin.HandlerFunc {
 	return func(c *gin.Context) {

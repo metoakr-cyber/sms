@@ -52,6 +52,7 @@ type SyncReport struct {
 //
 // Şifre çözme YALNIZ burada yapılır ve sonuç bellekten çıkmaz: ham anahtar
 // log'a, hata mesajına veya API yanıtına asla girmez.
+// test: crypto/secretbox_test.go#TestSealOpenRoundTrip (ham anahtar şifreli metinde yok)
 func (s *Service) creds(p db.Provider) (port.Creds, error) {
 	c := port.Creds{BaseURL: p.BaseUrl}
 	if len(p.ApiKeyEnc) == 0 {

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +24,8 @@ func bindJSON(c *gin.Context, r Responder, out any) bool {
 // formatTRY tutarı Türkçe biçimde yazar: 1234567 kuruş → "12.345,67 ₺"
 //
 // Biçimleme SUNUCUDA yapılır ve yanıta konur; istemci tarafında yeniden
-// hesaplanmaz. Böylece sunucu ile istemci gösterimi asla ayrışmaz
+// hesaplanmaz (test: scripts/smoke-auth.sh — formatted alanı sunucudan gelir).
+// Böylece sunucu ile istemci gösterimi ayrışmaz
 // (docs/frontend-contract.md §5.1).
 func formatTRY(m money.Money) string {
 	minor := m.Minor()
@@ -60,4 +62,12 @@ func groupThousands(n int64) string {
 		sb.WriteString(s[i : i+3])
 	}
 	return sb.String()
+}
+
+// ipString veritabanından gelen INET değerini metne çevirir.
+func ipString(a *netip.Addr) string {
+	if a == nil || !a.IsValid() {
+		return ""
+	}
+	return a.String()
 }

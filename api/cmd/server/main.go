@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -74,7 +75,19 @@ func run() error {
 	sessions := redis.NewSessionStore(rdb)
 	limiter := redis.NewRateLimiter(rdb)
 
-	var mail port.Mailer = mailer.NewConsole(cfg.MailFrom)
+	// Mailer YAPILANDIRMAYA göre seçilir. Koşulsuz console kablolaması,
+	// config'in üretimde koyduğu yasağı ETKİSİZ kılardı: süreç ayağa kalkar,
+	// hiçbir kullanıcı e-posta almaz ve kimse fark etmez.
+	var mail port.Mailer
+	switch cfg.MailProvider {
+	case "console":
+		mail = mailer.NewConsole(cfg.MailFrom)
+	default:
+		// Sessizce console'a DÜŞMEYİZ. Desteklenmeyen bir sağlayıcı
+		// yapılandırıldıysa süreç başlamaz.
+		return fmt.Errorf("main: MAIL_PROVIDER=%q için adaptör yok — "+
+			"süreç başlatılmıyor (e-postasız çalışmak sessiz arızadır)", cfg.MailProvider)
+	}
 
 	var cap port.Captcha = captcha.Disabled{}
 	if cfg.RecaptchaSecretKey != "" {

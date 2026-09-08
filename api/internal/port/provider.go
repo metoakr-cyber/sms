@@ -87,6 +87,7 @@ type PurchaseCmd struct {
 	// MaxCost ödemeyi kabul ettiğimiz AZAMİ maliyet.
 	// Fiyat bunun üstündeyse satın alma GERÇEKLEŞMEZ — fiyat garantisi
 	// sağlayıcı sınırında zorlanır (ADR-018).
+	// test: contract/contract.go — "MaxCost aşılırsa satın alma YAPILMAZ"
 	MaxCost money.Money
 
 	// ClientRef siparişimizi sağlayıcı tarafında etiketler (yetim provizyon
@@ -166,7 +167,8 @@ type ProviderPort interface {
 	// döngü kurmak gereksiz ve yavaştır.
 	ListOffers(ctx context.Context, c Creds, vt VerificationType) ([]OfferSnapshot, error)
 
-	// Purchase numara satın alır. İDEMPOTENT DEĞİLDİR: asla yeniden denenmez.
+	// Purchase numara satın alır. İDEMPOTENT DEĞİLDİR: yeniden denenmemelidir.
+	// Bu bir SÖZLEŞME kuralıdır; çağıranın uyması gerekir (CLAUDE.md değişmez #6).
 	Purchase(ctx context.Context, c Creds, cmd PurchaseCmd) (*PurchaseResult, error)
 
 	// GetStatus sipariş durumunu ve gelen mesajları döner.

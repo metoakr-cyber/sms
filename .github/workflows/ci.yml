@@ -54,6 +54,12 @@ jobs:
         working-directory: api
         run: sqlc diff
 
+      # Bir yorum garanti veriyorsa ("asla", "reddedilir", "log'larız"),
+      # o garantiyi doğrulayan bir test referansı taşımalı. Kod incelemesinde
+      # beş yerde yorumun kodun sağlamadığı bir söz verdiği bulundu.
+      - name: Garanti yorumları teste bağlı mı
+        run: python3 scripts/check-guarantees.py
+
       - name: Statik analiz
         working-directory: api
         run: |
