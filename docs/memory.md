@@ -118,9 +118,27 @@ teslimde ortaya çıkması riskini taşıyor (risk R2). Telafi mekanizması: `tr
 (KK-*) sözleşme işlevi görür, kritik akışlar testle ispatlanır, belirsizlikte varsayım açıkça
 yazılıp teslim raporunda belirtilir.
 
-### ⬜ Açık: kur (FX) sağlayıcısı seçilmedi
-Mevcut sistem anahtarsız ücretsiz bir API kullanıyor (güvenilir değil). M4'te karar verilecek.
-Aday: TCMB günlük XML (ücretsiz, resmî ama gün içi güncellenmez) vs. ücretli bir FX API.
+### 2026-09-08 · Kur sağlayıcısı seçildi: TCMB
+Resmî, ücretsiz, anahtarsız ve Türkiye'de muhasebe referansı.
+**ForexSelling (döviz satış)** kullanılıyor: döviz cinsinden mal alıyoruz, yani
+dövizi satın alıyoruz. Alış kuru maliyeti olduğundan düşük gösterir ve marjı sessizce yer.
+
+⚠️ **Sınırı:** günde bir kez (iş günü ~15:30) güncellenir, gün içi dalgalanmayı
+yakalamaz. Bu yüzden `FX_SAFETY_MARGIN_PCT` (varsayılan %2) **zorunludur** —
+kur riski bizde. Gün içi hassasiyet gerekirse ücretli bir FX API'ye geçilir.
+S4 kapandı.
+
+### 2026-09-08 · İki kez başarısız testle commit atıldı — kalıcı önlem
+Kayan test çıktısına bakıp "geçti" varsayma hatası iki kez tekrarlandı.
+Kök nedenlerden biri gerçekti (entegrasyon testleri paralel koşup birbirini
+kırıyordu → `-p 1`), ama asıl sorun süreçti.
+
+**Önlem:** `scripts/check.sh` — tek kapı, tek özet satırı, düşerse sıfırdan
+farklı kod. `make check` bunu çalıştırır. Göz kaçırılamaz.
+
+**Ders:** Uzun çıktı üreten bir doğrulama adımı, doğrulama değildir.
+
+### ~~⬜ Açık: kur (FX) sağlayıcısı~~ — ✅ TCMB seçildi (yukarıdaki kayda bakın)
 
 ### ⬜ Açık: e-posta sağlayıcısı seçilmedi
 Altyapı yok. M1'de karar verilecek. Öneri: Resend (basit API, iyi teslim edilebilirlik) veya Postmark.

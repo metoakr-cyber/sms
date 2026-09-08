@@ -35,7 +35,9 @@ M9  Lansman kapısı    ─── ticari/yasal karar (kod işi değil)
 
 ---
 
-## M0 — Temel
+## M0 — Temel  ✅ TAMAMLANDI
+
+> monorepo, Docker, sqlc+goose, yapılandırma doğrulaması, CI
 
 **Amaç:** Üzerine inşa edilecek iskelet.
 
@@ -59,7 +61,9 @@ M9  Lansman kapısı    ─── ticari/yasal karar (kod işi değil)
 
 ---
 
-## M1 — Kimlik ve yetkilendirme
+## M1 — Kimlik ve yetkilendirme  ✅ TAMAMLANDI
+
+> kayıt/giriş/oturum/RBAC — 26 duman testi
 
 **Amaç:** Katman mimarisini gerçek bir özellik üzerinde kurmak. Kimlik seçildi çünkü tüm
 katmanlara dokunuyor ama iş mantığı basit.
@@ -83,7 +87,9 @@ katmanlara dokunuyor ama iş mantığı basit.
 
 ---
 
-## M2 — Para ve ledger ⭐
+## M2 — Para ve ledger ⭐  ✅ TAMAMLANDI
+
+> KK-200..203 gerçek Postgres'te ispatlandı
 
 **Amaç:** Sistemin en kritik parçası. Buradaki bir hata gerçek para kaybettirir.
 **Bu faz bitmeden para harcayan hiçbir özellik yazılmaz.**
@@ -108,7 +114,9 @@ katmanlara dokunuyor ama iş mantığı basit.
 
 ---
 
-## M3 — Sağlayıcı katmanı
+## M3 — Sağlayıcı katmanı  ✅ TAMAMLANDI
+
+> FakeProvider + 13 sözleşme testi; HeroSMS adaptörü bakiye bekliyor
 
 **Amaç:** Genişletilebilir katalog + HeroSMS adaptörü.
 **Referans:** [provider-herosms.md](provider-herosms.md) — doğrulanmış API sözleşmesi.
@@ -139,7 +147,9 @@ katmanlara dokunuyor ama iş mantığı basit.
 
 ---
 
-## M4 — Fiyatlandırma ve teklif
+## M4 — Fiyatlandırma ve teklif  ✅ TAMAMLANDI
+
+> KK-302/304/305/402 ispatlandı
 
 **Amaç:** "Gösterilen fiyat = tahsil edilen fiyat" güvencesi.
 
