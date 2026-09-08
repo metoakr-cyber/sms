@@ -39,6 +39,29 @@ func (h *Catalog) Services(c *gin.Context) {
 	h.r.OK(c, gin.H{"items": out})
 }
 
+// ServicesWithStock GET /catalog/services-in-stock
+//
+// Izgara için: yalnız stoklu servisler + stoklu ülke sayısı.
+// /catalog/availability tüm matrisi döner (gerçek katalogda ~1 MB) ve mobil
+// için uygun değildir; ülkeler servis seçildikten sonra ayrıca çekilir.
+func (h *Catalog) ServicesWithStock(c *gin.Context) {
+	rows, err := h.queries.ListServicesWithStock(c.Request.Context())
+	if err != nil {
+		h.r.Fail(c, apperr.Internal(err))
+		return
+	}
+	out := make([]dto.ServiceSummaryResponse, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, dto.ServiceSummaryResponse{
+			Code:         s.ServiceCode,
+			Name:         displayName(s.ServiceNameTr, s.ServiceName),
+			IconURL:      s.IconUrl,
+			CountryCount: s.CountryCount,
+		})
+	}
+	h.r.OK(c, gin.H{"items": out})
+}
+
 // Countries GET /catalog/countries
 func (h *Catalog) Countries(c *gin.Context) {
 	rows, err := h.queries.ListVisibleCountries(c.Request.Context())

@@ -180,6 +180,41 @@ func (q *Queries) GetProviderByName(ctx context.Context, name string) (Provider,
 	return i, err
 }
 
+const getProviderRemoteCodes = `-- name: GetProviderRemoteCodes :one
+SELECT
+    ms.remote_code AS service_remote_code,
+    mc.remote_code AS country_remote_code
+FROM products p
+JOIN provider_dimension_maps ms
+     ON ms.provider_id = $1 AND ms.dimension = 'service' AND ms.local_id = p.service_id
+JOIN provider_dimension_maps mc
+     ON mc.provider_id = $1 AND mc.dimension = 'country' AND mc.local_id = p.country_id
+WHERE p.id = $2
+`
+
+type GetProviderRemoteCodesParams struct {
+	ProviderID int64
+	ProductID  int64
+}
+
+type GetProviderRemoteCodesRow struct {
+	ServiceRemoteCode string
+	CountryRemoteCode string
+}
+
+// Bir ürünün, BELİRLİ BİR SAĞLAYICIDAKİ karşılıklarını verir.
+//
+// Sağlayıcıya istek atarken BİZİM kodlarımız (services.code, countries.iso2)
+// KULLANILAMAZ. HeroSMS ülkeyi "62" bilir, biz "TR" biliriz. Çeviri burada
+// yapılır; yapılmazsa sağlayıcı "böyle bir ülke yok" der ve teklif düşer.
+// test: internal/service/pricing/remote_codes_integration_test.go#TestProviderReceivesItsOwnCodes
+func (q *Queries) GetProviderRemoteCodes(ctx context.Context, arg GetProviderRemoteCodesParams) (GetProviderRemoteCodesRow, error) {
+	row := q.db.QueryRow(ctx, getProviderRemoteCodes, arg.ProviderID, arg.ProductID)
+	var i GetProviderRemoteCodesRow
+	err := row.Scan(&i.ServiceRemoteCode, &i.CountryRemoteCode)
+	return i, err
+}
+
 const getRemoteCode = `-- name: GetRemoteCode :one
 SELECT remote_code FROM provider_dimension_maps
 WHERE provider_id = $1 AND dimension = $2 AND local_id = $3
@@ -427,6 +462,69 @@ func (q *Queries) ListOffersForProduct(ctx context.Context, productID int64) ([]
 	return items, nil
 }
 
+const listServicesWithStock = `-- name: ListServicesWithStock :many
+SELECT
+    s.code          AS service_code,
+    s.name          AS service_name,
+    s.name_tr       AS service_name_tr,
+    s.icon_url,
+    count(DISTINCT c.id)::bigint AS country_count,
+    min(o.cost_micro)::bigint    AS min_cost_micro
+FROM products p
+JOIN services  s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+WHERE p.is_active AND p.kind = 'SMS_ACTIVATION'
+  AND p.verification_type = 'sms'
+  AND s.is_visible AND c.is_visible
+GROUP BY s.code, s.name, s.name_tr, s.icon_url
+ORDER BY s.name
+`
+
+type ListServicesWithStockRow struct {
+	ServiceCode   string
+	ServiceName   string
+	ServiceNameTr string
+	IconUrl       string
+	CountryCount  int64
+	MinCostMicro  int64
+}
+
+// Servis IZGARASI için özet: yalnız en az bir ülkede STOKLU olan servisler,
+// her biri için stoklu ülke sayısı.
+//
+// NEDEN AYRI BİR SORGU: gerçek katalogda 9768 stoklu servis×ülke kombinasyonu
+// var ve hepsini tek yanıtta göndermek 1,09 MB ediyordu. Mobilde 4G'de bu
+// kabul edilemez (docs/frontend-contract.md §8). Izgara yalnız servisleri
+// gösterir; ülkeler servis seçilince ayrıca çekilir (~6 KB).
+func (q *Queries) ListServicesWithStock(ctx context.Context) ([]ListServicesWithStockRow, error) {
+	rows, err := q.db.Query(ctx, listServicesWithStock)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServicesWithStockRow{}
+	for rows.Next() {
+		var i ListServicesWithStockRow
+		if err := rows.Scan(
+			&i.ServiceCode,
+			&i.ServiceName,
+			&i.ServiceNameTr,
+			&i.IconUrl,
+			&i.CountryCount,
+			&i.MinCostMicro,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVisibleCountries = `-- name: ListVisibleCountries :many
 SELECT id, iso2, name, name_tr, phone_code, is_visible, supports_rent, created_at, updated_at FROM countries WHERE is_visible ORDER BY name_tr, name
 `
@@ -513,6 +611,47 @@ func (q *Queries) MarkStaleOffersUnavailable(ctx context.Context, arg MarkStaleO
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const resolveCountryRef = `-- name: ResolveCountryRef :one
+SELECT iso2, name_tr, phone_code FROM country_reference WHERE name_key = lower($1)
+`
+
+type ResolveCountryRefRow struct {
+	Iso2      string
+	NameTr    string
+	PhoneCode string
+}
+
+// Sağlayıcının İngilizce ülke adını ISO2 + Türkçe ad + telefon koduna çevirir.
+func (q *Queries) ResolveCountryRef(ctx context.Context, nameKey string) (ResolveCountryRefRow, error) {
+	row := q.db.QueryRow(ctx, resolveCountryRef, nameKey)
+	var i ResolveCountryRefRow
+	err := row.Scan(&i.Iso2, &i.NameTr, &i.PhoneCode)
+	return i, err
+}
+
+const resolveDimensionLocal = `-- name: ResolveDimensionLocal :one
+SELECT local_id FROM provider_dimension_maps
+WHERE provider_id = $1 AND dimension = $2 AND remote_code = $3
+`
+
+type ResolveDimensionLocalParams struct {
+	ProviderID int64
+	Dimension  string
+	RemoteCode string
+}
+
+// Sağlayıcının boyut kodunu YEREL kimliğe çevirir.
+//
+// Teklif senkronu eskiden ülkeyi `countries.iso2` üzerinden arıyordu. Bu, ancak
+// sağlayıcının kodu tesadüfen ISO2 ise çalışır; HeroSMS "62" gönderir ve arama
+// boş döner. Sağlayıcı kodu ile yerel kimlik arasındaki köprü BURASIDIR.
+func (q *Queries) ResolveDimensionLocal(ctx context.Context, arg ResolveDimensionLocalParams) (int64, error) {
+	row := q.db.QueryRow(ctx, resolveDimensionLocal, arg.ProviderID, arg.Dimension, arg.RemoteCode)
+	var local_id int64
+	err := row.Scan(&local_id)
+	return local_id, err
 }
 
 const setProviderActive = `-- name: SetProviderActive :exec

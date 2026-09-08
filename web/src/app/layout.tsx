@@ -17,21 +17,21 @@ const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
 export const metadata: Metadata = {
   metadataBase: new URL(SITE),
   title: {
-    default: 'SMS Onay — Sanal Numara ile Anında SMS Doğrulama',
-    template: '%s · SMS Onay',
+    default: 'Onay360 — Geçici Numara ile Anında SMS Onayı',
+    template: '%s · Onay360',
   },
   description:
-    'WhatsApp, Telegram, Instagram ve yüzlerce servis için sanal numara ile ' +
+    'WhatsApp, Telegram, Instagram ve yüzlerce servis için geçici numara ile ' +
     'anında SMS onay kodu alın. Kod gelmezse ücret iade edilir.',
-  applicationName: 'SMS Onay',
+  applicationName: 'Onay360',
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
     locale: 'tr_TR',
-    siteName: 'SMS Onay',
+    siteName: 'Onay360',
     url: SITE,
-    title: 'SMS Onay — Sanal Numara ile Anında SMS Doğrulama',
-    description: 'Yüzlerce servis için sanal numara. Kod gelmezse ücret iade edilir.',
+    title: 'Onay360 — Geçici Numara ile Anında SMS Onayı',
+    description: 'Yüzlerce servis için geçici numara. Kod gelmezse ücret iade edilir.',
   },
   twitter: { card: 'summary_large_image' },
   robots: { index: true, follow: true },

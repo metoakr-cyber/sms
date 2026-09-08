@@ -14,16 +14,17 @@ import (
 
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/captcha"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/fx"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/mailer"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/fake"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/herosms"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/redis"
 	"github.com/ikmetrik/sms-platform/api/internal/config"
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
-	"github.com/ikmetrik/sms-platform/api/internal/adapter/fx"
-	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider"
-	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/fake"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
@@ -109,6 +110,7 @@ func run() error {
 	// Sağlayıcı adaptörleri protokole göre kaydedilir.
 	registry := provider.NewRegistry()
 	registry.Register(fake.New(port.RealClock{}))
+	registry.Register(herosms.New())
 	// HeroSMS adaptörü hazır olduğunda buraya eklenecek.
 
 	var fxProvider port.FXProvider = fx.NewTCMB()

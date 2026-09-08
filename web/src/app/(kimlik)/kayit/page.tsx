@@ -3,7 +3,7 @@ import RegisterForm from './form';
 
 export const metadata: Metadata = {
   title: 'Ücretsiz Hesap Aç',
-  description: 'SMS Onay hesabı açın. Abonelik yok, yalnız kullandığınız kadar ödersiniz.',
+  description: 'Onay360 hesabı açın. Abonelik yok, yalnız kullandığınız kadar ödersiniz.',
   alternates: { canonical: '/kayit' },
 };
 

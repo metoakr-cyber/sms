@@ -320,6 +320,29 @@ SSE davranışı ayrıca **gerçek cihazda** doğrulanır; simülatör arka plan
 
 ---
 
+## Sağlayıcı sınırı
+
+> 🔴 **Sağlayıcının kodu bizim kodumuz DEĞİLDİR.**
+>
+> HeroSMS ülkeyi `62`, biz `TR` biliriz. Sağlayıcıya giden her istekte kodlar
+> `provider_dimension_maps` üzerinden çevrilir. `countries.iso2` veya
+> `services.code` değerlerini bir sağlayıcıya GÖNDERMEYİN; sağlayıcıdan gelen
+> bir kodu bu sütunlarda ARAMAYIN.
+>
+> Bu kural üç ayrı yerde ihlal edilmişti ve FakeProvider ISO2 kullandığı için
+> hiçbiri testlerde görünmedi (docs/memory.md §3.15).
+
+## Entegrasyon testleri
+
+> `DATABASE_URL` olmadan koşmazlar ve **atlamazlar, DÜŞERLER**. Sessizce
+> atlanan bir test "ok" der ve kimse kapsamın sıfır olduğunu fark etmez
+> (docs/memory.md §3.16).
+>
+>     set -a; source .env; set +a     # veya: make check
+>
+> Yeni bir regresyon testi yazıldığında: düzeltmeyi geçici olarak geri alıp
+> testin GERÇEKTEN düştüğünü görün. Düşmeyen test, test değildir.
+
 ## Commit ve dal
 
 > 🔴 **Commit `./scripts/commit.sh "mesaj"` ile atılır.** Doğrudan `git commit`

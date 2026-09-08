@@ -4,6 +4,18 @@ API := api
 WEB := web
 COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 
+# .env HER HEDEFTE yüklenir.
+#
+# `migrate-up` DATABASE_URL'i ortamdan bekliyordu ve .env'i okumuyordu; dosya
+# oracıkta dururken "database= bağlanılamadı" hatası veriyordu. Aynı hatanın
+# Go tarafındaki eşi config.LoadDotEnv içindeydi (bkz. docs/memory.md §3.13).
+# Kural: bir aracı çalıştırmak için önce elle `export` gerekiyorsa, o araç
+# bozuktur.
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
 ## help: bu listeyi göster
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | awk -F': ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'

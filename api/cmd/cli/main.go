@@ -19,6 +19,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/fake"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/herosms"
 	"github.com/ikmetrik/sms-platform/api/internal/config"
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
@@ -182,6 +183,7 @@ func (a *appCtx) catalogSync(args []string) error {
 
 	reg := provider.NewRegistry()
 	reg.Register(fake.New(port.RealClock{}))
+	reg.Register(herosms.New())
 	// HeroSMS adaptörü hazır olduğunda buraya kaydedilecek.
 
 	svc := catalog.New(catalog.Deps{

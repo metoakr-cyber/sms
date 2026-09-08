@@ -152,3 +152,59 @@ ORDER BY o.cost_micro, pr.priority;
 UPDATE services SET icon_url = @icon_url, updated_at = now()
 WHERE code = @code
 RETURNING code, name, icon_url;
+
+-- name: ListServicesWithStock :many
+-- Servis IZGARASI için özet: yalnız en az bir ülkede STOKLU olan servisler,
+-- her biri için stoklu ülke sayısı.
+--
+-- NEDEN AYRI BİR SORGU: gerçek katalogda 9768 stoklu servis×ülke kombinasyonu
+-- var ve hepsini tek yanıtta göndermek 1,09 MB ediyordu. Mobilde 4G'de bu
+-- kabul edilemez (docs/frontend-contract.md §8). Izgara yalnız servisleri
+-- gösterir; ülkeler servis seçilince ayrıca çekilir (~6 KB).
+SELECT
+    s.code          AS service_code,
+    s.name          AS service_name,
+    s.name_tr       AS service_name_tr,
+    s.icon_url,
+    count(DISTINCT c.id)::bigint AS country_count,
+    min(o.cost_micro)::bigint    AS min_cost_micro
+FROM products p
+JOIN services  s ON s.id = p.service_id
+JOIN countries c ON c.id = p.country_id
+JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
+JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
+WHERE p.is_active AND p.kind = 'SMS_ACTIVATION'
+  AND p.verification_type = 'sms'
+  AND s.is_visible AND c.is_visible
+GROUP BY s.code, s.name, s.name_tr, s.icon_url
+ORDER BY s.name;
+
+-- name: ResolveCountryRef :one
+-- Sağlayıcının İngilizce ülke adını ISO2 + Türkçe ad + telefon koduna çevirir.
+SELECT iso2, name_tr, phone_code FROM country_reference WHERE name_key = lower(@name_key);
+
+-- name: ResolveDimensionLocal :one
+-- Sağlayıcının boyut kodunu YEREL kimliğe çevirir.
+--
+-- Teklif senkronu eskiden ülkeyi `countries.iso2` üzerinden arıyordu. Bu, ancak
+-- sağlayıcının kodu tesadüfen ISO2 ise çalışır; HeroSMS "62" gönderir ve arama
+-- boş döner. Sağlayıcı kodu ile yerel kimlik arasındaki köprü BURASIDIR.
+SELECT local_id FROM provider_dimension_maps
+WHERE provider_id = @provider_id AND dimension = @dimension AND remote_code = @remote_code;
+
+-- name: GetProviderRemoteCodes :one
+-- Bir ürünün, BELİRLİ BİR SAĞLAYICIDAKİ karşılıklarını verir.
+--
+-- Sağlayıcıya istek atarken BİZİM kodlarımız (services.code, countries.iso2)
+-- KULLANILAMAZ. HeroSMS ülkeyi "62" bilir, biz "TR" biliriz. Çeviri burada
+-- yapılır; yapılmazsa sağlayıcı "böyle bir ülke yok" der ve teklif düşer.
+-- test: internal/service/pricing/remote_codes_integration_test.go#TestProviderReceivesItsOwnCodes
+SELECT
+    ms.remote_code AS service_remote_code,
+    mc.remote_code AS country_remote_code
+FROM products p
+JOIN provider_dimension_maps ms
+     ON ms.provider_id = @provider_id AND ms.dimension = 'service' AND ms.local_id = p.service_id
+JOIN provider_dimension_maps mc
+     ON mc.provider_id = @provider_id AND mc.dimension = 'country' AND mc.local_id = p.country_id
+WHERE p.id = @product_id;

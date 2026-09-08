@@ -5,7 +5,7 @@ import LoginForm from './form';
 
 export const metadata: Metadata = {
   title: 'Giriş Yap',
-  description: 'SMS Onay hesabınıza giriş yapın.',
+  description: 'Onay360 hesabınıza giriş yapın.',
   alternates: { canonical: '/giris' },
   robots: { index: false, follow: true },
 };

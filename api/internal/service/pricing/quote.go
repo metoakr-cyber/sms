@@ -120,7 +120,7 @@ func (s *QuoteService) Create(ctx context.Context, req QuoteRequest) (Quote, err
 	}
 
 	// ── 3-4. Sağlayıcı seçimi ──
-	best, err := s.cheapestOffer(ctx, prod.ID, svc.Code, ctry.Iso2)
+	best, err := s.cheapestOffer(ctx, prod.ID)
 	if err != nil {
 		return Quote{}, err
 	}
@@ -206,7 +206,7 @@ type offer struct {
 // Yavaş sağlayıcı BEKLENMEZ: 3 saniyede yanıt vermeyen elenir. Tek bir yavaş
 // sağlayıcının tüm teklifi geciktirmesi, kullanıcı için hizmetin çökmesiyle
 // aynı şeydir (docs/trd.md KK-306).
-func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64, serviceCode, countryISO string) (offer, error) {
+func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64) (offer, error) {
 	rows, err := s.tx.Queries().ListOffersForProduct(ctx, productID)
 	if err != nil {
 		return offer{}, apperr.Internal(err)
@@ -236,11 +236,30 @@ func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64, servi
 				return nil
 			}
 
+			// SAĞLAYICIYA KENDİ KODLARI GÖNDERİLİR.
+			//
+			// Bizim `services.code` / `countries.iso2` değerlerimiz sağlayıcıda
+			// anlamsızdır: HeroSMS ülkeyi "62" bilir, biz "TR". Eskiden bizim
+			// kodlarımız gönderiliyordu ve sağlayıcı her seferinde "yok" diyordu;
+			// kullanıcı stokta 1487 numara varken NO_PROVIDER_AVAILABLE görüyordu.
+			//
+			// test: quote_integration_test.go#TestProviderReceivesItsOwnCodes
+			codes, err := s.tx.Queries().GetProviderRemoteCodes(gctx, db.GetProviderRemoteCodesParams{
+				ProviderID: r.ProviderID, ProductID: productID,
+			})
+			if err != nil {
+				// Eşleştirme yoksa bu sağlayıcıya SORAMAYIZ. Uydurma bir kodla
+				// sormak, yanlış ülkeden numara almakla sonuçlanabilir.
+				slog.Warn("sağlayıcı eşleştirmesi yok",
+					"provider", prov.Name, "product", productID)
+				return nil
+			}
+
 			cctx, cancel := context.WithTimeout(gctx, providerTimeout)
 			defer cancel()
 
 			live, err := adapter.GetPriceAndStock(cctx, creds, port.PriceQuery{
-				ServiceCode: serviceCode, CountryCode: countryISO,
+				ServiceCode: codes.ServiceRemoteCode, CountryCode: codes.CountryRemoteCode,
 				VerificationType: port.VerifySMS,
 			})
 			if err != nil || live == nil {

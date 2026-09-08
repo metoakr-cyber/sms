@@ -117,9 +117,9 @@ export function SiteFooter() {
     <footer className={cx('mt-20 border-t border-[var(--border)] px-4 py-10 md:px-6')}>
       <div className="mx-auto flex max-w-6xl flex-col gap-6 md:flex-row md:items-start md:justify-between">
         <div className="max-w-xs">
-          <Logo />
+          <Logo withTagline />
           <p className="mt-3 text-sm text-muted">
-            Yüzlerce servis için sanal numara ile anında SMS onay kodu.
+            Yüzlerce servis için geçici numara ile anında SMS onay kodu.
           </p>
         </div>
         <div className="grid grid-cols-2 gap-x-10 gap-y-2 text-sm">
@@ -130,7 +130,7 @@ export function SiteFooter() {
         </div>
       </div>
       <p className="mx-auto mt-8 max-w-6xl text-xs text-muted">
-        © {new Date().getFullYear()} SMS Onay. Tüm hakları saklıdır.
+        © {new Date().getFullYear()} Onay360. Tüm hakları saklıdır.
       </p>
     </footer>
   );

@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import { fetchPublic } from '@/lib/server-api';
 import { Button, Card, Badge } from '@/components/ui';
 import { ServiceIcon } from '@/components/service-icon';
-import type { Service, Country } from '@/lib/types';
+import type { ServiceSummary, Country } from '@/lib/types';
 
 export const metadata: Metadata = {
   title: 'Sanal Numara ile Anında SMS Onay Kodu',
@@ -22,10 +22,16 @@ export const metadata: Metadata = {
  */
 export default async function HomePage() {
   const [services, countries] = await Promise.all([
-    fetchPublic<{ items: Service[] }>('/catalog/services'),
+    // STOKLU servisler. /catalog/services stoksuzları da döner ve kullanıcı
+    // ana sayfada gördüğü servisi panelde bulamaz.
+    fetchPublic<{ items: ServiceSummary[] }>('/catalog/services-in-stock'),
     fetchPublic<{ items: Country[] }>('/catalog/countries'),
   ]);
-  const topServices = (services?.items ?? []).slice(0, 12);
+  // En çok ülkede bulunan servisler öne çıkar: kullanıcının aradığı servisin
+  // burada olma ihtimali en yüksek olanlar.
+  const topServices = [...(services?.items ?? [])]
+    .sort((a, b) => b.countryCount - a.countryCount)
+    .slice(0, 12);
   const countryCount = countries?.items.length ?? 0;
 
   return (
@@ -37,7 +43,7 @@ export default async function HomePage() {
           __html: JSON.stringify({
             '@context': 'https://schema.org',
             '@type': 'WebSite',
-            name: 'SMS Onay',
+            name: 'Onay360',
             description: 'Sanal numara ile anında SMS onay kodu.',
             inLanguage: 'tr-TR',
           }),

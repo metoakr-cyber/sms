@@ -342,6 +342,56 @@ düşüş tekrarlanırsa **önce o log okunacak**, tahmin yürütülmeyecek.
 Kararsız bir birleştirme kapısı, kapısızlıktan az miktarda daha iyidir: insan
 "yine o hata" deyip yeniden koşmayı öğrenir ve gerçek hatayı da öyle geçer.
 
+### 3.15 Aynı hata üç katmanda: sağlayıcı kodu ≠ bizim kodumuz
+
+HeroSMS bağlandığında ortaya çıktı. Sağlayıcı ülkeyi `62` diye bilir, biz `TR`.
+Bu ayrım üç ayrı yerde ihlal edilmişti ve **üçü de FakeProvider ile
+görünmüyordu**, çünkü FakeProvider ülke kodu olarak zaten ISO2 kullanıyor:
+yanlış kod, doğru sonucu veriyordu.
+
+1. **Boyut senkronu** — `iso = rc.RemoteCode`: sağlayıcının kodu doğrudan
+   `countries.iso2` sütununa yazılıyordu. Sonuç: `iso2='62'`, Türkçe ad yok,
+   telefon kodu yok. → `country_reference` tablosu (migration 00007) eklendi;
+   ISO2 artık İNGİLİZCE ADDAN çözülüyor.
+2. **Teklif senkronu** — `GetCountryByISO(o.CountryCode)`: sağlayıcının kodu
+   bizim sütunumuzda aranıyordu. ISO2 düzeltilince arama boşa düştü ve senkron
+   **"0 teklif, 0 hata"** diyerek başarılı göründü, ardından tüm katalogu bayat
+   işaretledi. → `provider_dimension_maps` üzerinden çözülüyor.
+3. **Fiyat teklifi** — `GetPriceAndStock(ServiceCode: svc.Code, CountryCode: ctry.Iso2)`:
+   sağlayıcıya BİZİM kodumuz gönderiliyordu. Sağlayıcı "yok" diyor, kullanıcı
+   stokta 1469 numara varken `NO_PROVIDER_AVAILABLE` görüyordu.
+
+**Ders 1 — sınır çevirisi tek yerde yapılmaz, HER ÇAĞRIDA yapılır.** Sağlayıcının
+kodu yalnız `provider_dimension_maps`te yaşar; oradan çıkan hiçbir değer yerel
+bir sütunla karşılaştırılmaz.
+
+**Ders 2 — sahte sağlayıcı gerçeğe FAZLA benziyorsa hata gizler.** FakeProvider
+ISO2 kullandığı için üç hatanın hiçbiri testlerde görünmedi. Yeni testler
+(`TestCountryIsoComesFromReferenceNotProviderCode`,
+`TestProviderReceivesItsOwnCodes`) bilerek SAYISAL kod veren taklitler kullanır.
+
+**Ders 3 — sessiz `continue` bir hata sınıfını görünmez kılar.** Teklif senkronu
+eşleşmeyenleri sessizce atlıyordu. Artık sayılıp raporlanıyor ve "sağlayıcı
+teklif döndürdü ama hiçbiri eşleşmedi" durumunda katalog KORUNUYOR.
+
+### 3.16 Sessizce atlanan test "ok" der — testsizlikten kötüdür
+
+Bu turda regresyon testleri yazıldı ve `go test` "ok" dedi. **Hiçbiri
+çalışmamıştı.** `TestMain`, `DATABASE_URL` tanımsızken `os.Exit(0)` diyordu ve
+`go test` bunu BAŞARI sayıyordu. Kabuk `.env`i yüklemediği için testler sessizce
+atlanıyor, ekranda yeşil "ok" görünüyordu.
+
+Bu, testlerin sabotajı yakalayıp yakalamadığını denerken ortaya çıktı: sabote
+edilmiş kod da "ok" veriyordu. Enum'da olmayan bir `provider_protocol` değeri
+kullandıkları için aslında iki test de derlenip düşüyordu — ama kimse görmedi.
+
+Artık `DATABASE_URL` yoksa entegrasyon testleri **düşer**; bilerek atlamak için
+`ALLOW_SKIP_INTEGRATION=1` gerekir ve atlama açıkça yazılır.
+
+**Ders:** bir testin geçtiğini görmek yetmez; **düşmesi gereken durumda
+düştüğünü** de görmek gerekir. Her yeni regresyon testi, düzeltme geri
+alındığında düşerek kanıtlanmalıdır.
+
 ### 3.14 Yönlendirme ve rota tutarsızlıkları
 
 | Yer | Sorun |

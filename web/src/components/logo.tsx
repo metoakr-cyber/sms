@@ -1,18 +1,45 @@
-export function Logo({ className = 'h-8' }: { className?: string }) {
+/**
+ * Onay360 markası.
+ *
+ * Bu SVG, gerçek logonun YERİNE GEÇEN bir vektör sürümdür — asıl logo dosyası
+ * `public/marka/onay360.svg` olarak konduğunda `<BrandMark useFile />` ile
+ * kullanılabilir. Buradaki sürüm marka renklerini ve 360° dairesel ok +
+ * onay işareti motifini taşır; piksel birebir kopya değildir.
+ *
+ * Renkler logodan alındı: mavi #1a7fd4, kırmızı #e30613.
+ */
+export function Logo({
+  className = 'h-8', withTagline = false,
+}: { className?: string; withTagline?: boolean }) {
   return (
-    <span className={`inline-flex items-center gap-2 ${className}`}>
-      <svg viewBox="0 0 32 32" className="h-full w-auto" aria-hidden>
-        <rect width="32" height="32" rx="9" fill="#3454d1" />
+    <span className={`inline-flex items-center gap-2.5 ${className}`}>
+      <svg viewBox="0 0 40 40" className="h-full w-auto shrink-0" aria-hidden>
+        {/* dairesel ok — "360" döngüsü */}
         <path
-          d="M9 12.5c0-1.4 1.5-2.5 3.6-2.5 1.7 0 3 .5 4 1.4M22.8 19.2c0 1.5-1.6 2.6-3.9 2.6-1.9 0-3.4-.6-4.4-1.6"
-          stroke="#fff" strokeWidth="2.1" strokeLinecap="round" fill="none"
+          d="M20 5.5a14.5 14.5 0 1 0 13.4 9"
+          fill="none" stroke="#1a7fd4" strokeWidth="3.4" strokeLinecap="round"
         />
+        <path d="M28.8 4.2l5.6 3.4-4.2 4.6z" fill="#1a7fd4" />
+        {/* onay işareti */}
         <path
-          d="M12.6 15.9h6.6c1.9 0 3.4 1.1 3.4 2.6M19.2 15.9h-6.6c-2 0-3.6-1.1-3.6-2.6"
-          stroke="#fff" strokeWidth="2.1" strokeLinecap="round" fill="none" opacity=".55"
+          d="M12.5 20.5l5.4 5.6L31 10.8"
+          fill="none" stroke="#e30613" strokeWidth="4.2"
+          strokeLinecap="round" strokeLinejoin="round"
         />
       </svg>
-      <span className="text-[15px] font-semibold tracking-tight">SMS Onay</span>
+
+      <span className="flex flex-col leading-none">
+        <span className="text-[17px] font-bold tracking-tight">
+          <span style={{ color: '#1a7fd4' }}>Onay</span>
+          <span style={{ color: '#e30613' }}>360</span>
+          <span style={{ color: '#e30613' }} className="align-super text-[10px]">°</span>
+        </span>
+        {withTagline && (
+          <span className="mt-1 text-[9px] font-medium uppercase tracking-[0.08em] text-muted">
+            Geçici numara ve onaylama hizmetleri
+          </span>
+        )}
+      </span>
     </span>
   );
 }

@@ -1,40 +1,38 @@
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { fetchPublic } from '@/lib/server-api';
-import { Card, Badge, Button } from '@/components/ui';
-import { ServiceIcon } from '@/components/service-icon';
-import type { CatalogItem } from '@/lib/types';
+import { Card, Button } from '@/components/ui';
+import type { ServiceSummary } from '@/lib/types';
 
 export const metadata: Metadata = {
-  title: 'Fiyatlar ve Stok Durumu',
+  title: 'Servisler ve Stok Durumu',
   description:
-    'Servis ve ülkeye göre sanal numara stok durumu. WhatsApp, Telegram, ' +
-    'Instagram ve daha fazlası için güncel uygunluk listesi.',
+    'WhatsApp, Telegram, Instagram ve yüzlerce servis için geçici numara stok ' +
+    'durumu. Hangi serviste kaç ülke mevcut, güncel liste.',
   alternates: { canonical: '/fiyatlar' },
 };
 
+/**
+ * Servis listesi.
+ *
+ * Servis × ülke MATRİSİ basılmaz: gerçek katalogda 712 servis ve 9768 stoklu
+ * kombinasyon var; hepsini tek sayfada üretmek hem devasa bir HTML hem de
+ * kimsenin okumadığı bir duvar demek. Sayfa servisleri gösterir, ülkeler
+ * satın alma ekranında seçilir.
+ */
 export default async function PricingPage() {
-  const data = await fetchPublic<{ items: CatalogItem[] }>('/catalog/availability', { revalidate: 120 });
-  const items = data?.items ?? [];
-
-  // Servise göre grupla — kullanıcı "WhatsApp hangi ülkelerde var" diye bakar,
-  // "Türkiye'de hangi servisler var" diye değil.
-  const groups = new Map<string, { name: string; iconUrl?: string; rows: CatalogItem[] }>();
-  for (const it of items) {
-    const g = groups.get(it.serviceCode)
-      ?? { name: it.serviceName, iconUrl: it.iconUrl, rows: [] };
-    g.rows.push(it);
-    groups.set(it.serviceCode, g);
-  }
+  const data = await fetchPublic<{ items: ServiceSummary[] }>(
+    '/catalog/services-in-stock', { revalidate: 300 });
+  const items = [...(data?.items ?? [])].sort((a, b) => b.countryCount - a.countryCount);
 
   return (
     <div className="px-4 py-10 md:px-6 md:py-14">
       <div className="mx-auto max-w-6xl">
-        <h1 className="text-3xl font-bold tracking-tight md:text-4xl">Fiyatlar ve stok</h1>
+        <h1 className="text-3xl font-bold tracking-tight md:text-4xl">Servisler ve stok</h1>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted md:text-base">
-          Aşağıda stokta olan servis ve ülke kombinasyonları listelenmiştir.
-          Numaranın kesin fiyatı, döviz kuru anlık değiştiği için satın alma
-          ekranında <strong className="text-[var(--text)]">size özel bir teklif</strong> olarak
+          Aşağıdaki servislerde şu anda stok var. Numaranın kesin fiyatı, döviz
+          kuru anlık değiştiği için satın alma ekranında{' '}
+          <strong className="text-[var(--text)]">size özel bir teklif</strong> olarak
           gösterilir ve teklif süresi boyunca değişmez.
         </p>
 
@@ -45,33 +43,29 @@ export default async function PricingPage() {
             </p>
           </Card>
         ) : (
-          <div className="mt-8 flex flex-col gap-4">
-            {[...groups.entries()].map(([code, g]) => (
-              <Card key={code}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="flex items-center gap-2.5 text-lg font-semibold">
-                    <ServiceIcon name={g.name} iconUrl={g.iconUrl} size={28} />
-                    {g.name}
-                  </h2>
-                  <Badge tone="neutral">{g.rows.length} ülke</Badge>
-                </div>
-                <ul className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-                  {g.rows.map((r) => (
-                    <li
-                      key={`${r.serviceCode}-${r.countryIso2}`}
-                      className="raised flex min-h-12 items-center justify-between gap-2
-                                 rounded-xl border px-3 py-2"
-                    >
-                      <span className="min-w-0 truncate text-sm">{r.countryName}</span>
-                      {r.inStock
-                        ? <Badge tone="ok">Stokta</Badge>
-                        : <Badge tone="bad">Tükendi</Badge>}
-                    </li>
-                  ))}
-                </ul>
-              </Card>
-            ))}
-          </div>
+          <>
+            <p className="mt-6 text-sm text-muted">
+              <strong className="text-[var(--text)]">{items.length}</strong> serviste stok var.
+            </p>
+            {/*
+              SADE İŞARETLEME, BİLEREK.
+
+              Aynı liste `Card` + `ServiceIcon` bileşenleriyle basıldığında
+              sayfa 2,4 MB ediyordu: 712 öğe × ağır sınıf listesi, üstüne bir
+              de RSC yükünde ikinci kez. Pazarlama sayfasının tamamı, bir
+              uygulama ekranından ağır olamaz (docs/frontend-contract.md §8).
+
+              Servis adları HTML'de kalır — SEO değeri burada.
+            */}
+            <ul className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {items.map((s) => (
+                <li key={s.code} className="surface rounded-xl border px-3 py-2.5">
+                  <span className="block truncate text-sm font-medium">{s.name}</span>
+                  <span className="text-xs text-muted">{s.countryCount} ülke</span>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
 
         <Card className="mt-8 flex flex-col items-start gap-4 md:flex-row md:items-center md:justify-between">

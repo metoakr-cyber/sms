@@ -180,6 +180,18 @@ func validateUsername(s string) string {
 
 // ─────────────────────────── Cüzdan ───────────────────────────
 
+// ServiceSummaryResponse servis ızgarası için özet.
+//
+// Fiyat BURADA YOKTUR ve olmayacaktır: fiyat kullanıcıya ÖZELDİR ve yalnız
+// teklif (quote) ile verilir. Izgarada bir fiyat göstermek, teklifle
+// uyuşmadığında güven kaybettirir.
+type ServiceSummaryResponse struct {
+	Code         string `json:"code"`
+	Name         string `json:"name"`
+	IconURL      string `json:"iconUrl,omitempty"`
+	CountryCount int64  `json:"countryCount"`
+}
+
 type BalanceResponse struct {
 	Balance Money `json:"balance"`
 	// AlreadyApplied true ise bu istek bir TEKRAR'dı ve yeni bir hareket

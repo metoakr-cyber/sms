@@ -98,6 +98,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	cat := rg.Group("/catalog")
 	{
 		cat.GET("/services", catalogH.Services)
+		cat.GET("/services-in-stock", catalogH.ServicesWithStock)
 		cat.GET("/countries", catalogH.Countries)
 		cat.GET("/availability", catalogH.Availability)
 	}

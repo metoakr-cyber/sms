@@ -14,6 +14,11 @@ export interface Session {
 }
 
 export interface Service { code: string; name: string; iconUrl?: string }
+
+/** Servis ızgarası özeti — /catalog/services-in-stock */
+export interface ServiceSummary {
+  code: string; name: string; iconUrl?: string; countryCount: number;
+}
 export interface Country { iso2: string; name: string; phoneCode: string }
 
 export interface CatalogItem {

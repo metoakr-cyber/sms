@@ -26,8 +26,24 @@ var pool *pgxpool.Pool
 func TestMain(m *testing.M) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
-		fmt.Println("DATABASE_URL tanımsız — atlanıyor")
-		os.Exit(0)
+		// SESSİZ ATLAMA YOK.
+		//
+		// Buradaki eski davranış `os.Exit(0)` idi: DATABASE_URL tanımsızsa
+		// tüm entegrasyon testleri atlanır ve `go test` "ok" derdi. Yani
+		// veritabanı olmayan bir ortamda paket YEŞİL geçiyordu — sıfır
+		// entegrasyon kapsamıyla. Bu, testin olmamasından kötüdür: kimse
+		// eksik olduğunu fark etmez.
+		//
+		// Bilerek atlamak için ALLOW_SKIP_INTEGRATION=1 gerekir; o zaman da
+		// atlama AÇIKÇA yazılır.
+		if os.Getenv("ALLOW_SKIP_INTEGRATION") == "1" {
+			fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI (ALLOW_SKIP_INTEGRATION=1)")
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "DATABASE_URL tanımsız — entegrasyon testleri çalıştırılamıyor.")
+		fmt.Fprintln(os.Stderr, "  Çözüm: `set -a; source .env; set +a`  veya  `make check`")
+		fmt.Fprintln(os.Stderr, "  Bilerek atlamak için: ALLOW_SKIP_INTEGRATION=1")
+		os.Exit(1)
 	}
 	p, err := postgres.NewPool(context.Background(), url)
 	if err != nil {
@@ -42,7 +58,7 @@ func TestMain(m *testing.M) {
 
 type clk struct{ t time.Time }
 
-func (c *clk) Now() time.Time { return c.t }
+func (c *clk) Now() time.Time          { return c.t }
 func (c *clk) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
 // setup temiz bir katalog ve FakeProvider kayıtlı bir servis üretir.

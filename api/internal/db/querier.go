@@ -50,6 +50,13 @@ type Querier interface {
 	GetProductForActivation(ctx context.Context, arg GetProductForActivationParams) (Product, error)
 	GetProvider(ctx context.Context, id int64) (Provider, error)
 	GetProviderByName(ctx context.Context, name string) (Provider, error)
+	// Bir ürünün, BELİRLİ BİR SAĞLAYICIDAKİ karşılıklarını verir.
+	//
+	// Sağlayıcıya istek atarken BİZİM kodlarımız (services.code, countries.iso2)
+	// KULLANILAMAZ. HeroSMS ülkeyi "62" bilir, biz "TR" biliriz. Çeviri burada
+	// yapılır; yapılmazsa sağlayıcı "böyle bir ülke yok" der ve teklif düşer.
+	// test: internal/service/pricing/remote_codes_integration_test.go#TestProviderReceivesItsOwnCodes
+	GetProviderRemoteCodes(ctx context.Context, arg GetProviderRemoteCodesParams) (GetProviderRemoteCodesRow, error)
 	GetQuoteByPublicID(ctx context.Context, publicID uuid.UUID) (PriceQuote, error)
 	GetRemoteCode(ctx context.Context, arg GetRemoteCodeParams) (string, error)
 	GetRoleByName(ctx context.Context, name string) (Role, error)
@@ -87,6 +94,14 @@ type Querier interface {
 	// Mutabakat: defter toplamı ile önbelleklenmiş bakiyenin uyuşmadığı kullanıcılar.
 	// Boş dönmesi beklenir; dönmezse ALARM üretilir (docs/trd.md FR-205).
 	ListReconciliationDrift(ctx context.Context, limit int32) ([]ListReconciliationDriftRow, error)
+	// Servis IZGARASI için özet: yalnız en az bir ülkede STOKLU olan servisler,
+	// her biri için stoklu ülke sayısı.
+	//
+	// NEDEN AYRI BİR SORGU: gerçek katalogda 9768 stoklu servis×ülke kombinasyonu
+	// var ve hepsini tek yanıtta göndermek 1,09 MB ediyordu. Mobilde 4G'de bu
+	// kabul edilemez (docs/frontend-contract.md §8). Izgara yalnız servisleri
+	// gösterir; ülkeler servis seçilince ayrıca çekilir (~6 KB).
+	ListServicesWithStock(ctx context.Context) ([]ListServicesWithStockRow, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListVisibleCountries(ctx context.Context) ([]Country, error)
@@ -103,6 +118,14 @@ type Querier interface {
 	// listeden çıkardığı bir kombinasyon sonsuza kadar stokta görünürdü.
 	MarkStaleOffersUnavailable(ctx context.Context, arg MarkStaleOffersUnavailableParams) (int64, error)
 	ReplaceUserRoles(ctx context.Context, arg ReplaceUserRolesParams) error
+	// Sağlayıcının İngilizce ülke adını ISO2 + Türkçe ad + telefon koduna çevirir.
+	ResolveCountryRef(ctx context.Context, nameKey string) (ResolveCountryRefRow, error)
+	// Sağlayıcının boyut kodunu YEREL kimliğe çevirir.
+	//
+	// Teklif senkronu eskiden ülkeyi `countries.iso2` üzerinden arıyordu. Bu, ancak
+	// sağlayıcının kodu tesadüfen ISO2 ise çalışır; HeroSMS "62" gönderir ve arama
+	// boş döner. Sağlayıcı kodu ile yerel kimlik arasındaki köprü BURASIDIR.
+	ResolveDimensionLocal(ctx context.Context, arg ResolveDimensionLocalParams) (int64, error)
 	RevokeAllUserSessions(ctx context.Context, userID int64) error
 	RevokeRole(ctx context.Context, arg RevokeRoleParams) error
 	RevokeSession(ctx context.Context, id string) error

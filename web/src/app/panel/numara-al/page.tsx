@@ -7,19 +7,137 @@ import { ApiError, apiFetch } from '@/lib/api';
 import { formatMoney, formatDuration } from '@/lib/format';
 import { useCountdown } from '@/hooks/useCountdown';
 import { useSession } from '@/hooks/useSession';
-import { Card, Button, Badge, Alert, Skeleton, Empty, Field, cx } from '@/components/ui';
+import { Button, Badge, Alert, Skeleton, Empty, cx } from '@/components/ui';
 import { ServiceIcon } from '@/components/service-icon';
-import type { CatalogItem, Quote } from '@/lib/types';
+import { Modal } from '@/components/modal';
+import type { CatalogItem, Quote, ServiceSummary } from '@/lib/types';
+
+
 
 export default function BuyPage() {
   const { user } = useSession();
-  const [service, setService] = React.useState<string | null>(null);
-  const [country, setCountry] = React.useState<string | null>(null);
   const [search, setSearch] = React.useState('');
+  const [openService, setOpenService] = React.useState<ServiceSummary | null>(null);
 
+  // Izgara YALNIZ servis özetini çeker (~35 KB).
+  //
+  // Tüm servis×ülke matrisi 1,09 MB ediyor: gerçek katalogda 712 servis ve
+  // 9768 stoklu kombinasyon var. Mobilde 4G'de bunu indirtmek, kullanıcıyı
+  // sayfa açılmadan kaybetmektir (docs/frontend-contract.md §8). Ülkeler
+  // servis seçilince ayrıca çekilir.
   const catalog = useQuery({
-    queryKey: ['availability'],
-    queryFn: () => apiFetch<{ items: CatalogItem[] }>('/catalog/availability'),
+    queryKey: ['services-in-stock'],
+    queryFn: () => apiFetch<{ items: ServiceSummary[] }>('/catalog/services-in-stock'),
+  });
+
+  const services = catalog.data?.items ?? [];
+
+  const filtered = React.useMemo(() => {
+    // localeCompare/toLocaleLowerCase'de 'tr' ZORUNLU: varsayılan yerelde
+    // "İSTANBUL".toLowerCase() → "i̇stanbul" olur ve arama tutmaz.
+    const q = search.trim().toLocaleLowerCase('tr');
+    if (!q) return services;
+    return services.filter((s) =>
+      s.name.toLocaleLowerCase('tr').includes(q) || s.code.toLowerCase().includes(q));
+  }, [services, search]);
+
+  return (
+    <div className="mx-auto flex max-w-5xl flex-col gap-5">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold uppercase tracking-wide md:text-3xl">Numara Al</h1>
+        <p className="mt-1.5 text-sm text-muted">
+          Servisi seçin, ülke ve fiyatı bir sonraki adımda görün.
+        </p>
+      </div>
+
+      {!user?.emailVerified && (
+        <Alert tone="warn">
+          Numara alabilmek için önce e-posta adresinizi doğrulamanız gerekiyor.
+        </Alert>
+      )}
+
+      {/* Arama HER ZAMAN görünür. Yüzlerce servis arasında kaydırarak aramak,
+          mobilde kullanıcıyı listeyi terk etmeye iter. */}
+      <label className="relative block">
+        <span className="sr-only">Servis ara</span>
+        <svg viewBox="0 0 24 24" aria-hidden
+             className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted"
+             fill="none" stroke="currentColor" strokeWidth="1.8">
+          <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" strokeLinecap="round" />
+        </svg>
+        <input
+          type="search" value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="Aradığınız servisi yazın.."
+          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+          className="raised min-h-14 w-full rounded-2xl border pl-12 pr-4 text-base
+                     placeholder:text-[var(--muted)] outline-none focus:border-brand-400"
+        />
+      </label>
+
+      {catalog.isLoading ? (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+          {Array.from({ length: 12 }, (_, i) => <Skeleton key={i} className="h-20" />)}
+        </div>
+      ) : catalog.isError ? (
+        <Alert>Servis listesi yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.</Alert>
+      ) : filtered.length === 0 ? (
+        <Empty
+          title={search ? `“${search}” için sonuç yok` : 'Stokta servis yok'}
+          hint={search ? 'Farklı bir yazım deneyin.' : 'Sağlayıcı stoğu şu anda boş görünüyor.'}
+        />
+      ) : (
+        /* Mobilde 2 sütun — gerçek sistemdeki düzen (docs/frontend-contract.md §2.5) */
+        <ul className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+          {filtered.map((s) => (
+            <li key={s.code}>
+              <button
+                type="button" onClick={() => setOpenService(s)}
+                className="raised flex min-h-20 w-full flex-col justify-center gap-1.5
+                           rounded-xl border px-3 py-3 text-left transition-colors
+                           hover:border-[var(--color-ink-500)] active:scale-[0.99]"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <ServiceIcon name={s.name} iconUrl={s.iconUrl} size={28} />
+                  <span className="min-w-0 truncate text-[13px] font-bold uppercase">
+                    {s.name}
+                  </span>
+                </span>
+                <span className="flex items-baseline gap-1.5">
+                  <span className="text-xs font-semibold text-[var(--color-ok)]">Fiyat seçin</span>
+                  <span className="text-[11px] text-muted">· {s.countryCount} ülke</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <BuyModal
+        service={openService}
+        onClose={() => setOpenService(null)}
+        emailVerified={!!user?.emailVerified}
+      />
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────── */
+
+function BuyModal({
+  service, onClose, emailVerified,
+}: { service: ServiceSummary | null; onClose: () => void; emailVerified: boolean }) {
+  const [countryIso, setCountryIso] = React.useState('');
+
+  // Ülkeler YALNIZ modal açıkken ve YALNIZ seçilen servis için çekilir (~6 KB).
+  // `enabled` olmadan, modal kapalıyken de istek giderdi.
+  const countries = useQuery({
+    queryKey: ['availability', service?.code],
+    queryFn: () => apiFetch<{ items: CatalogItem[] }>(
+      `/catalog/availability?serviceCode=${encodeURIComponent(service!.code)}`),
+    enabled: !!service,
+    select: (d) => [...d.items]
+      .filter((i) => i.inStock)
+      .sort((a, b) => a.countryName.localeCompare(b.countryName, 'tr')),
   });
 
   const quote = useMutation({
@@ -30,182 +148,91 @@ export default function BuyPage() {
       ),
   });
 
-  const items = catalog.data?.items ?? [];
+  // Modal her açılışta SIFIRDAN başlar. Sıfırlanmazsa kullanıcı bir servisi
+  // kapatıp diğerini açtığında ÖNCEKİ servisin fiyatını görür — ve o fiyata
+  // güvenerek satın alır.
+  React.useEffect(() => {
+    setCountryIso('');
+    quote.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [service?.code]);
 
-  // Servis listesi — her servis bir kez, stoklu ülke sayısıyla.
-  const services = React.useMemo(() => {
-    const m = new Map<string, { code: string; name: string; iconUrl?: string; count: number }>();
-    for (const it of items) {
-      if (!it.inStock) continue;
-      const e = m.get(it.serviceCode)
-        ?? { code: it.serviceCode, name: it.serviceName, iconUrl: it.iconUrl, count: 0 };
-      e.count++;
-      m.set(it.serviceCode, e);
-    }
-    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, 'tr'));
-  }, [items]);
-
-  const countries = React.useMemo(() => {
-    if (!service) return [];
-    return items
-      .filter((i) => i.serviceCode === service && i.inStock)
-      .sort((a, b) => a.countryName.localeCompare(b.countryName, 'tr'));
-  }, [items, service]);
-
-  const filteredServices = React.useMemo(() => {
-    const s = search.trim().toLocaleLowerCase('tr');
-    return s ? services.filter((x) => x.name.toLocaleLowerCase('tr').includes(s)) : services;
-  }, [services, search]);
-
-  function pickService(code: string) {
-    setService(code); setCountry(null); setSearch(''); quote.reset();
-  }
   function pickCountry(iso: string) {
-    if (!service) return;
-    setCountry(iso);
-    quote.mutate({ service, country: iso });
+    setCountryIso(iso);
+    if (iso && service) quote.mutate({ service: service.code, country: iso });
   }
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Numara al</h1>
-        <p className="mt-1 text-sm text-muted">Servisi ve ülkeyi seçin, fiyatı görün.</p>
-      </div>
-
-      {!user?.emailVerified && (
-        <Alert tone="warn">
-          Numara alabilmek için önce e-posta adresinizi doğrulamanız gerekiyor.
-        </Alert>
-      )}
-
-      {/* ─── 1. Servis ─── */}
-      <Card>
-        <div className="flex items-center gap-2">
-          <StepBadge n={1} done={!!service} />
-          <h2 className="text-lg font-semibold">Servis seçin</h2>
-        </div>
-
-        {catalog.isLoading ? (
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-            {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="h-16" />)}
-          </div>
-        ) : catalog.isError ? (
-          <Alert className="mt-4">Servis listesi yüklenemedi. Bağlantınızı kontrol edin.</Alert>
-        ) : services.length === 0 ? (
-          <Empty title="Stokta servis yok" hint="Sağlayıcı stoğu şu anda boş görünüyor." />
-        ) : (
-          <>
-            {services.length > 8 && (
-              <div className="mt-4">
-                <Field label="Servis ara" value={search} onChange={(e) => setSearch(e.target.value)}
-                       placeholder="Örn. WhatsApp" type="search" autoCapitalize="none" />
-              </div>
-            )}
-            <ul className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-              {filteredServices.map((s) => (
-                <li key={s.code}>
-                  <button type="button" onClick={() => pickService(s.code)}
-                          aria-pressed={service === s.code}
-                          className={cx(
-                            'flex min-h-16 w-full items-center gap-3',
-                            'rounded-xl border px-3 py-2 text-left transition-colors',
-                            service === s.code
-                              ? 'border-brand-500 bg-brand-500/12'
-                              : 'raised hover:border-[var(--color-ink-500)]')}>
-                    <ServiceIcon name={s.name} iconUrl={s.iconUrl} size={32} />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate text-sm font-medium">{s.name}</span>
-                      <span className="text-xs text-muted">{s.count} ülke</span>
-                    </span>
-                  </button>
-                </li>
+    <Modal open={!!service} onClose={onClose} title={service?.name ?? ''}>
+      {!service ? null : (
+        <div className="flex flex-col gap-4">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">Ülke Seçin</span>
+            <select
+              data-autofocus
+              value={countryIso}
+              onChange={(e) => pickCountry(e.target.value)}
+              disabled={countries.isLoading || countries.isError}
+              className="raised min-h-12 w-full rounded-xl border px-3 text-base outline-none
+                         focus:border-brand-400 disabled:opacity-60"
+            >
+              <option value="">
+                {countries.isLoading ? 'Ülkeler yükleniyor…'
+                  : countries.isError ? 'Ülkeler yüklenemedi'
+                  : 'Ülke seçiniz…'}
+              </option>
+              {(countries.data ?? []).map((c) => (
+                <option key={c.countryIso2} value={c.countryIso2}>
+                  {c.countryName} (+{c.phoneCode})
+                </option>
               ))}
-            </ul>
-            {filteredServices.length === 0 && (
-              <p className="mt-4 text-sm text-muted">“{search}” için sonuç bulunamadı.</p>
-            )}
-          </>
-        )}
-      </Card>
+            </select>
+          </label>
 
-      {/* ─── 2. Ülke ─── */}
-      {service && (
-        <Card>
-          <div className="flex items-center gap-2">
-            <StepBadge n={2} done={!!country} />
-            <h2 className="text-lg font-semibold">Ülke seçin</h2>
-          </div>
-          <ul className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {countries.map((c) => (
-              <li key={c.countryIso2}>
-                <button type="button" onClick={() => pickCountry(c.countryIso2)}
-                        aria-pressed={country === c.countryIso2}
-                        className={cx(
-                          'flex min-h-12 w-full items-center justify-between gap-2',
-                          'rounded-xl border px-3 py-2 text-left transition-colors',
-                          country === c.countryIso2
-                            ? 'border-brand-500 bg-brand-500/12'
-                            : 'raised hover:border-[var(--color-ink-500)]')}>
-                  <span className="min-w-0 truncate text-sm font-medium">{c.countryName}</span>
-                  <span className="shrink-0 text-xs text-muted">+{c.phoneCode}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </Card>
+          {countryIso && (
+            <QuoteBox
+              quote={quote.data ?? null}
+              error={quote.error}
+              pending={quote.isPending}
+              emailVerified={emailVerified}
+              onRefresh={() => quote.mutate({ service: service.code, country: countryIso })}
+            />
+          )}
+        </div>
       )}
-
-      {/* ─── 3. Fiyat ─── */}
-      {country && (
-        <Card>
-          <div className="flex items-center gap-2">
-            <StepBadge n={3} done={quote.isSuccess} />
-            <h2 className="text-lg font-semibold">Fiyat</h2>
-          </div>
-          <QuotePanel
-            quote={quote.data ?? null}
-            error={quote.error}
-            pending={quote.isPending}
-            onRefresh={() => service && country && quote.mutate({ service, country })}
-          />
-        </Card>
-      )}
-    </div>
+    </Modal>
   );
 }
 
-function StepBadge({ n, done }: { n: number; done: boolean }) {
-  return (
-    <span className={cx('grid size-6 shrink-0 place-items-center rounded-lg text-xs font-bold',
-                        done ? 'bg-[var(--color-ok)]/15 text-[var(--color-ok)]'
-                             : 'bg-brand-500/15 text-brand-300')}>
-      {done ? '✓' : n}
-    </span>
-  );
-}
-
-function QuotePanel({
-  quote, error, pending, onRefresh,
-}: { quote: Quote | null; error: unknown; pending: boolean; onRefresh: () => void }) {
+function QuoteBox({
+  quote, error, pending, emailVerified, onRefresh,
+}: {
+  quote: Quote | null; error: unknown; pending: boolean;
+  emailVerified: boolean; onRefresh: () => void;
+}) {
   const left = useCountdown(quote?.expiresAt);
   const expired = !!quote && left <= 0;
 
-  if (pending) return <Skeleton className="mt-4 h-28" />;
+  if (pending) return <Skeleton className="h-36" />;
 
   if (error) {
     const e = error instanceof ApiError ? error : null;
-    // Kullanıcıya ne yapması gerektiğini söyleriz; "hata oluştu" demek yetmez.
+    // Kullanıcıya NE YAPACAĞINI söyleriz. Eski sistemin "Sunucuya
+    // bağlanılamadı." kutusu, kullanıcıyı hiçbir yere götürmüyordu.
     const hint =
       e?.code === 'EMAIL_NOT_VERIFIED' ? 'E-posta adresinizi doğruladıktan sonra tekrar deneyin.'
-      : e?.code === 'OUT_OF_STOCK'     ? 'Bu kombinasyon az önce tükendi. Başka bir ülke seçin.'
+      : e?.code === 'OUT_OF_STOCK'     ? 'Bu ülke az önce tükendi. Başka bir ülke seçin.'
       : e?.code === 'NO_PRICING_RULE'  ? 'Bu servis için fiyatlandırma tanımlı değil. Destekle iletişime geçin.'
+      : e?.code === 'NETWORK'          ? 'Bağlantınızı kontrol edip tekrar deneyin.'
       : null;
     return (
-      <Alert className="mt-4">
+      <Alert>
         <p>{e?.message ?? 'Fiyat alınamadı.'}</p>
         {hint && <p className="mt-1 opacity-80">{hint}</p>}
         {e?.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {e.requestId}</p>}
+        <Button variant="outline" size="sm" onClick={onRefresh} className="mt-3">
+          Tekrar dene
+        </Button>
       </Alert>
     );
   }
@@ -213,48 +240,68 @@ function QuotePanel({
   if (!quote) return null;
 
   return (
-    <div className="mt-4 flex flex-col gap-4">
-      <div className="raised flex flex-wrap items-end justify-between gap-3 rounded-xl border p-4">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted">Ödenecek tutar</p>
-          <p className="mt-1 text-3xl font-bold">{formatMoney(quote.price)}</p>
-        </div>
-        <div className="text-right">
-          <Badge tone={quote.stock > 0 ? 'ok' : 'bad'}>
-            {quote.stock > 0 ? `${quote.stock} numara stokta` : 'Tükendi'}
-          </Badge>
-          <p className={cx('mt-2 text-sm font-medium',
-                           expired ? 'text-[var(--color-bad)]' : 'text-muted')}>
-            {expired ? 'Teklif süresi doldu' : `Geçerlilik: ${formatDuration(left)}`}
-          </p>
-        </div>
+    <div className="flex flex-col gap-4">
+      {/* Kesikli çerçeve: gerçek sistemdeki fiyat kutusu deseni */}
+      <div className="rounded-xl border border-dashed border-[var(--border)] p-4">
+        <dl className="flex flex-col gap-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-sm text-muted">Stok Durumu</dt>
+            <dd>
+              <Badge tone={quote.stock > 0 ? 'ok' : 'bad'}>
+                {quote.stock > 0 ? `${quote.stock} adet` : 'Tükendi'}
+              </Badge>
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-sm text-muted">Birim Fiyat</dt>
+            <dd className="text-2xl font-bold text-[var(--color-ok)]">
+              {formatMoney(quote.price)}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t
+                          border-[var(--border)] pt-2.5">
+            <dt className="text-sm text-muted">Fiyat geçerliliği</dt>
+            <dd className={cx('text-sm font-medium',
+                              expired ? 'text-[var(--color-bad)]' : 'text-[var(--text)]')}>
+              {expired ? 'Süre doldu' : formatDuration(left)}
+            </dd>
+          </div>
+        </dl>
+
+        {expired ? (
+          <Button onClick={onRefresh} fullWidth className="mt-4">Yeni fiyat al</Button>
+        ) : (
+          /*
+            POST /orders HENÜZ YOK (M5). Buton bilerek devre dışı.
+            Basılabilir bırakıp 404 aldırmak, kullanıcıya parasının gidip
+            gitmediğini bilmediği bir an yaşatır — eski sistemin
+            "Sunucuya bağlanılamadı." kutusunun yaptığı tam olarak buydu.
+          */
+          <Button fullWidth disabled className="mt-4" title="Sipariş adımı hazırlanıyor">
+            Satın Al ({formatMoney(quote.price)})
+          </Button>
+        )}
       </div>
 
-      <p className="text-xs leading-relaxed text-muted">
-        Bu fiyat size özeldir ve teklif süresi boyunca değişmez. Süre dolarsa
-        güncel kur ile yeni bir teklif alınır. Kod gelmezse ücret iade edilir.
-      </p>
-
-      {expired ? (
-        <Button onClick={onRefresh} fullWidth>Yeni fiyat al</Button>
-      ) : (
-        <>
-          {/*
-            Sipariş ucu (POST /orders) HENÜZ YOK — M5 kalemidir.
-            Buton bilerek devre dışıdır: basılabilir bırakıp 404 aldırmak,
-            kullanıcıya parasının gittiğini mi gitmediğini mi bilmediği bir an
-            yaşatır. Bilinmeyen durum, açık bir "yakında"dan daha kötüdür.
-          */}
-          <Button fullWidth disabled>Numarayı al</Button>
-          <Alert tone="info">
-            Satın alma adımı şu anda geliştirilmektedir. Servis seçimi, ülke
-            seçimi ve fiyatlandırma canlı çalışıyor.
-          </Alert>
-        </>
+      {!expired && (
+        <Alert tone="info">
+          Satın alma adımı hazırlanıyor. Servis, ülke, stok ve fiyatlandırma
+          canlı çalışıyor.
+        </Alert>
       )}
 
+      {!emailVerified && (
+        <Alert tone="warn">E-posta doğrulaması olmadan satın alma yapılamaz.</Alert>
+      )}
+
+      <p className="text-xs leading-relaxed text-muted">
+        SMS kodu geldiğinde otomatik olarak ekrana yansıyacaktır. Kod gelmezse
+        ücret bakiyenize iade edilir.
+      </p>
+
       <Link href="/panel/cuzdan"
-            className="text-center text-sm text-brand-400 underline-offset-4 hover:underline">
+            className="inline-flex min-h-11 items-center justify-center text-sm text-brand-400
+                       underline-offset-4 hover:underline">
         Bakiyemi görüntüle
       </Link>
     </div>

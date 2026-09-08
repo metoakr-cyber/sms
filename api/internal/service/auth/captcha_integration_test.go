@@ -24,8 +24,24 @@ var pool *pgxpool.Pool
 func TestMain(m *testing.M) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
-		fmt.Println("DATABASE_URL tanımsız — atlanıyor")
-		os.Exit(0)
+		// SESSİZ ATLAMA YOK.
+		//
+		// Buradaki eski davranış `os.Exit(0)` idi: DATABASE_URL tanımsızsa
+		// tüm entegrasyon testleri atlanır ve `go test` "ok" derdi. Yani
+		// veritabanı olmayan bir ortamda paket YEŞİL geçiyordu — sıfır
+		// entegrasyon kapsamıyla. Bu, testin olmamasından kötüdür: kimse
+		// eksik olduğunu fark etmez.
+		//
+		// Bilerek atlamak için ALLOW_SKIP_INTEGRATION=1 gerekir; o zaman da
+		// atlama AÇIKÇA yazılır.
+		if os.Getenv("ALLOW_SKIP_INTEGRATION") == "1" {
+			fmt.Println("⚠️  DATABASE_URL tanımsız — entegrasyon testleri ATLANDI (ALLOW_SKIP_INTEGRATION=1)")
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "DATABASE_URL tanımsız — entegrasyon testleri çalıştırılamıyor.")
+		fmt.Fprintln(os.Stderr, "  Çözüm: `set -a; source .env; set +a`  veya  `make check`")
+		fmt.Fprintln(os.Stderr, "  Bilerek atlamak için: ALLOW_SKIP_INTEGRATION=1")
+		os.Exit(1)
 	}
 	p, err := postgres.NewPool(context.Background(), url)
 	if err != nil {
@@ -56,27 +72,45 @@ func (s *stubCaptcha) Verify(_ context.Context, token, _ string) error {
 }
 func (s *stubCaptcha) Calls() int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls }
 
-type stubSessions struct{ mu sync.Mutex; m map[string]port.Session }
+type stubSessions struct {
+	mu sync.Mutex
+	m  map[string]port.Session
+}
 
 func newStubSessions() *stubSessions { return &stubSessions{m: map[string]port.Session{}} }
 func (s *stubSessions) Create(_ context.Context, sess port.Session) error {
-	s.mu.Lock(); defer s.mu.Unlock(); s.m[sess.ID] = sess; return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[sess.ID] = sess
+	return nil
 }
 func (s *stubSessions) Get(_ context.Context, id string) (port.Session, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
-	if v, ok := s.m[id]; ok { return v, nil }
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.m[id]; ok {
+		return v, nil
+	}
 	return port.Session{}, apperr.ErrUnauthenticated
 }
 func (s *stubSessions) Touch(context.Context, string, time.Duration) error { return nil }
 func (s *stubSessions) Revoke(_ context.Context, id string) error {
-	s.mu.Lock(); defer s.mu.Unlock(); delete(s.m, id); return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, id)
+	return nil
 }
 func (s *stubSessions) RevokeAllForUser(context.Context, int64) error { return nil }
 
-type stubMailer struct{ mu sync.Mutex; sent []port.Mail }
+type stubMailer struct {
+	mu   sync.Mutex
+	sent []port.Mail
+}
 
 func (m *stubMailer) Send(_ context.Context, mail port.Mail) error {
-	m.mu.Lock(); defer m.mu.Unlock(); m.sent = append(m.sent, mail); return nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sent = append(m.sent, mail)
+	return nil
 }
 
 type noLimiter struct{}
@@ -89,12 +123,12 @@ func (noLimiter) Reset(context.Context, string) error { return nil }
 func newService(t *testing.T, cap port.Captcha) *authsvc.Service {
 	t.Helper()
 	return authsvc.New(authsvc.Deps{
-		TxRunner: postgres.NewTxRunner(pool),
-		Sessions: newStubSessions(),
-		Mailer:   &stubMailer{},
-		Captcha:  cap,
-		Limiter:  noLimiter{},
-		Clock:    port.RealClock{},
+		TxRunner:   postgres.NewTxRunner(pool),
+		Sessions:   newStubSessions(),
+		Mailer:     &stubMailer{},
+		Captcha:    cap,
+		Limiter:    noLimiter{},
+		Clock:      port.RealClock{},
 		SessionTTL: time.Hour,
 		BaseURL:    "http://test.local",
 	})

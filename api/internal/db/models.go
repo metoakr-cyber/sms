@@ -395,6 +395,14 @@ type Country struct {
 	UpdatedAt    time.Time
 }
 
+type CountryReference struct {
+	NameKey   string
+	Iso2      string
+	NameEn    string
+	NameTr    string
+	PhoneCode string
+}
+
 type FxRate struct {
 	ID        int64
 	Base      CurrencyCode
