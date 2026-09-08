@@ -16,6 +16,15 @@ include .env
 export
 endif
 
+# TESTLER AYRI VERİTABANI KULLANIR.
+#
+# Aynı veritabanını paylaşmak, `make check` koştuğunuzda geliştirme
+# hesabınızın, sağlayıcı kaydınızın ve tüm katalogunuzun silinmesi demekti
+# (entegrasyon testleri `DELETE FROM providers` yapıyor). Bu tek bir oturumda
+# beş kez yaşandı; her seferinde katalog yeniden senkronlandı.
+TEST_DATABASE_URL ?= $(subst /smsplatform?,/smsplatform_test?,$(DATABASE_URL))
+export TEST_DATABASE_URL
+
 ## help: bu listeyi göster
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | awk -F': ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -38,6 +47,13 @@ down:
 ## reset: altyapıyı sıfırla (VERİ SİLİNİR)
 reset:
 	$(COMPOSE) down -v && $(COMPOSE) up -d
+
+## db-test: testler için AYRI veritabanı kur (yoksa oluşturur, migration'ları uygular)
+db-test:
+	@docker exec smsplatform-dev-postgres-1 psql -U smsplatform -d postgres -tAc \
+	  "SELECT 1 FROM pg_database WHERE datname='smsplatform_test'" | grep -q 1 \
+	  || docker exec smsplatform-dev-postgres-1 createdb -U smsplatform smsplatform_test
+	@cd $(API) && goose -dir migrations postgres "$(TEST_DATABASE_URL)" up
 
 ## migrate-up: migration'ları uygula
 migrate-up:
@@ -102,4 +118,4 @@ commit:
 check:
 	./scripts/check.sh
 
-.PHONY: responsive commit help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover test-integration smoke lint check
+.PHONY: db-test responsive commit help tools up down reset migrate-up migrate-down migrate-new gen gen-check dev worker test test-cover test-integration smoke lint check

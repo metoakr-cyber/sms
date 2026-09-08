@@ -9,6 +9,40 @@ cd "$(dirname "$0")/.."
 [ -f .env ] && { set -a; source .env; set +a; }
 export PATH="$PATH:$(go env GOPATH)/bin"
 
+# TESTLER GELİŞTİRME VERİTABANINA DOKUNMAZ.
+#
+# Entegrasyon testleri `DELETE FROM providers`, `DELETE FROM users` gibi
+# yıkıcı ifadeler içerir — doğru olan da budur, testin kendi ön koşulunu
+# kurması gerekir. Ama aynı veritabanını geliştirme ortamıyla paylaşırsak
+# her `make check` sizin hesabınızı, sağlayıcı kaydınızı ve katalogunuzu
+# siler. Bu tek bir oturumda beş kez yaşandı.
+# sed KULLANILIYOR, bash desen değiştirme DEĞİL.
+#
+# ${VAR/desen/yeni} içinde `?` bir JOKER karakterdir ve URL'yi bozar:
+# "postgres://…/smsplatform?sslmode=disable" → "smsplatform_test" bir HOSTNAME
+# olarak yorumlandı. Sabit dize değişimi için sed daha az sürprizli.
+if [ -z "${TEST_DATABASE_URL:-}" ]; then
+  TEST_DATABASE_URL=$(printf '%s' "$DATABASE_URL" \
+    | sed -e 's|/smsplatform?|/smsplatform_test?|' -e 's|/smsplatform$|/smsplatform_test|')
+fi
+if [ "$TEST_DATABASE_URL" = "$DATABASE_URL" ]; then
+  echo "✗ TEST_DATABASE_URL, DATABASE_URL ile AYNI — testler geliştirme verinizi siler."
+  echo "  DATABASE_URL'in veritabanı adı 'smsplatform' olmalı ya da TEST_DATABASE_URL'i elle verin."
+  exit 1
+fi
+
+# Test veritabanı yoksa kur; migration'ları güncelle.
+if ! docker exec smsplatform-dev-postgres-1 psql -U smsplatform -d postgres -tAc \
+     "SELECT 1 FROM pg_database WHERE datname='smsplatform_test'" 2>/dev/null | grep -q 1; then
+  echo "  test veritabanı oluşturuluyor…"
+  docker exec smsplatform-dev-postgres-1 createdb -U smsplatform smsplatform_test
+fi
+(cd api && goose -dir migrations postgres "$TEST_DATABASE_URL" up >/dev/null) || {
+  echo "✗ test veritabanı migration'ları uygulanamadı"; exit 1; }
+
+# Bundan sonraki HER ADIM test veritabanını görür.
+export DATABASE_URL="$TEST_DATABASE_URL"
+
 # Her adımın TAM çıktısı diske yazılır.
 #
 # Önceden yalnız süzülmüş 12 satır ekrana basılıyordu ve gerisi atılıyordu.

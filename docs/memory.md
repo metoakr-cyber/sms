@@ -457,12 +457,29 @@ Aynı turda üç ayrı "testler geçiyor ama uygulama açılmıyor" durumu çık
 Çözümler sırasıyla: her yolu ayrı yükle, portu önceden kontrol edip açık söyle,
 üretim derlemesini ayrı dizine yap (`NEXT_DIST_DIR`).
 
-### 3.14 Geliştirme veritabanı testlerle paylaşılıyor
+### 3.14 Geliştirme veritabanı testlerle paylaşılıyordu — ÇÖZÜLDÜ
 
-`check.sh` koşunca geliştirme hesabınız silinir: entegrasyon testleri ve duman
-testi aynı veritabanını kullanır. Bugün buna katlanıldı (yeniden kayıt olmak
-30 saniye), ama üretim öncesi testler AYRI bir veritabanına alınmalı. Aksi hâlde
-"bir şeyi denerken kontrolleri koştum, verim gitti" düzenli bir sürtünme olur.
+`make check` koşulduğunda geliştirme hesabı, sağlayıcı kaydı ve tüm katalog
+siliniyordu: entegrasyon testleri `DELETE FROM providers` / `DELETE FROM users`
+yapar — ki doğrusu budur, test kendi ön koşulunu kurmalıdır. Sorun testlerde
+değil, **aynı veritabanını paylaşmalarındaydı.** Tek bir oturumda beş kez
+yaşandı; her seferinde 20 saniyelik katalog senkronu tekrarlandı.
+
+Çözüm: testler `smsplatform_test` veritabanını kullanır. `check.sh` yoksa
+oluşturur, migration'ları uygular ve `DATABASE_URL`i dışa aktarır.
+
+Bunu yaparken **iki tuzak** çıktı:
+
+1. `${DATABASE_URL/\/smsplatform?/...}` — bash desen değiştirmede `?` bir
+   JOKER karakterdir. URL bozuldu ve `smsplatform_test` bir HOSTNAME olarak
+   yorumlandı. Sabit dize değişimi için `sed` kullanılıyor.
+2. `smoke-auth.sh` başında `set -a && source .env` vardı ve çağıranın verdiği
+   `DATABASE_URL`i **eziyordu**. Duman testi bu yüzden hâlâ geliştirme
+   kullanıcılarını siliyordu. Artık mevcut ortam kazanır, `.env` yalnız
+   boşlukları doldurur — Go tarafındaki `config.LoadDotEnv` ile aynı öncelik.
+   **İki yerde iki farklı öncelik olamaz.**
+
+Kanıt: `check.sh` öncesi ve sonrası kullanıcı/sağlayıcı/teklif sayıları aynı.
 
 ## 4. Sağlayıcı API notları
 

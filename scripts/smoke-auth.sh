@@ -6,7 +6,22 @@
 # ortam kapılarından gelir — onlar başarısızlıkta doğrudan exit 1 der.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+# MEVCUT ORTAM KAZANIR — .env yalnız BOŞLUKLARI doldurur.
+#
+# `set -a && source .env` çağıran tarafından verilen değişkenleri EZİYORDU.
+# check.sh testleri ayrı bir veritabanına yönlendirmek için DATABASE_URL'i
+# dışa aktarıyor; bu satır onu geliştirme veritabanına geri çeviriyor ve duman
+# testi geliştirme kullanıcılarını siliyordu.
+#
+# Aynı kural Go tarafında da geçerli (config.LoadDotEnv / godotenv): dosya
+# ortamı ezmez. İki yerde iki farklı öncelik olamaz.
+_pre_db="${DATABASE_URL:-}"
+_pre_redis="${REDIS_URL:-}"
 set -a && source .env && set +a
+[ -n "$_pre_db" ] && DATABASE_URL="$_pre_db"
+[ -n "$_pre_redis" ] && REDIS_URL="$_pre_redis"
+export DATABASE_URL REDIS_URL
 
 PORT="${HTTP_ADDR#:}"
 API="http://localhost:$PORT/api/v1"
