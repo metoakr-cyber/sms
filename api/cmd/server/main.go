@@ -111,8 +111,10 @@ func run() error {
 	registry := provider.NewRegistry()
 	registry.Register(fake.New(port.RealClock{}))
 	registry.Register(herosms.New())
-	// HeroSMS adaptörü hazır olduğunda buraya eklenecek.
 
+	// FX_PROVIDER yapılandırması BUGÜN OKUNMUYOR: tek kaynak TCMB.
+	// İkinci bir kaynak eklendiğinde seçim buraya gelir; o zamana kadar
+	// yapılandırmanın seçim sunduğunu ima etmemek için sabit bırakıldı.
 	var fxProvider port.FXProvider = fx.NewTCMB()
 	fxService := pricingsvc.NewFXService(txRunner, fxProvider, port.RealClock{}, cfg.FXMaxAge)
 

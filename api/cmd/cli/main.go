@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/fx"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/fake"
@@ -24,6 +25,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	"github.com/ikmetrik/sms-platform/api/internal/service/catalog"
+	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	"github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 )
 
@@ -55,7 +57,8 @@ func main() {
 		fail(err)
 	}
 
-	app := &appCtx{ctx: ctx, cfg: cfg, q: db.New(pool), tx: postgres.NewTxRunner(pool), box: box}
+	app := &appCtx{ctx: ctx, cfg: cfg, q: db.New(pool), tx: postgres.NewTxRunner(pool),
+		box: box, fx: fx.NewTCMB()}
 
 	switch cmd {
 	case "provider:add":
@@ -64,6 +67,8 @@ func main() {
 		err = app.providerList()
 	case "catalog:sync":
 		err = app.catalogSync(args)
+	case "fx:sync":
+		err = app.fxSync()
 	case "catalog:icon":
 		err = app.catalogIcon(args)
 	case "admin:grant":
@@ -89,6 +94,7 @@ type appCtx struct {
 	q   *db.Queries
 	tx  *postgres.TxRunner
 	box *crypto.SecretBox
+	fx  port.FXProvider
 }
 
 // providerAdd yeni bir sağlayıcı kaydeder.
@@ -242,6 +248,27 @@ func (a *appCtx) adminGrant(args []string) error {
 	return nil
 }
 
+// fxSync döviz kurunu sağlayıcıdan çeker ve kaydeder.
+//
+// NEDEN CLI'DA VAR: kuru periyodik tazeleyen işçi henüz yazılmadı (M5).
+// test: quote_integration_test.go#TestKK302_StaleFXStopsSelling
+// O zamana kadar kur bayatladığında hizmet DURUR — bu doğru davranıştır
+// (KK-302: bayat kurla satış yapılmaz) ama elle tazeleyecek bir yol olmadan
+// geliştirme ortamı birkaç saatte kullanılamaz hâle geliyordu.
+func (a *appCtx) fxSync() error {
+	svc := pricingsvc.NewFXService(a.tx, a.fx, port.RealClock{}, a.cfg.FXMaxAge)
+	if err := svc.Refresh(a.ctx); err != nil {
+		return err
+	}
+	q, err := svc.Current(a.ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✓ kur güncellendi: 1 USD = %s TRY  (kaynak: %s, %s)\n",
+		q.Rate.String(), q.Source, q.FetchedAt.Format("2006-01-02 15:04:05 MST"))
+	return nil
+}
+
 // catalogIcon bir servisin logosunu ayarlar.
 //
 // Logo dosyası web/public/servis-logolari/ altında durur; burada yalnız ona
@@ -295,6 +322,7 @@ Komutlar:
                      satırından değil: argümanlar kabuk geçmişine ve ps çıktısına düşer.
   provider:list      Etkin sağlayıcıları listele
   catalog:sync       Katalog senkronu   --provider [--offers-only]
+  fx:sync            Döviz kurunu tazele (işçi yazılana kadar elle)
   catalog:icon       Servis logosu ayarla  --service --url
   admin:grant        Rol ata            --email --role
   wallet:reconcile   Defter mutabakatı

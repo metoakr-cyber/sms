@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -135,7 +136,7 @@ func (s *QuoteService) Create(ctx context.Context, req QuoteRequest) (Quote, err
 	rule, err := selectRule(rules)
 	if err != nil {
 		// test: quote_integration_test.go#TestNoFXRateStopsSelling
-	// Kural yoksa satış YAPILMAZ. Sessizce maliyetine satmak,
+		// Kural yoksa satış YAPILMAZ. Sessizce maliyetine satmak,
 		// eski prototipin hatasıydı.
 		slog.Error("FİYAT KURALI YOK — satış yapılamıyor",
 			"service", svc.Code, "country", ctry.Iso2,
@@ -216,6 +217,7 @@ func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64) (offe
 	}
 
 	results := make([]offer, len(rows))
+	var zeroStock atomic.Int32 // stoksuzluktan elenen sağlayıcı sayısı
 	g, gctx := errgroup.WithContext(ctx)
 
 	for i, r := range rows {
@@ -267,7 +269,13 @@ func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64) (offe
 				return nil
 			}
 			// Stok = GERÇEK stok. Sıfırsa bu sağlayıcı aday değildir.
+			//
+			// Elenme SEBEBİ kaydedilir: "stok yok" ile "sağlayıcıya
+			// ulaşılamadı" kullanıcı için AYRI şeylerdir. Ayırmazsak stoksuz
+			// bir ülkede kullanıcıya "birazdan tekrar deneyin" deriz — oysa
+			// beklemek hiçbir şeyi değiştirmez, başka ülke seçmesi gerekir.
 			if live.Stock <= 0 {
+				zeroStock.Add(1)
 				return nil
 			}
 
@@ -297,6 +305,11 @@ func (s *QuoteService) cheapestOffer(ctx context.Context, productID int64) (offe
 		}
 	}
 	if len(valid) == 0 {
+		// HEPSİ stoksuzluktan elendiyse bu bir arıza değil, stok yokluğudur.
+		// Kullanıcıya doğru olanı söyleriz: beklemek değil, başka ülke seçmek.
+		if int(zeroStock.Load()) == len(rows) {
+			return offer{}, apperr.ErrOutOfStock
+		}
 		return offer{}, apperr.ErrNoProviderAvailable
 	}
 
