@@ -1,0 +1,25 @@
+# ortam
+.env
+.env.local
+*.local
+
+# derleme çıktıları
+/api/bin/
+/api/tmp/
+*.test
+*.out
+
+# node / next
+node_modules/
+/web/.next/
+/web/out/
+/web/.turbo/
+
+# araçlar
+.DS_Store
+.idea/
+.vscode/
+coverage.*
+
+# yerel veri
+/deploy/data/
