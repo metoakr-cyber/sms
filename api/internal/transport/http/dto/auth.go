@@ -215,3 +215,36 @@ func (r *AdjustBalanceRequest) Validate() []FieldError {
 	}
 	return errs
 }
+
+// ─────────────────────────── Katalog ───────────────────────────
+
+type ServiceResponse struct {
+	Code    string `json:"code"`
+	Name    string `json:"name"`
+	IconURL string `json:"iconUrl,omitempty"`
+}
+
+type CountryResponse struct {
+	ISO2      string `json:"iso2"`
+	Name      string `json:"name"`
+	PhoneCode string `json:"phoneCode"`
+}
+
+// CatalogItemResponse bir servis×ülke kombinasyonunun listeleme görünümü.
+//
+// FİYAT BURADA YOKTUR. Kullanıcıya gösterilecek fiyat, teklif (quote) uç
+// noktasından alınır ve o teklif bir SÖZLEŞMEDİR. Listede "yaklaşık fiyat"
+// göstermek, satın alma anında farklı tutar çıkması demektir.
+type CatalogItemResponse struct {
+	ServiceCode string `json:"serviceCode"`
+	ServiceName string `json:"serviceName"`
+	IconURL     string `json:"iconUrl,omitempty"`
+	CountryISO2 string `json:"countryIso2"`
+	CountryName string `json:"countryName"`
+	PhoneCode   string `json:"phoneCode"`
+	InStock     bool   `json:"inStock"`
+}
+
+type CatalogResponse struct {
+	Items []CatalogItemResponse `json:"items"`
+}

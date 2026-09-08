@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type CurrencyCode string
@@ -101,6 +102,91 @@ func (ns NullLedgerType) Value() (driver.Value, error) {
 	return string(ns.LedgerType), nil
 }
 
+type ProductKind string
+
+const (
+	ProductKindSMSACTIVATION ProductKind = "SMS_ACTIVATION"
+	ProductKindSMSRENTAL     ProductKind = "SMS_RENTAL"
+)
+
+func (e *ProductKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ProductKind(s)
+	case string:
+		*e = ProductKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ProductKind: %T", src)
+	}
+	return nil
+}
+
+type NullProductKind struct {
+	ProductKind ProductKind
+	Valid       bool // Valid is true if ProductKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullProductKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.ProductKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ProductKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullProductKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ProductKind), nil
+}
+
+type ProviderProtocol string
+
+const (
+	ProviderProtocolFAKE      ProviderProtocol = "FAKE"
+	ProviderProtocolHEROSMSV1 ProviderProtocol = "HEROSMS_V1"
+	ProviderProtocolFIVESIM   ProviderProtocol = "FIVE_SIM"
+)
+
+func (e *ProviderProtocol) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ProviderProtocol(s)
+	case string:
+		*e = ProviderProtocol(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ProviderProtocol: %T", src)
+	}
+	return nil
+}
+
+type NullProviderProtocol struct {
+	ProviderProtocol ProviderProtocol
+	Valid            bool // Valid is true if ProviderProtocol is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullProviderProtocol) Scan(value interface{}) error {
+	if value == nil {
+		ns.ProviderProtocol, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ProviderProtocol.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullProviderProtocol) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ProviderProtocol), nil
+}
+
 type TokenPurpose string
 
 const (
@@ -186,6 +272,48 @@ func (ns NullUserStatus) Value() (driver.Value, error) {
 	return string(ns.UserStatus), nil
 }
 
+type VerificationType string
+
+const (
+	VerificationTypeSms  VerificationType = "sms"
+	VerificationTypeCall VerificationType = "call"
+)
+
+func (e *VerificationType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = VerificationType(s)
+	case string:
+		*e = VerificationType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for VerificationType: %T", src)
+	}
+	return nil
+}
+
+type NullVerificationType struct {
+	VerificationType VerificationType
+	Valid            bool // Valid is true if VerificationType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullVerificationType) Scan(value interface{}) error {
+	if value == nil {
+		ns.VerificationType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.VerificationType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullVerificationType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.VerificationType), nil
+}
+
 type AuditLog struct {
 	ID          int64
 	ActorUserID *int64
@@ -208,6 +336,18 @@ type AuthToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type Country struct {
+	ID           int64
+	Iso2         string
+	Name         string
+	NameTr       string
+	PhoneCode    string
+	IsVisible    bool
+	SupportsRent bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type LedgerEntry struct {
@@ -233,10 +373,65 @@ type LedgerReconciliation struct {
 	Drift         int32
 }
 
+type Operator struct {
+	ID        int64
+	CountryID int64
+	Code      string
+	Name      string
+}
+
 type Permission struct {
 	ID          int64
 	Code        string
 	Description string
+}
+
+type Product struct {
+	ID               int64
+	Kind             ProductKind
+	ServiceID        *int64
+	CountryID        *int64
+	OperatorID       *int64
+	VerificationType VerificationType
+	DurationMinutes  *int32
+	DimensionAID     *int64
+	Attributes       []byte
+	IsActive         bool
+	CreatedAt        time.Time
+}
+
+type Provider struct {
+	ID                  int64
+	Name                string
+	Protocol            ProviderProtocol
+	BaseUrl             string
+	ApiKeyEnc           []byte
+	IsActive            bool
+	Priority            int32
+	CostMultiplier      pgtype.Numeric
+	AccountBalanceMicro int64
+	AccountSyncedAt     *time.Time
+	Capabilities        []byte
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+type ProviderDimensionMap struct {
+	ProviderID int64
+	Dimension  string
+	LocalID    int64
+	RemoteCode string
+	SyncedAt   time.Time
+}
+
+type ProviderOffer struct {
+	ProviderID   int64
+	ProductID    int64
+	CostMicro    int64
+	CostCurrency CurrencyCode
+	Stock        int32
+	IsAvailable  bool
+	SyncedAt     time.Time
 }
 
 type Role struct {
@@ -250,6 +445,18 @@ type Role struct {
 type RolePermission struct {
 	RoleID       int64
 	PermissionID int64
+}
+
+type Service struct {
+	ID        int64
+	Code      string
+	Name      string
+	NameTr    string
+	IconUrl   string
+	IsVisible bool
+	SortOrder int32
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type Session struct {

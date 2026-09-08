@@ -64,6 +64,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 
 	authH := handler.NewAuth(d.AuthSvc, d.Queries, responder, d.Config.SessionTTL, secureCookie)
 	walletH := handler.NewWallet(d.WalletSvc, d.Queries, responder)
+	catalogH := handler.NewCatalog(d.Queries, responder)
 
 	requireAuth := middleware.RequireAuth(middleware.AuthDeps{
 		Sessions: d.Sessions, Queries: d.Queries,
@@ -87,6 +88,16 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		a.POST("/login", authH.Login)
 		a.POST("/password/forgot", authH.ForgotPassword)
 		a.POST("/password/reset", authH.ResetPassword)
+	}
+
+	// ─── Katalog: oturumsuz okunabilir ───
+	// Servis ve ülke listesi genel bilgidir ve SEO açısından da oturumsuz
+	// erişilebilir olmalıdır (docs/frontend-contract.md §10).
+	cat := rg.Group("/catalog")
+	{
+		cat.GET("/services", catalogH.Services)
+		cat.GET("/countries", catalogH.Countries)
+		cat.GET("/availability", catalogH.Availability)
 	}
 
 	// ─── Oturum gerektiren ───

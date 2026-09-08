@@ -78,7 +78,10 @@ Geliştirme aşamasında — `docs/roadmap.md`'ye bakın.
 - [x] **M2** Ledger: değişmez defter · `FOR UPDATE` kilidi · idempotency · mutabakat ·
       hareket dökümü · admin düzeltme.
       **KK-200…KK-203 gerçek PostgreSQL'e karşı ispatlandı** (`make test-integration`)
-- [ ] M3 Sağlayıcı · M4 Fiyat · M5 Sipariş+SSE · M6 Panel
+- [x] **M3 (sahte sağlayıcı ile)** Genişletilebilir katalog · `ProviderPort` ·
+      `FakeProvider` + 13 maddelik sözleşme testi · AES-GCM anahtar şifreleme ·
+      katalog senkronu · yönetim CLI'ı. **HeroSMS adaptörü sağlayıcı bakiyesi bekliyor**
+- [ ] M4 Fiyat · M5 Sipariş+SSE · M6 Panel
 
 **Uçtan uca 26/26 duman testi geçiyor** (`make smoke`)
 
@@ -88,6 +91,17 @@ Geliştirme aşamasında — `docs/roadmap.md`'ye bakın.
 make up && make smoke              # uçtan uca: kimlik + cüzdan (26 senaryo)
 make test-integration              # eşzamanlılık: KK-200..KK-203
 ```
+
+### Sağlayıcı kurulumu
+
+```bash
+go run ./cmd/cli provider:add --name=fake --protocol=FAKE
+go run ./cmd/cli catalog:sync --provider=fake
+go run ./cmd/cli provider:list
+```
+Gerçek sağlayıcı için API anahtarı **ortam değişkeninden** okunur:
+`--env-key=HEROSMS_API_KEY` — komut satırından değil, çünkü argümanlar kabuk
+geçmişine ve `ps` çıktısına düşer.
 
 ### Yerel portlar
 

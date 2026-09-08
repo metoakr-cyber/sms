@@ -15,8 +15,10 @@ type Querier interface {
 	// Tek kullanımlıktır: UPDATE ... RETURNING ile atomik olarak tüketilir.
 	// Ayrı SELECT + UPDATE yapılsaydı iki eşzamanlı istek aynı token'ı kullanabilirdi.
 	ConsumeAuthToken(ctx context.Context, arg ConsumeAuthTokenParams) (AuthToken, error)
+	CountDimensionMaps(ctx context.Context, arg CountDimensionMapsParams) (int64, error)
 	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
+	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteExpiredAuthTokens(ctx context.Context) (int64, error)
@@ -31,7 +33,13 @@ type Querier interface {
 	// (docs/memory.md §3.6 — eski prototipin hatası).
 	// İdempotency: bu anahtarla daha önce işlem yapıldıysa sonucu döner.
 	FindLedgerEntryByKey(ctx context.Context, idempotencyKey string) (LedgerEntry, error)
+	GetCountryByISO(ctx context.Context, iso2 string) (Country, error)
+	GetProductForActivation(ctx context.Context, arg GetProductForActivationParams) (Product, error)
+	GetProvider(ctx context.Context, id int64) (Provider, error)
+	GetProviderByName(ctx context.Context, name string) (Provider, error)
+	GetRemoteCode(ctx context.Context, arg GetRemoteCodeParams) (string, error)
 	GetRoleByName(ctx context.Context, name string) (Role, error)
+	GetServiceByCode(ctx context.Context, code string) (Service, error)
 	GetSession(ctx context.Context, id string) (Session, error)
 	GetUserBalance(ctx context.Context, id int64) (int64, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
@@ -43,32 +51,60 @@ type Querier interface {
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) (LedgerEntry, error)
 	InvalidateUserTokens(ctx context.Context, arg InvalidateUserTokensParams) error
+	// ─────────────────────── Sağlayıcı ───────────────────────
+	ListActiveProviders(ctx context.Context) ([]Provider, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	// Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
+	ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error)
+	ListDimensionMaps(ctx context.Context, arg ListDimensionMapsParams) ([]ProviderDimensionMap, error)
 	// Kullanıcının hareket dökümü. SAHİPLİK sorgunun parçasıdır: user_id ayrı bir
 	// if kontrolü değil, WHERE koşuludur (docs/design.md §10).
 	ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error)
+	// Bir ürün için sağlayıcı teklifleri; en ucuz önce.
+	ListOffersForProduct(ctx context.Context, productID int64) ([]ListOffersForProductRow, error)
 	// Mutabakat: defter toplamı ile önbelleklenmiş bakiyenin uyuşmadığı kullanıcılar.
 	// Boş dönmesi beklenir; dönmezse ALARM üretilir (docs/trd.md FR-205).
 	ListReconciliationDrift(ctx context.Context, limit int32) ([]ListReconciliationDriftRow, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	ListVisibleCountries(ctx context.Context) ([]Country, error)
+	ListVisibleServices(ctx context.Context) ([]Service, error)
 	// Kullanıcı satırını KİLİTLER. Bu satır olmadan çift harcama mümkündür:
 	// iki eşzamanlı istek aynı bakiyeyi okuyup ikisi de yeterli sanabilir.
 	// Kilit, transaction bitene kadar tutulur.
 	LockUserForUpdate(ctx context.Context, id int64) (LockUserForUpdateRow, error)
 	MarkEmailVerified(ctx context.Context, id int64) error
+	// Senkron turunda görülmeyen teklifler "yok" sayılır. Aksi halde sağlayıcının
+	// listeden çıkardığı bir kombinasyon sonsuza kadar stokta görünürdü.
+	MarkStaleOffersUnavailable(ctx context.Context, arg MarkStaleOffersUnavailableParams) (int64, error)
 	ReplaceUserRoles(ctx context.Context, arg ReplaceUserRolesParams) error
 	RevokeAllUserSessions(ctx context.Context, userID int64) error
 	RevokeRole(ctx context.Context, arg RevokeRoleParams) error
 	RevokeSession(ctx context.Context, id string) error
+	SetProviderActive(ctx context.Context, arg SetProviderActiveParams) error
 	SetUserBalance(ctx context.Context, arg SetUserBalanceParams) error
 	SetUserStatus(ctx context.Context, arg SetUserStatusParams) error
 	// Kâr raporu ve muhasebe özeti girdisi.
 	SumLedgerByType(ctx context.Context, arg SumLedgerByTypeParams) ([]SumLedgerByTypeRow, error)
 	TouchSession(ctx context.Context, id string) error
 	UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) error
+	UpdateProviderBalance(ctx context.Context, arg UpdateProviderBalanceParams) error
+	UpsertCountry(ctx context.Context, arg UpsertCountryParams) (Country, error)
+	// ─────────────────────── Boyut eşleştirme ───────────────────────
+	UpsertDimensionMap(ctx context.Context, arg UpsertDimensionMapParams) error
+	// ─────────────────────── Fiyat/stok önbelleği ───────────────────────
+	// synced_at UYGULAMADAN gelir, now() DEĞİL.
+	//
+	// Bayat teklif tespiti bu alanı bir eşikle karşılaştırır; yazım veritabanı
+	// saatini, karşılaştırma uygulama saatini kullanırsa aradaki kayma tüm
+	// teklifleri sessizce "yok" işaretler. İki taraf AYNI saat kaynağını kullanmalı.
+	UpsertOffer(ctx context.Context, arg UpsertOfferParams) error
 	UpsertPermission(ctx context.Context, arg UpsertPermissionParams) (Permission, error)
+	// ─────────────────────── Ürün ───────────────────────
+	UpsertProduct(ctx context.Context, arg UpsertProductParams) (Product, error)
 	UpsertRole(ctx context.Context, arg UpsertRoleParams) (Role, error)
+	// ─────────────────────── Boyutlar ───────────────────────
+	UpsertService(ctx context.Context, arg UpsertServiceParams) (Service, error)
 	UsernameExists(ctx context.Context, username string) (bool, error)
 }
 
