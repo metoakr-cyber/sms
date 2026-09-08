@@ -1,20 +1,27 @@
 package handler
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	apperr "github.com/ikmetrik/sms-platform/api/internal/domain/errors"
+	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/dto"
+	"github.com/ikmetrik/sms-platform/api/internal/transport/http/middleware"
 )
 
 // Catalog katalog uç noktalarını yönetir.
 type Catalog struct {
 	queries *db.Queries
+	quotes  *pricingsvc.QuoteService
 	r       Responder
 }
 
-func NewCatalog(q *db.Queries, r Responder) *Catalog { return &Catalog{queries: q, r: r} }
+func NewCatalog(q *db.Queries, quotes *pricingsvc.QuoteService, r Responder) *Catalog {
+	return &Catalog{queries: q, quotes: quotes, r: r}
+}
 
 // Services GET /catalog/services
 func (h *Catalog) Services(c *gin.Context) {
@@ -88,4 +95,40 @@ func displayName(tr, fallback string) string {
 		return tr
 	}
 	return fallback
+}
+
+// Quote GET /catalog/quote?serviceCode=&countryIso=
+//
+// Oturum GEREKTİRİR: teklif kullanıcıya bağlıdır ve yalnız onun tarafından
+// tüketilebilir.
+func (h *Catalog) Quote(c *gin.Context) {
+	userID, ok := middleware.UserIDFrom(c)
+	if !ok {
+		h.r.Fail(c, apperr.ErrUnauthenticated)
+		return
+	}
+	serviceCode := c.Query("serviceCode")
+	countryISO := c.Query("countryIso")
+	if serviceCode == "" || countryISO == "" {
+		h.r.FailField(c, []dto.FieldError{
+			{Field: "serviceCode", Message: "Servis ve ülke seçilmelidir."},
+		})
+		return
+	}
+
+	q, err := h.quotes.Create(c.Request.Context(), pricingsvc.QuoteRequest{
+		UserID: userID, ServiceCode: serviceCode, CountryISO: countryISO,
+	})
+	if err != nil {
+		h.r.Fail(c, err)
+		return
+	}
+
+	h.r.OK(c, dto.QuoteResponse{
+		QuoteID:   q.QuoteID.String(),
+		Price:     moneyDTO(q.SellPrice),
+		Stock:     q.Stock,
+		ExpiresAt: q.ExpiresAt.Format(time.RFC3339),
+		ExpiresIn: int(time.Until(q.ExpiresAt).Seconds()),
+	})
 }

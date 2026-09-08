@@ -248,3 +248,16 @@ type CatalogItemResponse struct {
 type CatalogResponse struct {
 	Items []CatalogItemResponse `json:"items"`
 }
+
+// QuoteResponse fiyat teklifi.
+//
+// providerId ve maliyet BULUNMAZ — bilinçli. Satın alma yalnız quoteId ile
+// yapılır; istemci hangi sağlayıcıdan hangi fiyata alacağını belirleyemez
+// (docs/trd.md KK-305).
+type QuoteResponse struct {
+	QuoteID   string `json:"quoteId"`
+	Price     Money  `json:"price"`
+	Stock     int    `json:"stock"`
+	ExpiresAt string `json:"expiresAt"`
+	ExpiresIn int    `json:"expiresIn"` // saniye
+}

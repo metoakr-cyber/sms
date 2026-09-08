@@ -15,6 +15,7 @@ import (
 	"github.com/ikmetrik/sms-platform/api/internal/db"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/middleware"
@@ -30,6 +31,7 @@ type Deps struct {
 	Limiter  port.RateLimiter
 	AuthSvc   *authsvc.Service
 	WalletSvc *walletsvc.Service
+	QuoteSvc  *pricingsvc.QuoteService
 }
 
 // NewRouter uygulamanın HTTP yönlendiricisini kurar.
@@ -64,7 +66,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 
 	authH := handler.NewAuth(d.AuthSvc, d.Queries, responder, d.Config.SessionTTL, secureCookie)
 	walletH := handler.NewWallet(d.WalletSvc, d.Queries, responder)
-	catalogH := handler.NewCatalog(d.Queries, responder)
+	catalogH := handler.NewCatalog(d.Queries, d.QuoteSvc, responder)
 
 	requireAuth := middleware.RequireAuth(middleware.AuthDeps{
 		Sessions: d.Sessions, Queries: d.Queries,
@@ -111,6 +113,14 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		// Cüzdan — sahiplik sorgunun parçasıdır, ayrı bir izin gerekmez.
 		auth.GET("/wallet/balance", walletH.Balance)
 		auth.GET("/wallet/entries", walletH.Statement)
+
+		// Teklif oturum gerektirir ve hız limitlidir: her istek sağlayıcılara
+		// canlı sorgu yapar (docs/trd.md NFR-802).
+		auth.GET("/catalog/quote",
+			middleware.RateLimit(d.Limiter, "quote", middleware.RateLimitConfig{
+				Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
+			}, Fail),
+			catalogH.Quote)
 	}
 
 	// ─── Yönetim: izin ZORUNLU ───

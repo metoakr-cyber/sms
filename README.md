@@ -81,7 +81,9 @@ Geliştirme aşamasında — `docs/roadmap.md`'ye bakın.
 - [x] **M3 (sahte sağlayıcı ile)** Genişletilebilir katalog · `ProviderPort` ·
       `FakeProvider` + 13 maddelik sözleşme testi · AES-GCM anahtar şifreleme ·
       katalog senkronu · yönetim CLI'ı. **HeroSMS adaptörü sağlayıcı bakiyesi bekliyor**
-- [ ] M4 Fiyat · M5 Sipariş+SSE · M6 Panel
+- [x] **M4** Fiyatlandırma: kur (TCMB) · kapsam öncelikli marj kuralları ·
+      tek kullanımlık fiyat teklifi. **KK-302/305/402 ispatlandı**
+- [ ] M5 Sipariş+SSE · M6 Panel
 
 **Uçtan uca 26/26 duman testi geçiyor** (`make smoke`)
 

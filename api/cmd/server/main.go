@@ -12,13 +12,19 @@ import (
 	"time"
 
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/captcha"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/crypto"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/mailer"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/postgres"
 	"github.com/ikmetrik/sms-platform/api/internal/adapter/redis"
 	"github.com/ikmetrik/sms-platform/api/internal/config"
 	"github.com/ikmetrik/sms-platform/api/internal/db"
+	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/fx"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider"
+	"github.com/ikmetrik/sms-platform/api/internal/adapter/provider/fake"
 	authsvc "github.com/ikmetrik/sms-platform/api/internal/service/auth"
+	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	httptransport "github.com/ikmetrik/sms-platform/api/internal/transport/http"
 )
@@ -82,6 +88,28 @@ func run() error {
 
 	walletService := walletsvc.New(txRunner)
 
+	secrets, err := crypto.New(cfg.EncryptionKey)
+	if err != nil {
+		return err
+	}
+
+	// Sağlayıcı adaptörleri protokole göre kaydedilir.
+	registry := provider.NewRegistry()
+	registry.Register(fake.New(port.RealClock{}))
+	// HeroSMS adaptörü hazır olduğunda buraya eklenecek.
+
+	var fxProvider port.FXProvider = fx.NewTCMB()
+	fxService := pricingsvc.NewFXService(txRunner, fxProvider, port.RealClock{}, cfg.FXMaxAge)
+
+	safety, err := money.MarginRate(cfg.FXSafetyMarginPct)
+	if err != nil {
+		return err
+	}
+	quoteService := pricingsvc.NewQuoteService(pricingsvc.QuoteDeps{
+		TxRunner: txRunner, Registry: registry, Secrets: secrets,
+		FX: fxService, Clock: port.RealClock{}, FXSafetyMargin: safety,
+	})
+
 	authService := authsvc.New(authsvc.Deps{
 		TxRunner: txRunner, Sessions: sessions, Mailer: mail,
 		Captcha: cap, Limiter: limiter, Clock: port.RealClock{},
@@ -94,7 +122,7 @@ func run() error {
 		Handler: httptransport.NewRouter(httptransport.Deps{
 			Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
 			Sessions: sessions, Limiter: limiter,
-			AuthSvc: authService, WalletSvc: walletService,
+			AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -15,13 +16,24 @@ type Querier interface {
 	// Tek kullanımlıktır: UPDATE ... RETURNING ile atomik olarak tüketilir.
 	// Ayrı SELECT + UPDATE yapılsaydı iki eşzamanlı istek aynı token'ı kullanabilirdi.
 	ConsumeAuthToken(ctx context.Context, arg ConsumeAuthTokenParams) (AuthToken, error)
+	// Tek kullanımlık işaretleme.
+	// WHERE consumed_at IS NULL sayesinde yarış durumunda ikinci çağrı
+	// SIFIR satır döner — kilitle birlikte çift savunma.
+	ConsumeQuote(ctx context.Context, arg ConsumeQuoteParams) (PriceQuote, error)
 	CountDimensionMaps(ctx context.Context, arg CountDimensionMapsParams) (int64, error)
 	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
+	CreatePricingRule(ctx context.Context, arg CreatePricingRuleParams) (PricingRule, error)
 	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
+	// ─────────────────────── Teklif ───────────────────────
+	CreateQuote(ctx context.Context, arg CreateQuoteParams) (PriceQuote, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeactivatePricingRule(ctx context.Context, id int64) error
 	DeleteExpiredAuthTokens(ctx context.Context) (int64, error)
+	// Tüketilmemiş ve süresi geçmiş teklifler temizlenir.
+	// Tüketilmiş olanlar SAKLANIR: sipariş kaydının fiyat kanıtıdır.
+	DeleteExpiredQuotes(ctx context.Context, expiresAt time.Time) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	EmailExists(ctx context.Context, email string) (bool, error)
 	FindLedgerEntriesByReference(ctx context.Context, arg FindLedgerEntriesByReferenceParams) ([]LedgerEntry, error)
@@ -34,9 +46,11 @@ type Querier interface {
 	// İdempotency: bu anahtarla daha önce işlem yapıldıysa sonucu döner.
 	FindLedgerEntryByKey(ctx context.Context, idempotencyKey string) (LedgerEntry, error)
 	GetCountryByISO(ctx context.Context, iso2 string) (Country, error)
+	GetLatestFXRate(ctx context.Context, arg GetLatestFXRateParams) (FxRate, error)
 	GetProductForActivation(ctx context.Context, arg GetProductForActivationParams) (Product, error)
 	GetProvider(ctx context.Context, id int64) (Provider, error)
 	GetProviderByName(ctx context.Context, name string) (Provider, error)
+	GetQuoteByPublicID(ctx context.Context, publicID uuid.UUID) (PriceQuote, error)
 	GetRemoteCode(ctx context.Context, arg GetRemoteCodeParams) (string, error)
 	GetRoleByName(ctx context.Context, name string) (Role, error)
 	GetServiceByCode(ctx context.Context, code string) (Service, error)
@@ -49,10 +63,17 @@ type Querier interface {
 	GetUserRoles(ctx context.Context, userID int64) ([]Role, error)
 	GrantPermissionToRole(ctx context.Context, arg GrantPermissionToRoleParams) error
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	// ─────────────────────── Kur ───────────────────────
+	InsertFXRate(ctx context.Context, arg InsertFXRateParams) (FxRate, error)
 	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) (LedgerEntry, error)
 	InvalidateUserTokens(ctx context.Context, arg InvalidateUserTokensParams) error
 	// ─────────────────────── Sağlayıcı ───────────────────────
 	ListActiveProviders(ctx context.Context) ([]Provider, error)
+	// ─────────────────────── Fiyat kuralları ───────────────────────
+	// Bir ürün için uygulanabilir TÜM kuralları döner.
+	// En spesifik olanı seçmek domain/pricing.SelectRule'ün işidir; öncelik
+	// mantığı SQL'e dağıtılmaz, tek yerde kalır (docs/trd.md FR-303).
+	ListApplicableRules(ctx context.Context, arg ListApplicableRulesParams) ([]PricingRule, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	// Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
 	ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error)
@@ -62,6 +83,7 @@ type Querier interface {
 	ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error)
 	// Bir ürün için sağlayıcı teklifleri; en ucuz önce.
 	ListOffersForProduct(ctx context.Context, productID int64) ([]ListOffersForProductRow, error)
+	ListPricingRules(ctx context.Context) ([]PricingRule, error)
 	// Mutabakat: defter toplamı ile önbelleklenmiş bakiyenin uyuşmadığı kullanıcılar.
 	// Boş dönmesi beklenir; dönmezse ALARM üretilir (docs/trd.md FR-205).
 	ListReconciliationDrift(ctx context.Context, limit int32) ([]ListReconciliationDriftRow, error)
@@ -69,6 +91,9 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListVisibleCountries(ctx context.Context) ([]Country, error)
 	ListVisibleServices(ctx context.Context) ([]Service, error)
+	// Teklifi KİLİTLER. Aynı teklifle iki eşzamanlı satın alma denemesinde
+	// yalnız biri geçmelidir (docs/trd.md KK-402).
+	LockQuoteForConsumption(ctx context.Context, arg LockQuoteForConsumptionParams) (PriceQuote, error)
 	// Kullanıcı satırını KİLİTLER. Bu satır olmadan çift harcama mümkündür:
 	// iki eşzamanlı istek aynı bakiyeyi okuyup ikisi de yeterli sanabilir.
 	// Kilit, transaction bitene kadar tutulur.

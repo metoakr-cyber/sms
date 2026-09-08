@@ -102,6 +102,51 @@ func (ns NullLedgerType) Value() (driver.Value, error) {
 	return string(ns.LedgerType), nil
 }
 
+type PricingScope string
+
+const (
+	PricingScopeGLOBAL         PricingScope = "GLOBAL"
+	PricingScopeCOUNTRY        PricingScope = "COUNTRY"
+	PricingScopeSERVICE        PricingScope = "SERVICE"
+	PricingScopeSERVICECOUNTRY PricingScope = "SERVICE_COUNTRY"
+	PricingScopePRODUCT        PricingScope = "PRODUCT"
+)
+
+func (e *PricingScope) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = PricingScope(s)
+	case string:
+		*e = PricingScope(s)
+	default:
+		return fmt.Errorf("unsupported scan type for PricingScope: %T", src)
+	}
+	return nil
+}
+
+type NullPricingScope struct {
+	PricingScope PricingScope
+	Valid        bool // Valid is true if PricingScope is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullPricingScope) Scan(value interface{}) error {
+	if value == nil {
+		ns.PricingScope, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.PricingScope.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullPricingScope) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.PricingScope), nil
+}
+
 type ProductKind string
 
 const (
@@ -350,6 +395,15 @@ type Country struct {
 	UpdatedAt    time.Time
 }
 
+type FxRate struct {
+	ID        int64
+	Base      CurrencyCode
+	Quote     CurrencyCode
+	Rate      pgtype.Numeric
+	Source    string
+	FetchedAt time.Time
+}
+
 type LedgerEntry struct {
 	ID                int64
 	UserID            int64
@@ -384,6 +438,42 @@ type Permission struct {
 	ID          int64
 	Code        string
 	Description string
+}
+
+type PriceQuote struct {
+	ID             int64
+	PublicID       uuid.UUID
+	UserID         int64
+	ProductID      int64
+	ProviderID     int64
+	CostMicro      int64
+	CostCurrency   CurrencyCode
+	FxRate         pgtype.Numeric
+	MarginPercent  pgtype.Numeric
+	PricingRuleID  *int64
+	SellPriceMinor int64
+	StockAtQuote   int32
+	ExpiresAt      time.Time
+	ConsumedAt     *time.Time
+	CreatedAt      time.Time
+}
+
+type PricingRule struct {
+	ID              int64
+	Scope           PricingScope
+	ServiceID       *int64
+	CountryID       *int64
+	ProductID       *int64
+	MarginPercent   pgtype.Numeric
+	FixedFeeMinor   int64
+	MinPriceMinor   int64
+	IsActive        bool
+	ValidFrom       *time.Time
+	ValidTo         *time.Time
+	Note            string
+	CreatedByUserID *int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type Product struct {
