@@ -33,6 +33,27 @@ const ADMIN: Item = {
   icon: I('M12 2l8 4v6c0 5-3.4 9.3-8 10-4.6-.7-8-5-8-10V6z'),
 };
 
+/**
+ * Kenar çubuğunun İKİNCİL bloğu — mobil alt çubuğa GİRMEZ.
+ *
+ * Neden ayrı bir dizi: alt çubuk `repeat(items.length, 1fr)` ızgarasıyla çiziliyor
+ * ve yönetici hesabında zaten 7 madde var. 320 px'lik bir telefonda 9 sütun =
+ * sekme başına 35 px; dokunma hedefi için gereken 44 px'in altı. Üstelik 11 px
+ * yazıyla "Kullanım Şartları" o genişliğe sığmaz.
+ *
+ * Bu maddeler mobilde KAYBOLMUYOR: `PanelAltBaglantilar` bileşeni onları içeriğin
+ * sonunda çiziyor (aşağıya bakın). Yani masaüstünde kenar çubuğunda, mobilde
+ * sayfa sonunda — her iki durumda da ulaşılabilir.
+ */
+const IKINCIL: Item[] = [
+  { href: '/panel/yorumlarim', label: 'Yorumlarım',
+    icon: I('M12 3l2.7 5.5 6 .9-4.3 4.2 1 6-5.4-2.8-5.4 2.8 1-6L5.3 9.4l6-.9z') },
+  { href: '/kullanim-sartlari', label: 'Kullanım Şartları',
+    icon: I('M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5') },
+  { href: '/gizlilik', label: 'Gizlilik',
+    icon: I('M5 11h14v10H5zM8 11V7a4 4 0 1 1 8 0v4') },
+];
+
 export function PanelShell({ children }: { children: React.ReactNode }) {
   const { user, isLoading, unauthenticated } = useSession();
   const router = useRouter();
@@ -70,6 +91,13 @@ export function PanelShell({ children }: { children: React.ReactNode }) {
           <ul className="flex flex-col gap-1">
             {items.map((it) => <li key={it.href}><NavLink item={it} pathname={pathname} /></li>)}
           </ul>
+          {/* Ayırıcı: üstteki blok "işini yaptığın yer", alttaki "ara sıra
+              baktığın yer". Aynı listede olsalardı Kullanım Şartları,
+              Numara al ile eşit ağırlıkta görünürdü. */}
+          <hr className="my-3 border-[var(--border)]" />
+          <ul className="flex flex-col gap-1">
+            {IKINCIL.map((it) => <li key={it.href}><NavLink item={it} pathname={pathname} /></li>)}
+          </ul>
         </nav>
         <UserBox />
       </aside>
@@ -100,6 +128,24 @@ export function PanelShell({ children }: { children: React.ReactNode }) {
         {/* pb-24: mobil alt navigasyonun altında içerik kalmasın */}
         <main id="icerik" className="min-w-0 flex-1 px-4 py-5 pb-24 md:px-6 md:py-7 md:pb-7">
           {children}
+
+          {/* İKİNCİL bağlantıların MOBİL karşılığı. Kenar çubuğu `md:` altında
+              gizli, alt çubuğa da sığmıyorlar (yukarıdaki gerekçe) — bu blok
+              olmasaydı telefondaki kullanıcı Kullanım Şartları'na panelden
+              HİÇ ulaşamazdı. Yasal metne ulaşılamaması kabul edilebilir değil. */}
+          <nav className="mt-10 border-t border-[var(--border)] pt-4 md:hidden"
+               aria-label="Yardımcı bağlantılar">
+            <ul className="flex flex-wrap gap-x-5 gap-y-1">
+              {IKINCIL.map((it) => (
+                <li key={it.href}>
+                  <Link href={it.href}
+                        className="inline-flex min-h-11 items-center text-sm text-muted underline-offset-4 hover:underline">
+                    {it.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
         </main>
       </div>
 

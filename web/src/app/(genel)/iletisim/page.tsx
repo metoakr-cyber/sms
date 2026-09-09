@@ -28,7 +28,17 @@ export const metadata: Metadata = {
 type Kanal = { etiket: string; deger: string; tur: 'eposta' | 'telefon' | 'metin'; not?: string };
 
 const KANALLAR: Kanal[] = [
-  { etiket: 'E-posta', deger: '', tur: 'eposta' },
+  // 🔴 Bu adres BOŞ BIRAKILAMAZ. /gizlilik ve /kullanim-sartlari artık
+  // YÜRÜRLÜKTEKİ belgeler ve ikisi de KVKK başvuru kanalı olarak bu adresi
+  // gösteriyor. Kullanıcının bakacağı sayfanın "e-posta yayımlanmadı" demesi,
+  // ilan edilen başvuru hakkını fiilen erişilemez kılardı — hesabına giremeyen
+  // kişi destek talebi de açamaz (destek uçları oturum ister).
+  {
+    etiket: 'E-posta', deger: 'metoakr@gmail.com', tur: 'eposta',
+    not: 'KVKK başvuruları ve hesabına erişemeyenler dâhil, tüm yazılı başvurular',
+  },
+  // Telefon ve adres GERÇEKTEN yok: uydurulamaz. Boş kaldıkları sürece
+  // `dolu` süzgeci onları listeden düşürür.
   { etiket: 'Telefon', deger: '', tur: 'telefon', not: 'Hafta içi mesai saatleri' },
   { etiket: 'Adres', deger: '', tur: 'metin' },
 ];
@@ -103,6 +113,16 @@ export default function ContactPage() {
                 );
               })}
             </dl>
+            {/* Eksik kanalları SAYMAK, yokluklarını sessizce geçmekten iyidir:
+                telefon arayan kullanıcı aradığını bulamayınca sitenin bozuk
+                olduğunu düşünür. */}
+            {dolu.length < KANALLAR.length && (
+              <p className="mt-4 border-t border-[var(--border)] pt-4 text-sm text-muted">
+                Telefon ve adres bilgileri şirket kuruluşu tamamlandığında burada
+                yayımlanacaktır. O zamana kadar tüm yazılı başvurular yukarıdaki
+                e-posta adresinden karşılanır.
+              </p>
+            )}
           </Card>
         ) : (
           <Card className="mt-4">

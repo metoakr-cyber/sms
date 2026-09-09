@@ -187,21 +187,6 @@ func (q *Queries) DeactivatePricingRule(ctx context.Context, id int64) error {
 	return err
 }
 
-const deleteExpiredQuotes = `-- name: DeleteExpiredQuotes :execrows
-DELETE FROM price_quotes
-WHERE consumed_at IS NULL AND expires_at < $1
-`
-
-// Tüketilmemiş ve süresi geçmiş teklifler temizlenir.
-// Tüketilmiş olanlar SAKLANIR: sipariş kaydının fiyat kanıtıdır.
-func (q *Queries) DeleteExpiredQuotes(ctx context.Context, expiresAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteExpiredQuotes, expiresAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const getLatestFXRate = `-- name: GetLatestFXRate :one
 SELECT id, base, quote, rate, source, fetched_at FROM fx_rates
 WHERE base = $1 AND quote = $2
@@ -460,6 +445,7 @@ func (q *Queries) ListPricingRules(ctx context.Context) ([]PricingRule, error) {
 
 const listPricingRulesForAdmin = `-- name: ListPricingRulesForAdmin :many
 
+
 SELECT
     r.id, r.scope, r.margin_percent, r.fixed_fee_minor, r.min_price_minor,
     r.note, r.valid_from, r.valid_to, r.created_at,
@@ -489,6 +475,7 @@ type ListPricingRulesForAdminRow struct {
 	ProductDurationMinutes *int32
 }
 
+// Saklama temizliği (DeleteExpiredQuotes) queries/retention.sql içindedir.
 // ─────────────────────── Fiyat kuralı yönetimi (FR-703) ───────────────────────
 // Yönetim listesi: etkin kurallar + kapsamın İNSAN OKUR karşılığı.
 //

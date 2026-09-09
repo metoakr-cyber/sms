@@ -41,6 +41,22 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${SITE}/blog`,    lastModified: now, changeFrequency: 'weekly', priority: 0.6 },
     ...blog,
     { url: `${SITE}/kayit`,   lastModified: now, changeFrequency: 'yearly', priority: 0.5 },
+    // Yasal metinler. ARTIK YÜRÜRLÜKTELER — "taslaktır" uyarısı kaldırıldı ve
+    // ikisi de gerçek, bağlayıcı içerik taşıyor; haritadan uzak tutmanın
+    // gerekçesi (yürürlükte olmayan bir sözleşmeyi yürürlükteymiş gibi
+    // sunmamak) ortadan kalktı.
+    //
+    // priority 0.3 — haritadaki EN DÜŞÜK değer. Bu sayfalar satın alma niyeti
+    // taşıyan aramaların indiği yerler değil; ama bir hizmete para yatırmadan
+    // önce okunan ve mevzuatın yayımlanmasını beklediği belgelerdir, yani
+    // "haritada hiç olmasın" da değil.
+    //
+    // changeFrequency 'yearly' — 'monthly' demek, ayda bir değişmediğini gören
+    // tarayıcıya yalan söylemektir ve zamanla haritanın tamamındaki sinyali
+    // değersizleştirir. Bir sözleşme metni yılda bir bile değişmeyebilir;
+    // değiştiğinde `lastModified` zaten `now` olarak yeni tarihi taşır.
+    { url: `${SITE}/gizlilik`,         lastModified: now, changeFrequency: 'yearly', priority: 0.3 },
+    { url: `${SITE}/kullanim-sartlari`,lastModified: now, changeFrequency: 'yearly', priority: 0.3 },
   ];
   // NEDEN /giris ÇIKARILDI: sayfanın kendi metadata'sı `robots: noindex`
   // veriyor (frontend-contract.md §10.1 — kimlik sayfaları indekslenmez).
@@ -49,18 +65,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
   // işaretlenmiş URL gönderildi" hatasıyla raporlar ve haritanın tamamına
   // olan güveni düşürür. `scripts/seo-check.mjs` bu çelişkiyi artık ölçüyor:
   // haritadaki her URL çekilip noindex olmadığı doğrulanıyor.
-  // NEDEN /gizlilik ve /kullanim-sartlari BURADA YOK:
   //
-  //   /gizlilik  — hâlâ "bu metin henüz yayımlanmadı" uyarısından ibaret.
-  //                Boş bir yasal sayfayı site haritasıyla indekslenmeye ETKİN
-  //                OLARAK sunmak, Google'ın "thin content" tanımına birebir uyar.
-  //
-  //   /kullanim-sartlari — artık gerçek bir metin taşıyor, AMA sayfanın kendi
-  //                uyarısı "bu metin TASLAKTIR ve henüz yürürlüğe girmemiştir"
-  //                diyor. Yürürlükte olmayan bir sözleşmeyi arama motoruna
-  //                ETKİN OLARAK sunmak, onu yürürlükteymiş gibi gösterir.
-  //
-  // İkisi de footer'dan bağlıdır — kullanıcı ulaşabilir, Google da tarayabilir;
-  // burada olmamaları yalnız "biz sunmuyoruz" demektir. Metinler hukuki
-  // incelemeden geçip yayımlandığı gün buraya eklenmelidirler.
+  // /gizlilik ve /kullanim-sartlari için AYNI DENETİM GEÇERLİ: ikisinin de
+  // kendi `metadata`sında `robots` alanı YOKTUR, yani indekslenebilirler.
+  // Birine noindex eklenirse bu satırların da kaldırılması gerekir — seo-check
+  // aksi hâlde "noindex ama haritada" diye düşer.
 }

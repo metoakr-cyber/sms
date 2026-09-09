@@ -75,18 +75,6 @@ func (q *Queries) CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams
 	return i, err
 }
 
-const deleteExpiredAuthTokens = `-- name: DeleteExpiredAuthTokens :execrows
-DELETE FROM auth_tokens WHERE expires_at < now() - interval '7 days'
-`
-
-func (q *Queries) DeleteExpiredAuthTokens(ctx context.Context) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteExpiredAuthTokens)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const invalidateUserTokens = `-- name: InvalidateUserTokens :exec
 UPDATE auth_tokens SET used_at = now()
 WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL

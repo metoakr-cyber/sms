@@ -1,48 +1,73 @@
 import Link from 'next/link';
 import type { Metadata } from 'next';
-import { Card, Alert } from '@/components/ui';
+import { Card } from '@/components/ui';
 
 export const metadata: Metadata = {
   // Sayfaya ÖZEL description şart: yoksa kök layout'un varsayılanı miras
   // alınır ve iki ayrı sayfa birebir aynı açıklamayı taşır (S1 ihlali).
   description:
-    'Onay360 kullanım şartları: üyelik, bakiye yükleme, sipariş, iptal ve iade ' +
-    'kuralları, tedarik ve stok, yasak kullanımlar ve sorumluluğun sınırı.',
+    'Onay360 kullanım şartları: üyelik, bakiye, sipariş, kiralık numara, ' +
+    'iptal ve iade kuralları, yasak kullanımlar ve sorumluluğun sınırı.',
   title: 'Kullanım Şartları',
   alternates: { canonical: '/kullanim-sartlari' },
 };
 
 /**
- * 🔴 BU METİN ÖZGÜNDÜR VE UYDURMA MADDE İÇERMEZ.
+ * 🔴 BU METİN YÜRÜRLÜKTEDİR. Taslak değildir.
  *
  * Buradaki her madde SİSTEMİN BUGÜNKÜ DAVRANIŞIDIR; koda bakılarak
- * doğrulanabilir. Karşılığı olmayan hiçbir taahhüt yazılmadı. Özellikle
- * yazılmayanlar ve sebepleri `YOK_SAYILANLAR` dizisinde sayfanın kendisinde
- * de listelenir — okuyucu neyin eksik olduğunu görmelidir.
+ * doğrulanabilir. Karşılığı olmayan hiçbir taahhüt yazılmadı. Bilerek
+ * yazılmayan konular `KAPSAM_DISI` dizisinde sayfanın kendisinde de
+ * listelenir — okuyucu neyin kapsam dışı olduğunu görmelidir.
+ *
+ * ⚠️ BİR MADDEYİ DEĞİŞTİRMEDEN ÖNCE: metin yürürlükte olduğu için buradaki
+ * her cümle bir taahhüttür. Sistemin davranışı değişirse ÖNCE bu sayfa
+ * güncellenir; sistem sözleşmenin gerisinde kalamaz.
  *
  * Maddelerin dayanağı (örnekler):
+ *   3.2 e-posta kapısı     → transport/http/router.go RequireVerifiedEmail
  *   4.3 elle onay          → api/internal/service/deposit/service.go (paket başlığı)
  *   4.4 10 ₺ – 50.000 ₺    → api/internal/service/deposit/service.go tableMin/MaxAmountMinor
+ *   4.9 nakde çevrilmez    → router.go'da para çekme ucu YOK (yalnız GET /wallet/*)
  *   5.1 teklif 120 sn      → api/internal/service/pricing/quote.go QuoteTTL
  *   5.4 sipariş oluşmazsa  → api/internal/service/order/service.go (T1/T2 deseni)
  *   6.1 otomatik tam iade  → api/internal/service/order/lifecycle.go refundOrder
  *   6.2 en az 120 sn       → api/internal/service/order/service.go defaultCancelGrace
  *   6.6 geç gelen kod      → order_integration_test.go#TestRefundedOrderDoesNotLeakCode
- *   7.3 Türkiye stoğu      → docs/memory.md (sağlayıcıda 122 serviste physical = 0)
+ *   7.2 sabit süre kademesi→ port/provider.go RentalProvider.AllowedDurations
+ *   7.4 bitiş zamanı       → order/service.go persist (expires_at = sağlayıcı expiredAt)
+ *   7.5 uzatma yok         → adapter'da Extend var ama HİÇBİR uç nokta çağırmıyor
+ *   7.7 önbellekten fiyat  → pricing/quote.go cheapestOffer(live=false) + worker rental-sync
  *
- * ⬇️ SATICI BİLGİSİ YER TUTUCUDUR — şirket kuruluşu tamamlanınca
- * `SATICI_BILGISI` doldurulmalıdır. Doldurulmadan hizmet kullanıma
- * AÇILMAMALIDIR: Mesafeli Sözleşmeler Yönetmeliği satıcı kimlik
- * bilgilerinin yayımlanmasını zorunlu kılar (docs/TESLIM.md §2.4).
+ * 🔴 SATICI KİMLİK BİLGİSİ (ticaret unvanı, adres, vergi no, MERSİS) ELİMİZDE
+ * YOK ve UYDURULMAZ. Yer tutucu da yazılmaz: boş köşeli parantezlerle dolu bir
+ * sözleşme, bilgi vermemekten daha kötüdür. Bu eksiklik `KAPSAM_DISI`
+ * listesinde okuyucuya açıkça söylenir. Bilgiler edinildiğinde İLETISIM
+ * bloğuna satır eklenir.
  */
-const SATICI_BILGISI: Array<[string, string]> = [
-  ['Ticaret unvanı', ''],
-  ['Adres', ''],
-  ['Vergi dairesi / numarası', ''],
-  ['MERSİS numarası', ''],
-  ['KEP adresi', ''],
+const ILETISIM: Array<[string, React.ReactNode]> = [
+  ['İşletme adı', 'Onay360'],
+  [
+    'E-posta',
+    <a
+      key="eposta"
+      href="mailto:metoakr@gmail.com"
+      className="text-brand-300 underline underline-offset-4"
+    >
+      metoakr@gmail.com
+    </a>,
+  ],
+  [
+    'Destek',
+    <>
+      Hesabınızdan destek talebi açabilirsiniz;{' '}
+      <Link href="/iletisim" className="text-brand-300 underline underline-offset-4">
+        iletişim sayfası
+      </Link>{' '}
+      üzerinden de yazabilirsiniz.
+    </>,
+  ],
 ];
-const saticiHazir = SATICI_BILGISI.every(([, deger]) => deger.length > 0);
 
 type Bolum = { kimlik: string; baslik: string; maddeler: string[] };
 
@@ -53,32 +78,46 @@ type Bolum = { kimlik: string; baslik: string; maddeler: string[] };
  *
  * `kimlik` bağlantı çıpasıdır ve İNGİLİZCE'dir: Türkçe karakterli bir id
  * URL'de yüzde kodlamasına dönüşür ve paylaşılan bağlantı okunmaz olur.
+ *
+ * 🔴 SIRA DEĞİŞTİRİLMEZ. Metin içinde "6. bölüm" gibi ATIFLAR var; bir bölümü
+ * araya sokmak bu atıfları sessizce yanlış hedefe çevirir. Kiralama bölümü bu
+ * yüzden iadeden SONRA eklendi — iade 6 olarak kaldı.
  */
 const BOLUMLER: Bolum[] = [
   {
     kimlik: 'taraflar',
     baslik: 'Taraflar ve bu metnin kapsamı',
     maddeler: [
-      'Bu şartlar, Onay360 üzerinden hizmet alan kullanıcı ile hizmeti sunan ' +
-        'işletme arasındaki kullanım koşullarını düzenler. Hesap açan ve hizmeti ' +
-        'kullanan herkes bu şartları okumuş ve kabul etmiş sayılır.',
-      'Hizmeti sunan işletmenin ticaret unvanı, adresi ve vergi bilgileri bu ' +
-        'sayfanın sonundaki “Satıcı bilgileri” bölümünde yayımlanır.',
-      'Şartlar değişirse güncel metin bu sayfada yayımlanır. Değişiklikten sonra ' +
-        'hizmeti kullanmaya devam etmek, güncel metnin kabulü anlamına gelir.',
+      'Bu şartlar, Onay360 adıyla sunulan sanal numara hizmetini kullanan kişi ' +
+        'ile hizmeti sunan işletme arasındaki kullanım koşullarını düzenler. ' +
+        'Hesap açan ve hizmeti kullanan herkes bu şartları okumuş ve kabul ' +
+        'etmiş sayılır.',
+      'İşletmeye e-posta ile ulaşılır: metoakr@gmail.com. Bu metne ilişkin ' +
+        'soru, itiraz ve talepler bu adrese yapılır; hesabı olan kullanıcılar ' +
+        'aynı talepleri panelden destek talebi açarak da iletebilir. İletişim ' +
+        'bilgileri sayfanın sonundaki “İletişim” bölümünde de yer alır.',
+      'Bu metin yürürlüktedir ve güncel hâli her zaman bu sayfada bulunur. ' +
+        'Şartlar değişirse yeni metin burada yayımlanır; değişiklikten sonra ' +
+        'hizmeti kullanmaya devam etmek güncel metnin kabulü anlamına gelir.',
+      'Metnin kapsamı dışında bıraktığımız konular sayfanın sonunda ayrıca ' +
+        'listelenmiştir. Orada sayılan bir konuda bu metin taahhüt içermez.',
     ],
   },
   {
     kimlik: 'hizmet',
     baslik: 'Hizmetin tanımı',
     maddeler: [
-      'Onay360, bir servise kayıt olurken gereken SMS onay kodunu alabilmeniz ' +
-        'için geçici bir telefon numarası sağlar. Bu numara size tahsis edilmiş ' +
-        'bir hat değildir; yalnızca belirli bir süre için ayrılır.',
-      'Numara tek bir doğrulama içindir. Onay kodu ekranınıza düştüğünde sipariş ' +
-        'tamamlanır ve numara kapatılır. Kapanmadan önce ulaşan mesajların tamamı ' +
-        'sipariş ekranınızda görünür.',
-      'Numara kalıcı değildir. Doğrulama tamamlandıktan sonra numara üzerinde ' +
+      'Onay360, bir servise kayıt olurken veya giriş yaparken gereken SMS onay ' +
+        'kodunu alabilmeniz için geçici bir telefon numarası sağlar. Bu numara ' +
+        'size tahsis edilmiş bir hat değildir; yalnızca belirli bir süre için ' +
+        'ayrılır.',
+      'İki ayrı ürün vardır: tek kullanımlık numara ve kiralık numara. Tek ' +
+        'kullanımlık numara bir doğrulama içindir. Kiralık numaraya ilişkin ' +
+        'kurallar 7. bölümdedir.',
+      'Tek kullanımlık siparişte onay kodu ekranınıza düştüğünde sipariş ' +
+        'tamamlanır ve numara kapatılır. Kapanmadan önce numaraya ulaşan ' +
+        'mesajların tamamı sipariş ekranınızda görünür.',
+      'Numara kalıcı değildir. Sipariş kapandıktan sonra numara üzerinde ' +
         'hiçbir hakkınız kalmaz ve numara ileride başka bir kullanıcıya ' +
         'verilebilir.',
       '🔴 Bu nedenle sanal numarayı hesabınızın kurtarma numarası, iki adımlı ' +
@@ -109,6 +148,10 @@ const BOLUMLER: Bolum[] = [
       'Bu şartlara aykırı kullanım tespit edilirse hesap askıya alınabilir. ' +
         'Askıya alınan hesabın açık oturumları anında sona erer ve yeniden giriş ' +
         'yapılamaz.',
+      'Hesabınızı kapatmak isterseniz talebinizi destek üzerinden veya ' +
+        'metoakr@gmail.com adresine iletin. Hesap kapatma kendi kendine işleyen ' +
+        'bir akış değildir; talep elle ele alınır. Kapatma sonrasında hangi ' +
+        'kayıtların ne kadar süreyle saklandığı Gizlilik Politikası’nda açıklanır.',
     ],
   },
   {
@@ -136,6 +179,9 @@ const BOLUMLER: Bolum[] = [
         'değişmez.',
       'Yükleme yöntemleri geçici olarak kapatılabilir. Kapalı bir yöntem yükleme ' +
         'ekranında listelenmez.',
+      'Bakiye yalnızca Onay360 üzerinden hizmet almak için kullanılır. Bakiye ' +
+        'nakde çevrilmez, banka hesabına veya kripto cüzdanına aktarılmaz ve ' +
+        'başka bir hesaba devredilemez.',
     ],
   },
   {
@@ -154,6 +200,8 @@ const BOLUMLER: Bolum[] = [
       'Numaranın geçerlilik süresi sabit değildir; her sipariş için ekranda ' +
         'gösterilen kalan süre geçerlidir. Süre sunucu saatine göre hesaplanır, ' +
         'cihazınızın saatine göre değil.',
+      'Kiralık numarada fiyat teklifi alabilmek için süreyi de seçmeniz gerekir. ' +
+        'Gösterilen tutar, seçtiğiniz sürenin tamamı içindir.',
     ],
   },
   {
@@ -181,6 +229,35 @@ const BOLUMLER: Bolum[] = [
     ],
   },
   {
+    kimlik: 'kiralama',
+    baslik: 'Kiralık numara',
+    maddeler: [
+      'Kiralık numara, seçtiğiniz süre boyunca hesabınıza ayrılan numaradır. ' +
+        'Tek kullanımlık numaradan ayrı bir üründür ve ayrı fiyatlandırılır.',
+      'Kiralama süresi serbestçe belirlenmez: numara sağlayıcısının kabul ettiği ' +
+        'sabit süre kademelerinden birini seçersiniz. Seçilebilir süreler ' +
+        'sağlayıcıdan alınır ve satın alma ekranında listelenir.',
+      'Ücret sürenin tamamı için peşin alınır ve satın alma anında bakiyenizden ' +
+        'düşer.',
+      'Kiralamanın bitiş zamanı numara sağlayıcısının bildirdiği süreye göre ' +
+        'belirlenir. Kalan süre sipariş ekranınızda sunucu saatine göre gösterilir.',
+      'Kiralama süresi uzatılamaz. Süre dolduktan sonra aynı numarayı kullanmaya ' +
+        'devam edemezsiniz; yeni bir kiralama siparişi vermeniz gerekir ve size ' +
+        'aynı numaranın verileceği garanti edilmez.',
+      'Süre dolduğunda numara kapanır ve numara üzerinde hiçbir hakkınız kalmaz. ' +
+        'Kullanılmayan süre için kısmi iade yapılmaz.',
+      'Kiralık numaraların fiyat ve stok bilgisi, sağlayıcıdan düzenli aralıklarla ' +
+        'alınan bir kopyadan gösterilir; anlık değildir. Listede görünen bir ' +
+        'seçenek satın alma anında tükenmiş olabilir. Bu durumda sipariş oluşmaz ' +
+        've ücret tahsil edilmez.',
+      'Bir servis veya ülke için kiralık numara sunulmuyorsa satın alma ekranında ' +
+        'kiralama seçeneği görünmez.',
+      'İptal ve iade konusunda 6. bölümdeki kurallar kiralık numaralar için de ' +
+        'aynen geçerlidir. 2. bölümdeki uyarı da geçerlidir: kiralık numara da ' +
+        'kalıcı değildir ve kurtarma numarası olarak kullanılmamalıdır.',
+    ],
+  },
+  {
     kimlik: 'tedarik',
     baslik: 'Tedarik, stok ve kesinti',
     maddeler: [
@@ -189,8 +266,9 @@ const BOLUMLER: Bolum[] = [
         'değildir ve önceden haber verilmeden tükenebilir.',
       'Stok ve fiyatlar gün içinde sürekli değişir. Listede görünen bir seçenek ' +
         'satın alma anında tükenmiş olabilir; bu durumda ücret tahsil edilmez.',
-      'Türkiye numarası şu anda satışa sunulmamaktadır. Ülke listede görünse de ' +
-        'stok bulunmadığı için seçilemez.',
+      'Belirli bir ülkenin veya servisin stokta bulunacağı taahhüt edilmez. Bir ' +
+        'ülke ya da servis uzun süre hiç stoksuz kalabilir; stoğu olmayan seçenek ' +
+        'satın alınamaz.',
       'Belirli bir servis ya da ülke için numara bulunacağı, onay kodunun ' +
         'ulaşacağı veya hedef servisin numarayı kabul edeceği garanti edilmez. ' +
         'Kod gelmediğinde uygulanacak tek çözüm 6. bölümdeki ücret iadesidir.',
@@ -248,34 +326,48 @@ const BOLUMLER: Bolum[] = [
         'kaydınızda saklanır ve sipariş geçmişinizde görünür.',
       'Hesap güvenliği için oturum kayıtlarında IP adresi ve tarayıcı bilgisi ' +
         'tutulur.',
-      'Kişisel verilerin işlenmesine ilişkin ayrıntılar Gizlilik Politikası ' +
-        'sayfasında yayımlanacaktır.',
+      'Kişisel verilerin hangi amaçla işlendiği, kimlere aktarıldığı ve ne kadar ' +
+        'süreyle saklandığı Gizlilik Politikası sayfasında açıklanır.',
+      'Kişisel verilerinize ilişkin başvurularınızı metoakr@gmail.com adresine ' +
+        'iletebilirsiniz.',
+    ],
+  },
+  {
+    kimlik: 'hukuk',
+    baslik: 'Cayma hakkı, uygulanacak hukuk ve başvuru yolları',
+    maddeler: [
+      'Bu şartlara Türkiye Cumhuriyeti hukuku uygulanır.',
+      'Mesafeli Sözleşmeler Yönetmeliği’nin 15. maddesi, elektronik ortamda anında ' +
+        'ifa edilen hizmetleri cayma hakkının istisnaları arasında sayar. Onay ' +
+        'kodunun size iletilmesiyle hizmet ifa edilmiş olur; bu nedenle kodu ' +
+        'iletilmiş siparişlerde cayma hakkı kullanılamaz.',
+      'Kod gelmeyen siparişlerde 6. bölümdeki tam iade, cayma hakkından bağımsız ' +
+        'olarak ve sizden talep beklenmeden uygulanır.',
+      '6502 sayılı Tüketicinin Korunması Hakkında Kanun kapsamındaki ' +
+        'uyuşmazlıklarda, Ticaret Bakanlığı’nca her yıl belirlenen parasal ' +
+        'sınırların altındaki başvurular tüketici hakem heyetlerine, bu sınırların ' +
+        'üzerindeki uyuşmazlıklar tüketici mahkemelerine yapılır. Tüketici, ' +
+        'başvurusunu kendi yerleşim yerindeki veya işlemin yapıldığı yerdeki ' +
+        'hakem heyetine ya da mahkemeye yapabilir.',
+      'Bu metnin bir maddesinin geçersiz sayılması diğer maddeleri etkilemez; ' +
+        'kalan maddeler yürürlükte kalır.',
     ],
   },
 ];
 
 /**
- * Bu metinde BİLEREK yer almayan konular.
+ * Bu metnin BİLEREK kapsamadığı konular.
  *
- * Sayfada gösterilir: eksik olduğunu bilmediğiniz bir madde, yanlış yazılmış
- * bir maddeden daha tehlikelidir. Her satırın sebebi sistemin bugünkü
- * durumudur — hiçbiri "unutuldu" değildir.
+ * Sayfada gösterilir: kapsam dışı olduğunu bilmediğiniz bir konu, yanlış
+ * yazılmış bir maddeden daha tehlikelidir. Her satır BUGÜNÜN durumunu anlatır —
+ * hiçbiri "sonra yazacağız" değildir. Bir satır ancak sistem değiştiğinde ve
+ * ilgili madde metne EKLENDİĞİNDE buradan çıkar.
  */
-const YOK_SAYILANLAR: string[] = [
-  'Cayma hakkı ve mesafeli satış bilgilendirmesi — dijital hizmetlerde ' +
-    'uygulanacak istisnanın kapsamı hukuki inceleme sonrası yazılacaktır.',
-  'Uygulanacak hukuk, yetkili mahkeme ve tüketici hakem heyeti — satıcı ' +
-    'bilgileri yayımlanmadan yer belirtilemez.',
-  'Kullanılmayan bakiyenin nakde çevrilmesi veya banka hesabına iadesi — ' +
-    'bugün sistemde böyle bir işlem yoktur; bakiye yalnızca hizmet alımında ' +
-    'kullanılır.',
-  'Hesap kapatma ve kişisel verilerin silinmesi talebi — bugün bunun için ' +
-    'kendi kendine işleyen bir akış yoktur; talepler destek üzerinden ele ' +
-    'alınmaktadır.',
-  'Kişisel verilerin saklanma süresi — süre henüz belirlenmemiştir ve ' +
-    'Gizlilik Politikası ile birlikte yayımlanacaktır.',
-  'Kiralık (uzun süreli) numara — bu ürün bugün satışta değildir; satışa ' +
-    'açıldığında kendi maddeleri eklenecektir.',
+const KAPSAM_DISI: string[] = [
+  'Ticaret unvanı, adres, vergi numarası ve MERSİS numarası — bu bilgiler bu ' +
+    'sayfada yayımlanmamaktadır. İşletmeye yukarıdaki e-posta adresinden ulaşılır.',
+  'Kiralama süresi boyunca alınabilecek mesaj sayısı — bu metin kiralık numara ' +
+    'için belirli bir mesaj sayısı taahhüt etmez.',
 ];
 
 export default function TermsPage() {
@@ -283,17 +375,6 @@ export default function TermsPage() {
     <div className="px-4 py-10 md:px-6 md:py-14">
       <div className="mx-auto max-w-3xl">
         <h1 className="text-3xl font-bold tracking-tight md:text-4xl">Kullanım Şartları</h1>
-
-        {/* Taslak uyarısı SAYFANIN EN ÜSTÜNDE: aşağı kaydırmadan görülmeli.
-            Yasal metin uydurulmaz; bu metin hukuki inceleme bekliyor
-            (docs/TESLIM.md §2.4). */}
-        <Alert tone="warn" className="mt-6">
-          <strong className="font-semibold">Bu metin taslaktır ve henüz yürürlüğe girmemiştir.</strong>{' '}
-          Aşağıdaki maddeler hizmetin bugünkü işleyişini anlatır; hukuki inceleme
-          tamamlanıp satıcı bilgileri yayımlanana kadar bağlayıcı sözleşme metni
-          olarak kabul edilmemelidir. Eksik bırakılan konular sayfanın sonunda
-          ayrıca listelenmiştir.
-        </Alert>
 
         <p className="mt-6 text-base leading-relaxed text-muted md:text-lg">
           Onay360, bir servise kayıt olurken gereken SMS onay kodunu almanız için
@@ -366,39 +447,35 @@ export default function TermsPage() {
           </section>
         ))}
 
-        <h2 className="mt-12 text-xl font-semibold md:text-2xl">Satıcı bilgileri</h2>
-        {saticiHazir ? (
-          <Card className="mt-4">
-            <dl className="flex flex-col gap-3 text-sm">
-              {SATICI_BILGISI.map(([etiket, deger]) => (
-                <div key={etiket} className="flex flex-col gap-0.5 md:flex-row md:gap-4">
-                  <dt className="text-muted md:w-56 md:shrink-0">{etiket}</dt>
-                  <dd className="break-anywhere">{deger}</dd>
-                </div>
-              ))}
-            </dl>
-          </Card>
-        ) : (
-          <Card className="mt-4">
-            {/* Boş bırakmak, uydurmaktan iyidir. Bu uyarı, bilgiler
-                doldurulduğu anda kendiliğinden kaybolur. */}
-            <Alert tone="warn">
-              Ticaret unvanı, adres, vergi ve MERSİS bilgileri henüz yayımlanmadı;
-              bu alan şirket kuruluşu tamamlandığında doldurulacaktır.
-            </Alert>
-          </Card>
-        )}
+        <h2 className="mt-12 text-xl font-semibold md:text-2xl">İletişim</h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          Bu metne ilişkin bildirim, itiraz ve talepler aşağıdaki kanallardan
+          yapılır.
+        </p>
+        <Card className="mt-4">
+          <dl className="flex flex-col gap-3 text-sm">
+            {ILETISIM.map(([etiket, deger]) => (
+              <div key={etiket} className="flex flex-col gap-0.5 md:flex-row md:gap-4">
+                <dt className="text-muted md:w-56 md:shrink-0">{etiket}</dt>
+                {/* break-anywhere: uzun bir e-posta adresi 320 px'lik ekranda
+                    kutuyu yatay kaydırmaya zorlamasın. */}
+                <dd className="break-anywhere">{deger}</dd>
+              </div>
+            ))}
+          </dl>
+        </Card>
 
         <h2 className="mt-12 text-xl font-semibold md:text-2xl">
-          Bu metinde henüz yer almayan konular
+          Bu metnin kapsamı dışında kalanlar
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          Aşağıdakiler bilerek boş bırakıldı: bugün sistemde karşılığı olmayan bir
-          taahhüdü yazmaktansa, eksik olduğunu açıkça belirtmeyi tercih ediyoruz.
+          Aşağıdakiler bilerek kapsam dışında bırakıldı: bugün sistemde karşılığı
+          olmayan bir taahhüdü yazmaktansa, kapsam dışı olduğunu açıkça belirtmeyi
+          tercih ediyoruz.
         </p>
         <Card className="mt-4">
           <ul className="flex list-disc flex-col gap-2 pl-5 text-sm leading-relaxed text-muted">
-            {YOK_SAYILANLAR.map((satir, i) => (
+            {KAPSAM_DISI.map((satir, i) => (
               <li key={i}>{satir}</li>
             ))}
           </ul>

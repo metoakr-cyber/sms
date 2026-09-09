@@ -18,5 +18,4 @@ RETURNING *;
 UPDATE auth_tokens SET used_at = now()
 WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL;
 
--- name: DeleteExpiredAuthTokens :execrows
-DELETE FROM auth_tokens WHERE expires_at < now() - interval '7 days';
+-- Saklama temizliği (DeleteExpiredAuthTokens) queries/retention.sql içindedir.

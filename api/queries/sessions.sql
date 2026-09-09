@@ -21,5 +21,5 @@ SELECT * FROM sessions
 WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
 ORDER BY last_seen_at DESC;
 
--- name: DeleteExpiredSessions :execrows
-DELETE FROM sessions WHERE expires_at < now() - interval '7 days';
+-- Saklama temizliği (DeleteExpiredSessions) queries/retention.sql içindedir:
+-- ilan edilen saklama süreleri tek dosyada dursun.

@@ -1,7 +1,7 @@
 package worker
 
 // M5 işleri: kur senkronu, süre dolumu, yoklama, sağlayıcıda kapatma, iade
-// mutabakatı, yetim provizyon, katalog tazeleme.
+// mutabakatı, yetim provizyon, katalog tazeleme, saklama politikası.
 //
 // SİPARİŞ EKSENİNDE ROL AYRIMI — üç iş aynı satırlara bakar, kümeleri
 // KESİŞMEZ:
@@ -15,6 +15,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -59,6 +60,7 @@ func All(d Deps) []Job {
 		orphanHoldReaper(d),
 		offerSync(d),
 		rentalSync(d),
+		dataRetention(d),
 	}
 }
 
@@ -443,4 +445,138 @@ func offerSync(d Deps) Job {
 			return nil
 		},
 	}
+}
+
+/* ═══════════════════════ Saklama politikası ═══════════════════════ */
+
+// Saklama süreleri (9 Eylül 2026 kararı). Gizlilik metninde ilan edilen
+// sayılarla BİREBİR aynı olmalıdır: metin bir söz verir, buradaki sabitler o
+// sözün tek karşılığıdır. Süreyi değiştiren kişi metni de değiştirmelidir.
+//
+// SQL karşılıkları ve her birinin gerekçesi: queries/retention.sql
+const (
+	// smsBodyRetentionDays — SMS içeriği 90 gün sonra boşaltılır.
+	smsBodyRetentionDays = 90
+	// auditLogRetentionYears — denetim kaydı 2 yıl sonra silinir.
+	auditLogRetentionYears = 2
+)
+
+// retentionBatch tek SQL ifadesinin dokunacağı azami satır.
+//
+// `batchLimit` (100) burada kullanılmadı: o sabit sağlayıcıya İSTEK ATAN işler
+// için seçilmişti, temizlik ise saf veritabanı işidir ve ağ turu yoktur.
+// 1.000 satır, tek ifadenin kilit süresini milisaniyelerde tutacak kadar küçük,
+// birikmiş bir kuyruğu makul turda eritecek kadar büyüktür.
+const retentionBatch = 1000
+
+// retentionMaxBatches bir turda bir tablo için atılacak azami parti.
+//
+// ÜST SINIR VAR çünkü ilk koşu bir BİRİKİMLE karşılaşır: iş bugüne kadar hiç
+// çalışmadı, dolayısıyla ilk tur o güne kadarki tüm eski veriyi görür. Sınırsız
+// bir döngü o turu saatlerce sürdürebilir ve tabloyu sürekli meşgul ederdi.
+// 50 × 1.000 = tur başına tablo başına 50.000 satır; kalanı bir sonraki tura
+// devreder.
+const retentionMaxBatches = 50
+
+// dataRetention ilan edilen saklama sürelerini uygular.
+//
+// SIKLIK: 1 saat. Günlük seçilseydi, günde birden fazla yeniden başlatılan bir
+// sunucuda (dağıtım, çökme döngüsü) iş HİÇ çalışmayabilirdi — `Every` sayacı
+// süreçle birlikte sıfırlanır. Saatlik tur ilk koşudan sonra neredeyse
+// bedeldir: eşleşen satır kalmayınca her adım tek sorguda 0 döner.
+//
+// AÇILIŞTA ÇALIŞMAZ: dağıtım anında beş tabloyu birden taramanın kazancı yok;
+// en fazla bir saat gecikir.
+//
+// TUR SIRASINDA BİR ADIMIN HATASI DİĞERLERİNİ DURDURMAZ: denetim kaydı
+// tablosundaki bir kilit, SMS gövdelerinin boşaltılmasını erteleyemez.
+//
+// LOG'A YALNIZ SAYI YAZILIR. Silinen satırın içeriği log'a geçseydi, tam da
+// veritabanından kaldırdığımız kişisel veriyi log dosyasına kopyalamış olurduk.
+// test: retention_integration_test.go#TestRetentionRedactsOldSmsBodyKeepsRow
+func dataRetention(d Deps) Job {
+	return Job{
+		Name: "data-retention", Every: time.Hour,
+		Run: func(ctx context.Context) error {
+			q := d.TxRunner.Queries()
+			now := d.Clock.Now()
+
+			// AddDate takvim aritmetiği yapar: "2 yıl" 730 gün değil, iki
+			// takvim yılıdır. İlan edilen süre insan takvimindedir.
+			smsCutoff := now.AddDate(0, 0, -smsBodyRetentionDays)
+			auditCutoff := now.AddDate(-auditLogRetentionYears, 0, 0)
+
+			steps := []retentionStep{
+				{"sms_govdesi", func(c context.Context, lim int32) (int64, error) {
+					return q.RedactOldOrderMessages(c, db.RedactOldOrderMessagesParams{
+						OlderThan: smsCutoff, Lim: lim})
+				}},
+				{"oturum", func(c context.Context, lim int32) (int64, error) {
+					return q.DeleteExpiredSessions(c, db.DeleteExpiredSessionsParams{
+						OlderThan: now, Lim: lim})
+				}},
+				{"token", func(c context.Context, lim int32) (int64, error) {
+					return q.DeleteExpiredAuthTokens(c, db.DeleteExpiredAuthTokensParams{
+						OlderThan: now, Lim: lim})
+				}},
+				{"teklif", func(c context.Context, lim int32) (int64, error) {
+					return q.DeleteExpiredQuotes(c, db.DeleteExpiredQuotesParams{
+						OlderThan: now, Lim: lim})
+				}},
+				{"denetim_kaydi", func(c context.Context, lim int32) (int64, error) {
+					return q.DeleteOldAuditLogs(c, db.DeleteOldAuditLogsParams{
+						OlderThan: auditCutoff, Lim: lim})
+				}},
+			}
+
+			var firstErr error
+			fields := make([]any, 0, 2*len(steps))
+			for _, s := range steps {
+				n, err := drainBatches(ctx, s.run)
+				if err != nil {
+					// Adım adı ve o ana kadar işlenen SAYI yazılır; satırın
+					// kendisi yazılmaz.
+					slog.Error("saklama temizliği adımı yarım kaldı",
+						"adim", s.name, "islenen", n, "err", err)
+					if firstErr == nil {
+						firstErr = fmt.Errorf("saklama adımı %q: %w", s.name, err)
+					}
+				}
+				if n > 0 {
+					fields = append(fields, s.name, n)
+				}
+			}
+			if len(fields) > 0 {
+				slog.Info("saklama politikası uygulandı", fields...)
+			}
+			return firstErr
+		},
+	}
+}
+
+// retentionStep tek bir tablonun temizlik adımı.
+type retentionStep struct {
+	name string
+	run  func(ctx context.Context, lim int32) (int64, error)
+}
+
+// drainBatches bir adımı, iş bitene ya da üst sınıra ulaşılana kadar partiler
+// hâlinde koşturur ve toplam etkilenen satır sayısını döner.
+//
+// SON PARTİ TAM DOLU DEĞİLSE İŞ BİTMİŞTİR: sorgu `LIMIT retentionBatch` ile
+// yazıldığı için `n < retentionBatch` "eşleşen satır kalmadı" demektir. Bu
+// sayede boş bir turda tek sorgu çalışır, döngü dönmez.
+func drainBatches(ctx context.Context, step func(context.Context, int32) (int64, error)) (int64, error) {
+	var total int64
+	for i := 0; i < retentionMaxBatches; i++ {
+		n, err := step(ctx, retentionBatch)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n < retentionBatch {
+			return total, nil
+		}
+	}
+	return total, nil
 }

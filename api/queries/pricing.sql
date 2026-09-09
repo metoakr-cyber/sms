@@ -70,11 +70,7 @@ RETURNING *;
 -- name: GetQuoteByPublicID :one
 SELECT * FROM price_quotes WHERE public_id = $1;
 
--- name: DeleteExpiredQuotes :execrows
--- Tüketilmemiş ve süresi geçmiş teklifler temizlenir.
--- Tüketilmiş olanlar SAKLANIR: sipariş kaydının fiyat kanıtıdır.
-DELETE FROM price_quotes
-WHERE consumed_at IS NULL AND expires_at < $1;
+-- Saklama temizliği (DeleteExpiredQuotes) queries/retention.sql içindedir.
 
 -- ─────────────────────── Fiyat kuralı yönetimi (FR-703) ───────────────────────
 

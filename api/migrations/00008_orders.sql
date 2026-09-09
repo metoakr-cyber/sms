@@ -198,9 +198,23 @@ CREATE TRIGGER orders_guard_transition_trg
 -- Bir sipariş BİRDEN FAZLA mesaj alabilir (FR-415). SSE ilk koddan sonra
 -- kapanmaz; ikinci doğrulama kodu da kullanıcıya ulaşmalıdır.
 --
--- MESAJLAR KALICIDIR. Sağlayıcıdan geçmiş mesaj OKUNAMAZ: kapatılmış bir
--- aktivasyon için `409 ACTIVATION_NOT_ACTIVE` döner. Saklama politikamız
--- sağlayıcıya bağlanamaz.
+-- SATIR KALICIDIR, İÇERİK DEĞİL. Bu yorum eskiden yalnız "MESAJLAR KALICIDIR"
+-- diyordu; gerekçesi şuydu ve hâlâ geçerlidir: sağlayıcıdan geçmiş mesaj
+-- OKUNAMAZ (kapatılmış aktivasyon için `409 ACTIVATION_NOT_ACTIVE` döner),
+-- yani sağlayıcı bir arşiv değildir ve saklama politikamız ona bağlanamaz.
+-- O cümle "ne kadar saklarız" sorusunu değil, "nereden okuruz" sorusunu
+-- cevaplıyordu — süresiz saklama kararı hiç verilmemişti.
+--
+-- 9 Eylül 2026'da süre KARARA BAĞLANDI: SMS içeriği 90 gün. `data-retention`
+-- işi (internal/worker/jobs.go) 90 günü geçen satırların `code`, `body`,
+-- `sender` ve `provider_otp_id` alanlarını boşaltır; satırın kendisi
+-- `order_id` ve `received_at` ile birlikte sipariş kaydı kadar (10 yıl) durur.
+--
+-- SATIRIN KENDİSİ NEDEN KALIYOR: "kod geldi mi gelmedi mi" tartışmasının tek
+-- kanıtı odur. Satır silinseydi, iade edilmiş bir siparişte kodun aslında
+-- gelmiş olduğu bilgisi de giderdi ve 10 yıl saklanan sipariş kaydı eksik
+-- kalırdı. Kişisel veri olan METİNDİR, mesajın geldiği OLGU değil.
+-- Sorgular ve gerekçeleri: queries/retention.sql
 CREATE TABLE order_messages (
     id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     order_id     BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
