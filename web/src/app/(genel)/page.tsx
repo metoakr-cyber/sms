@@ -58,10 +58,13 @@ export default async function HomePage() {
     fetchPublic<{ items: Country[] }>('/catalog/countries'),
   ]);
 
-  // En çok ülkede bulunan servisler öne çıkar: kullanıcının aradığı servisin
-  // burada olma ihtimali en yüksek olanlar.
-  const tumServisler = [...(services?.items ?? [])]
-    .sort((a, b) => b.countryCount - a.countryCount);
+  // 🔴 BURADA YENİDEN SIRALAMA YAPILMAZ. Sıra sunucudan gelir:
+  // `services.sort_order` (web/scripts/servis-siralama.sql) popülerlik sırasıdır
+  // ve `ListServicesWithStock` onu uygular. Burada `countryCount`'a göre yeniden
+  // sıralamak, WhatsApp/Telegram yerine en çok ülkede bulunan rastgele servisleri
+  // (Whatnot, Adobe, Ero Me…) vitrine çıkarıyordu — ölçüldü, 12 kartın 12'si
+  // popülerlik listesi dışındaydı.
+  const tumServisler = services?.items ?? [];
   const populer = tumServisler.slice(0, 12);
   const ulkeSayisi = countries?.items.length ?? 0;
   // Stoklu servis × ülke kombinasyonu — türetilmiş ama GERÇEK bir sayı.

@@ -53,7 +53,9 @@ const SSS: Array<[string, string]> = [
 export default async function RentalPage() {
   const data = await fetchPublic<{ items: RentalService[] }>(
     '/catalog/rental/services', { revalidate: 300 });
-  const items = [...(data?.items ?? [])].sort((a, b) => b.countryCount - a.countryCount);
+  // Sıra sunucudan gelir (`ListRentalServices` → `services.sort_order`); burada
+  // yeniden sıralamak popülerlik sırasını `countryCount` ile ezerdi.
+  const items = data?.items ?? [];
 
   // Süre kademeleri sağlayıcının canlı listesinden geliyor; burada yalnız
   // ANLATIM için sabit — fiyat ve stok her zaman API'den okunur.

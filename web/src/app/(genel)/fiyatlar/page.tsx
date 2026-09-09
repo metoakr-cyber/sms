@@ -41,7 +41,17 @@ export default async function PricingPage() {
     fetchPublic<{ items: ServiceSummary[] }>('/catalog/services-in-stock', { revalidate: 300 }),
     fetchPublic<{ items: Country[] }>('/catalog/countries', { revalidate: 300 }),
   ]);
-  const items = [...(data?.items ?? [])].sort((a, b) => b.countryCount - a.countryCount);
+  // ⚠️ İSTEMCİDE YENİDEN SIRALANMAZ.
+  //
+  // Burada eskiden `.sort((a, b) => b.countryCount - a.countryCount)` vardı ve
+  // vitrini "en çok ülkede bulunan" servislere göre diziyordu. Sonuç: ilk on iki
+  // kart Whatnot, Adobe, Biedronka… oluyordu — hepsi 65 ülkede stoklu ama
+  // kimsenin aramadığı servisler; WhatsApp ekranda hiç yoktu.
+  //
+  // Sıra artık SUNUCUDAN gelir (`services.sort_order` → queries/catalog.sql
+  // ListServicesWithStock). Tek kaynak orası; burada yeniden sıralamak o kararı
+  // sessizce ezerdi.
+  const items = data?.items ?? [];
   const ulkeSayisi = countries?.items.length ?? 0;
   const kombinasyon = items.reduce((t, s) => t + s.countryCount, 0);
 
@@ -116,8 +126,6 @@ export default async function PricingPage() {
               İlk `VITRIN` kadarı ikonla basılır, gerisi `/servisler`
               sayfasında. Böylece hem logo görünür hem de yük katalog
               büyüdükçe artmaz (docs/frontend-contract.md §8).
-
-              Servis adlarının TAMAMI HTML'de kalır — SEO değeri orada.
             */}
             <ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
               {items.slice(0, VITRIN).map((s, i) => (
@@ -133,20 +141,39 @@ export default async function PricingPage() {
               ))}
             </ul>
 
-            {/* Kalan servisler: adları SEO için HTML'de kalsın ama ızgarayı
-                şişirmesin. Ekran okuyucuya da anlamlı bir liste sunulur. */}
-            {items.length > VITRIN && (
-              <p className="mt-4 text-sm text-muted">
-                <span className="sr-only">Diğer servisler: </span>
-                {items.slice(VITRIN).map((s) => s.name).join(' · ')}
-              </p>
-            )}
+            {/*
+              🔴 BURAYA SERVİS ADI DUVARI BASILMAZ.
 
-            <Link href="/servisler" className="mt-5 inline-block">
-              <Button variant="outline" size="sm">
-                Tüm servisleri gör ({items.length})
-              </Button>
-            </Link>
+              Eskiden kalan ~800 servisin adı tek bir <p> içinde "·" ile yan
+              yana diziliyordu: 7,4 KB, 700 ad, tek paragraf. İki ayrı sebeple
+              yanlıştı:
+
+              1. OKUNAMIYORDU. Kullanıcı aradığı servisi bu duvarın içinde
+                 gözle tarayamaz; arama kutusu zaten /servisler'de var.
+              2. SEO DEĞERİ YOKTU — anahtar kelime doldurmasıydı. Bağlamsız,
+                 bağlantısız ad yığını arama motorları için değer üretmez;
+                 aksine sayfanın gerçek içeriğini seyreltir.
+
+              Yerine tam kataloğa götüren düzgün bir bölüm var. Servis adları
+              /servisler sayfasında, kendi kartlarında ve stok durumlarıyla
+              birlikte taranabilir hâlde duruyor.
+            */}
+            <div className="surface mt-6 rounded-2xl border p-5 golge-1 md:p-6">
+              <h3 className="text-base font-semibold md:text-lg">
+                Aradığınız servis yukarıda yok mu?
+              </h3>
+              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
+                Yukarıdaki kartlar en çok tercih edilen servisler. Şu anda stokta{' '}
+                <strong className="font-semibold text-[var(--text)]">{items.length}</strong>{' '}
+                servis var; tamamını arama kutusuyla ve stok durumuyla birlikte
+                servisler sayfasında görebilirsiniz.
+              </p>
+              <Link href="/servisler" className="mt-4 inline-block">
+                <Button variant="outline" size="sm">
+                  Tüm servisleri gör <SagOk className="size-4" />
+                </Button>
+              </Link>
+            </div>
           </>
         )}
 

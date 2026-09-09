@@ -6,7 +6,7 @@ import { Bolum, BolumBasligi, IkonKaro, RenkliKart } from '@/components/pazarlam
 import { KapanisCTA } from '@/components/pazarlama/bolumler';
 import { Belir } from '@/components/animasyon';
 import { Cuzdan, Izgara, Kure, SagOk } from '@/components/ikonlar';
-import { ServisListesi, type ServisSatiri } from '@/components/katalog/servis-listesi';
+import { ServisListesi, type ServisSatiri } from './servis-listesi';
 import { MusteriYorumlari } from '@/components/katalog/yorumlar';
 import type { ServiceSummary, Country } from '@/lib/types';
 
@@ -44,8 +44,15 @@ export const metadata: Metadata = {
  * sayıyı garanti gibi göstermek olurdu. Genel (oturumsuz) bir fiyat ucu
  * BİLEREK YOKTUR; eklenmesi ayrı bir karardır ve fiyatlandırma ekibinindir.
  *
- * Sunucu bileşenidir: liste ilk HTML'de gelir, arama motoru servis adlarını
- * JavaScript çalıştırmadan görür (docs/frontend-contract.md §10.2).
+ * ── SIRALAMA VE SAYFALAMA ──
+ *
+ * Sıra SUNUCUDAN gelir (`services.sort_order`); burada yeniden sıralanmaz.
+ * Kartlar `./servis-listesi` içinde parça parça çizilir — 810 kartın tamamı
+ * tek seferde basıldığında DOM 5.158 düğüme ve HTML 789 KB'a çıkıyordu.
+ * Gerekçe ve ölçüm o dosyanın başındadır.
+ *
+ * Sunucu bileşenidir: listenin tamamı ilk yanıtta gelir ve arama JavaScript
+ * ile istemcide çalışır (docs/frontend-contract.md §10.2).
  */
 export default async function ServislerPage() {
   const [tumu, stoklu, ulkeler] = await Promise.all([
@@ -70,13 +77,19 @@ export default async function ServislerPage() {
     };
   });
 
-  // Stoklu servisler ÖNCE, sonra en çok ülkede bulunan. Alfabetik sıra
-  // kullanıcının aradığı şeyi değil, adı "A" ile başlayanı öne çıkarırdı.
-  satirlar.sort((a, b) => {
-    if (a.inStock !== b.inStock) return a.inStock ? -1 : 1;
-    if (b.countryCount !== a.countryCount) return b.countryCount - a.countryCount;
-    return a.name.localeCompare(b.name, 'tr');
-  });
+  // STOKLU SERVİSLER ÖNCE — tek uygulanan kural bu.
+  //
+  // İkincil anahtar YOKTUR ve olmamalıdır: `/catalog/services` listeyi zaten
+  // POPÜLERLİK sırasında döndürür (`services.sort_order`, bkz.
+  // web/scripts/servis-siralama.sql ve queries/catalog.sql ListVisibleServices).
+  // `Array.prototype.sort` ECMAScript'te KARARLIDIR, yani eşit `inStock`
+  // değerine sahip satırlar sunucudan geldikleri sırayı korur.
+  //
+  // Burada eskiden `countryCount` ve `name.localeCompare` ile ikincil sıralama
+  // vardı; ikisi de sunucunun popülerlik kararını eziyordu — sonuç, ilk
+  // ekranda WhatsApp yerine 65 ülkede stoklu ama kimsenin aramadığı
+  // servislerin (Whatnot, Adobe, Biedronka…) görünmesiydi.
+  satirlar.sort((a, b) => (a.inStock === b.inStock ? 0 : a.inStock ? -1 : 1));
 
   const stokluSayisi = satirlar.filter((s) => s.inStock).length;
   const ulkeSayisi = ulkeler?.items.length ?? 0;

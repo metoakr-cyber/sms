@@ -128,9 +128,21 @@ export function SiteNav() {
   );
 }
 
-// yil sunucuda hesaplanır: `new Date()` bileşen gövdesinde çağrılırsa
-// sunucu ve istemci farklı saniyelerde render edip yıl sınırında hidrasyon
-// uyuşmazlığı üretebilir.
+// DİKKAT — buradaki eski yorum yanlıştı: "yil sunucuda hesaplanır" DEĞİL.
+//
+// Bu dosyanın ilk satırı `'use client'`. Modül gövdesi İKİ KEZ çalışır:
+// SSR sırasında Node'un saatiyle, sonra tarayıcıda paket yüklenirken
+// kullanıcının saatiyle. Değeri bileşen gövdesine taşımak da bir şey
+// değiştirmez — iki ortam, iki ayrı saat.
+//
+// Sapma iki durumda gerçekleşir:
+//   1) 31 Aralık 23:59'da SSR edilip 1 Ocak 00:00'da hidre olan sayfa,
+//   2) saati yanlış kurulmuş cihaz — ki bu HER ZAMAN sapar.
+// İkisinde de React metin uyuşmazlığı raporlar.
+//
+// `suppressHydrationWarning` (aşağıda) sunucunun bastığı yılı KORUR; sunucu
+// saati zaten doğru referanstır. Kalıcı çözüm SiteFooter'ı ayrı bir SUNUCU
+// bileşenine taşımaktır — o zaman modül istemcide hiç çalışmaz.
 const yil = new Date().getFullYear();
 
 export function SiteFooter() {
@@ -154,7 +166,8 @@ export function SiteFooter() {
           <Link href="/iletisim" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">İletişim</Link>
         </div>
       </div>
-      <p className="mx-auto mt-8 max-w-6xl text-xs text-muted">
+      {/* suppressHydrationWarning: yukarıdaki `yil` açıklamasına bakın. */}
+      <p className="mx-auto mt-8 max-w-6xl text-xs text-muted" suppressHydrationWarning>
         © {yil} Onay360. Tüm hakları saklıdır.
       </p>
     </footer>

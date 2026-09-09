@@ -55,12 +55,21 @@ func TestSeedServiceCodesHaveLogoFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logo dizini okunamadı: %v", err)
 	}
-	// taban ad → var  ("wa.svg" ve "am.png" ikisi de "wa"/"am" sayılır.)
+	// Logo biçimi KAYNAĞA göre değişir: simple-icons vektör verir (.svg), site
+	// favicon'u ne veriyorsa o yazılır (.ico/.png/.jpg/.webp/.gif). Betik indirdiği
+	// baytın GERÇEK türünü uzantıya yazar — her şeyi ".png" diye kaydetmek, dosyayı
+	// açan herkesi yanıltır ve bir kez böyle bir hata yaşandı. Bu yüzden burada
+	// uzantı listesi geniş tutulur; test logonun VARLIĞINI doğrular, biçimini değil.
+	gecerli := map[string]bool{
+		".svg": true, ".png": true, ".ico": true,
+		".jpg": true, ".jpeg": true, ".webp": true, ".gif": true,
+	}
+	// taban ad → var  ("wa.svg" ve "am.ico" ikisi de "wa"/"am" sayılır.)
 	have := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		name := e.Name()
 		ext := filepath.Ext(name)
-		if ext != ".svg" && ext != ".png" {
+		if !gecerli[ext] {
 			continue
 		}
 		have[strings.TrimSuffix(name, ext)] = true
@@ -68,7 +77,7 @@ func TestSeedServiceCodesHaveLogoFiles(t *testing.T) {
 
 	for _, code := range seedServiceCodes(t) {
 		if !have[code] {
-			t.Errorf("servis %q için logo dosyası yok (web/public/servis-logolari/%s.svg|.png); "+
+			t.Errorf("servis %q için logo dosyası yok (web/public/servis-logolari/%s.*); "+
 				"ya logoyu ekleyin ya da tohumdan çıkarın", code, code)
 		}
 	}

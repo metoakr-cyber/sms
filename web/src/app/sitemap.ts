@@ -49,9 +49,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
   // işaretlenmiş URL gönderildi" hatasıyla raporlar ve haritanın tamamına
   // olan güveni düşürür. `scripts/seo-check.mjs` bu çelişkiyi artık ölçüyor:
   // haritadaki her URL çekilip noindex olmadığı doğrulanıyor.
-  // NEDEN /gizlilik ve /kullanim-sartlari BURADA YOK: ikisi de bugün "bu metin
-  // henüz yayımlanmadı" uyarısından ibaret. Boş bir yasal sayfayı site
-  // haritasıyla indekslenmeye ETKİN OLARAK sunmak, Google'ın "thin content"
-  // tanımına birebir uyar. Footer'dan bağlıdırlar, yani kullanıcı ulaşabilir;
-  // metinler yayımlandığı gün buraya da eklenmelidirler.
+  // NEDEN /gizlilik ve /kullanim-sartlari BURADA YOK:
+  //
+  //   /gizlilik  — hâlâ "bu metin henüz yayımlanmadı" uyarısından ibaret.
+  //                Boş bir yasal sayfayı site haritasıyla indekslenmeye ETKİN
+  //                OLARAK sunmak, Google'ın "thin content" tanımına birebir uyar.
+  //
+  //   /kullanim-sartlari — artık gerçek bir metin taşıyor, AMA sayfanın kendi
+  //                uyarısı "bu metin TASLAKTIR ve henüz yürürlüğe girmemiştir"
+  //                diyor. Yürürlükte olmayan bir sözleşmeyi arama motoruna
+  //                ETKİN OLARAK sunmak, onu yürürlükteymiş gibi gösterir.
+  //
+  // İkisi de footer'dan bağlıdır — kullanıcı ulaşabilir, Google da tarayabilir;
+  // burada olmamaları yalnız "biz sunmuyoruz" demektir. Metinler hukuki
+  // incelemeden geçip yayımlandığı gün buraya eklenmelidirler.
 }

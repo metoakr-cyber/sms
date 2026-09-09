@@ -57,7 +57,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* İlk boyamadan ÖNCE çalışmalı — aşağı taşınırsa beyaz patlama geri gelir. */}
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="min-h-screen-safe">
+      {/*
+        `suppressHydrationWarning` KALDIRILMASIN.
+
+        Tarayıcı eklentileri (Grammarly, parola yöneticileri, Dark Reader,
+        çeviri eklentileri) sunucu HTML'i geldikten SONRA, React hidrasyonu
+        başlamadan ÖNCE <body>'ye öznitelik yazar — `data-gr-ext-installed`,
+        `data-new-gr-c-s-check-loaded` gibi. React bunu sunucu/istemci
+        uyuşmazlığı sanar ve konsola "A tree hydrated but some attributes of
+        the server rendered HTML didn't match" hatası basar. Uygulama kodu
+        <body>'ye hiçbir şey yazmaz; hata tamamen dışarıdan gelir ve
+        uygulamada düzeltilebilecek bir karşılığı yoktur.
+
+        Bayrak YALNIZ bu öğenin KENDİ özniteliklerini kapsar, çocuklarına
+        İNMEZ — ölçüldü: <body> üzerindeki eklenti öznitelikleri susarken
+        hemen altındaki <a> öğesine eklenen öznitelik hâlâ raporlanıyor.
+        Yani gerçek uyuşmazlıklar maskelenmez.
+      */}
+      <body className="min-h-screen-safe" suppressHydrationWarning>
         {/* Klavye kullanıcısı için içeriğe atlama — her sayfada ilk odak */}
         <a
           href="#icerik"

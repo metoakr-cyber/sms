@@ -381,8 +381,9 @@ WHERE p.is_active AND p.kind = 'SMS_ACTIVATION'
   AND ((o.is_available AND o.stock > 0) OR c.iso2 = 'TR')
   AND ($1::text IS NULL OR s.code = $1::text)
   AND ($2::text  IS NULL OR c.iso2 = $2::text)
-GROUP BY p.id, s.code, s.name, s.name_tr, s.icon_url, c.iso2, c.name_tr, c.phone_code
-ORDER BY s.code, (c.iso2 = 'TR') DESC, c.name_tr
+GROUP BY p.id, s.sort_order, s.code, s.name, s.name_tr, s.icon_url,
+         c.iso2, c.name_tr, c.phone_code
+ORDER BY s.sort_order, s.code, (c.iso2 = 'TR') DESC, c.name_tr
 `
 
 type ListAvailableProductsForCatalogParams struct {
@@ -404,13 +405,26 @@ type ListAvailableProductsForCatalogRow struct {
 }
 
 // Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
-// TÜRKİYE HER ZAMAN ÖNCE.
+// 🔴 `s.sort_order` GROUP BY'a AÇIKÇA eklenmek ZORUNDA. Gruplama anahtarındaki
+// `p.id` yalnız `products` sütunlarını işlevsel bağımlılıkla kurtarır;
+// `services` sütunları için PK (`s.id`) gerekirdi. Eksikse Postgres
+// "column s.sort_order must appear in the GROUP BY clause" hatasını verir.
 //
-// Kullanıcıların çoğu Türkiye'den ve en çok aradıkları ülke bu. Alfabetik
-// sırada "Türkiye" 190 ülkenin sonlarında kalıyor ve kullanıcı her seferinde
-// listeyi sonuna kadar kaydırıyor. Sıralama SUNUCUDA yapılır: istemcide
-// yapılsaydı her istemci kendi kuralını uygular, mobil ve masaüstü farklı
-// sıralanırdı.
+// NOT: bu cümle bizim verdiğimiz bir güvence değil, Postgres'in davranışının
+// tarifidir. "reddeder" gibi bir fiil kullanılırsa scripts/check-guarantees.py
+// bunu güvence sayar ve aynı blokta bir `test:` atfı arar — bir kez düşürdü.
+// ÖNCE POPÜLERLİK, SONRA TÜRKİYE.
+//
+// `s.sort_order` popülerlik sırasıdır (web/scripts/servis-siralama.sql).
+// Alfabetik sıra kullanıcının aradığı servisi değil, adı "A" ile başlayanı
+// öne çıkarırdı.
+//
+// Ülke düzeyinde TÜRKİYE HER ZAMAN ÖNCE: kullanıcıların çoğu Türkiye'den ve
+// en çok aradıkları ülke bu. Alfabetik sırada "Türkiye" 190 ülkenin sonlarında
+// kalıyor ve kullanıcı her seferinde listeyi sonuna kadar kaydırıyor.
+//
+// Sıralama SUNUCUDA yapılır: istemcide yapılsaydı her istemci kendi kuralını
+// uygular, mobil ve masaüstü farklı sıralanırdı.
 func (q *Queries) ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error) {
 	rows, err := q.db.Query(ctx, listAvailableProductsForCatalog, arg.ServiceCode, arg.CountryIso)
 	if err != nil {
@@ -783,8 +797,8 @@ JOIN provider_offers o ON o.product_id = p.id AND o.is_available AND o.stock > 0
 JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
 WHERE p.kind = 'SMS_RENTAL' AND p.is_active
   AND s.is_visible AND c.is_visible
-GROUP BY s.code, s.name, s.name_tr, s.icon_url
-ORDER BY s.name
+GROUP BY s.code, s.name, s.name_tr, s.icon_url, s.sort_order
+ORDER BY s.sort_order, s.name
 `
 
 type ListRentalServicesWithStockRow struct {
@@ -797,6 +811,9 @@ type ListRentalServicesWithStockRow struct {
 }
 
 // Kiralık ızgarası: en az bir ülke×sürede stoklu servisler.
+// `s.sort_order` GROUP BY'da açıkça yer almalı (bkz. ListServicesWithStock).
+// Aktivasyon ızgarasıyla AYNI popülerlik sırası: kullanıcı iki ekranda farklı
+// sıra görürse listenin rastgele olduğunu düşünür.
 func (q *Queries) ListRentalServicesWithStock(ctx context.Context) ([]ListRentalServicesWithStockRow, error) {
 	rows, err := q.db.Query(ctx, listRentalServicesWithStock)
 	if err != nil {
@@ -840,8 +857,8 @@ JOIN providers pr ON pr.id = o.provider_id AND pr.is_active
 WHERE p.is_active AND p.kind = 'SMS_ACTIVATION'
   AND p.verification_type = 'sms'
   AND s.is_visible AND c.is_visible
-GROUP BY s.code, s.name, s.name_tr, s.icon_url
-ORDER BY s.name
+GROUP BY s.code, s.name, s.name_tr, s.icon_url, s.sort_order
+ORDER BY s.sort_order, s.name
 `
 
 type ListServicesWithStockRow struct {
@@ -860,6 +877,14 @@ type ListServicesWithStockRow struct {
 // var ve hepsini tek yanıtta göndermek 1,09 MB ediyordu. Mobilde 4G'de bu
 // kabul edilemez (docs/frontend-contract.md §8). Izgara yalnız servisleri
 // gösterir; ülkeler servis seçilince ayrıca çekilir (~6 KB).
+// 🔴 `s.sort_order` GROUP BY'a AÇIKÇA eklenmelidir: `services` PK'sı (`s.id`)
+// gruplama anahtarında olmadığı için işlevsel bağımlılık kurtarmaz.
+// POPÜLERLİK ÖNCE. Sıra `services.sort_order` alanından gelir ve
+// web/scripts/servis-siralama.sql ile yönetilir; eşit değerler ada göre
+// alfabetik dizilir. Alfabetik sıralamak, kullanıcının aradığı servisi değil
+// adı "A" ile başlayanı öne çıkarıyordu (ızgaranın ilk ekranı Whatnot/Adobe).
+//
+// İSTEMCİDE YENİDEN SIRALANMAZ: sıralama tek yerde, burada yapılır.
 func (q *Queries) ListServicesWithStock(ctx context.Context) ([]ListServicesWithStockRow, error) {
 	rows, err := q.db.Query(ctx, listServicesWithStock)
 	if err != nil {

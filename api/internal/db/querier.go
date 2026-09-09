@@ -267,13 +267,26 @@ type Querier interface {
 	// yer değiştirirse aynı satır iki sayfada birden görünür ya da hiç görünmez.
 	ListAuditLogsForAdmin(ctx context.Context, arg ListAuditLogsForAdminParams) ([]ListAuditLogsForAdminRow, error)
 	// Kullanıcıya gösterilecek katalog: en az bir sağlayıcıda stoklu ürünler.
-	// TÜRKİYE HER ZAMAN ÖNCE.
+	// 🔴 `s.sort_order` GROUP BY'a AÇIKÇA eklenmek ZORUNDA. Gruplama anahtarındaki
+	// `p.id` yalnız `products` sütunlarını işlevsel bağımlılıkla kurtarır;
+	// `services` sütunları için PK (`s.id`) gerekirdi. Eksikse Postgres
+	// "column s.sort_order must appear in the GROUP BY clause" hatasını verir.
 	//
-	// Kullanıcıların çoğu Türkiye'den ve en çok aradıkları ülke bu. Alfabetik
-	// sırada "Türkiye" 190 ülkenin sonlarında kalıyor ve kullanıcı her seferinde
-	// listeyi sonuna kadar kaydırıyor. Sıralama SUNUCUDA yapılır: istemcide
-	// yapılsaydı her istemci kendi kuralını uygular, mobil ve masaüstü farklı
-	// sıralanırdı.
+	// NOT: bu cümle bizim verdiğimiz bir güvence değil, Postgres'in davranışının
+	// tarifidir. "reddeder" gibi bir fiil kullanılırsa scripts/check-guarantees.py
+	// bunu güvence sayar ve aynı blokta bir `test:` atfı arar — bir kez düşürdü.
+	// ÖNCE POPÜLERLİK, SONRA TÜRKİYE.
+	//
+	// `s.sort_order` popülerlik sırasıdır (web/scripts/servis-siralama.sql).
+	// Alfabetik sıra kullanıcının aradığı servisi değil, adı "A" ile başlayanı
+	// öne çıkarırdı.
+	//
+	// Ülke düzeyinde TÜRKİYE HER ZAMAN ÖNCE: kullanıcıların çoğu Türkiye'den ve
+	// en çok aradıkları ülke bu. Alfabetik sırada "Türkiye" 190 ülkenin sonlarında
+	// kalıyor ve kullanıcı her seferinde listeyi sonuna kadar kaydırıyor.
+	//
+	// Sıralama SUNUCUDA yapılır: istemcide yapılsaydı her istemci kendi kuralını
+	// uygular, mobil ve masaüstü farklı sıralanırdı.
 	ListAvailableProductsForCatalog(ctx context.Context, arg ListAvailableProductsForCatalogParams) ([]ListAvailableProductsForCatalogRow, error)
 	// ─────────────────────── Ödeme yöntemleri ───────────────────────
 	// Yönetim: tüm yöntemler (pasifler dahil).
@@ -350,6 +363,9 @@ type Querier interface {
 	// verilir. Buradaki maliyet yalnız SIRALAMA içindir ve dışa açılmaz.
 	ListRentalDurationsForCatalog(ctx context.Context, arg ListRentalDurationsForCatalogParams) ([]ListRentalDurationsForCatalogRow, error)
 	// Kiralık ızgarası: en az bir ülke×sürede stoklu servisler.
+	// `s.sort_order` GROUP BY'da açıkça yer almalı (bkz. ListServicesWithStock).
+	// Aktivasyon ızgarasıyla AYNI popülerlik sırası: kullanıcı iki ekranda farklı
+	// sıra görürse listenin rastgele olduğunu düşünür.
 	ListRentalServicesWithStock(ctx context.Context) ([]ListRentalServicesWithStockRow, error)
 	// Dinamik süzgeç sqlc.narg deseniyle; Go'da string birleştirilmez.
 	//
@@ -368,6 +384,14 @@ type Querier interface {
 	// var ve hepsini tek yanıtta göndermek 1,09 MB ediyordu. Mobilde 4G'de bu
 	// kabul edilemez (docs/frontend-contract.md §8). Izgara yalnız servisleri
 	// gösterir; ülkeler servis seçilince ayrıca çekilir (~6 KB).
+	// 🔴 `s.sort_order` GROUP BY'a AÇIKÇA eklenmelidir: `services` PK'sı (`s.id`)
+	// gruplama anahtarında olmadığı için işlevsel bağımlılık kurtarmaz.
+	// POPÜLERLİK ÖNCE. Sıra `services.sort_order` alanından gelir ve
+	// web/scripts/servis-siralama.sql ile yönetilir; eşit değerler ada göre
+	// alfabetik dizilir. Alfabetik sıralamak, kullanıcının aradığı servisi değil
+	// adı "A" ile başlayanı öne çıkarıyordu (ızgaranın ilk ekranı Whatnot/Adobe).
+	//
+	// İSTEMCİDE YENİDEN SIRALANMAZ: sıralama tek yerde, burada yapılır.
 	ListServicesWithStock(ctx context.Context) ([]ListServicesWithStockRow, error)
 	// YÖNETİM GÖRÜNÜMÜ: yazarın kullanıcı adı da gelir — kim yanıtladı sorusu
 	// destek ekibinin iç sorusudur.

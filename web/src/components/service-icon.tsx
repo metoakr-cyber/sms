@@ -14,12 +14,19 @@ import { cx } from './ui';
  * `services.icon_url` alanı onlara işaret eder (`/servis-logolari/wa.svg`).
  * Ayarlamak için:  go run ./cmd/cli catalog:icon --service=wa --url=/servis-logolari/wa.svg
  *
- * ⚠️ GELİŞTİRME VERİTABANINDA BUGÜN `icon_url` BOŞ. Dosyalar `public/` altında
- * duruyor ama katalog kayıtları onlara işaret etmiyor; yani ana sayfadaki her
- * servis YEDEK görünümle çiziliyor. Bu yüzden yedek görünüm "geçici çözüm"
- * değil, GÖRÜLEN görünümdür ve ona göre tasarlandı: servis kodundan türetilen
- * kararlı bir renk + baş harfler. Katalog logolarla geri geldiğinde bileşen
- * kendiliğinden gerçek logoya döner.
+ * Yedek görünüm bir "geçici çözüm" DEĞİLDİR, sürekli görülen bir durumdur:
+ * katalogdaki her servisin logosu yoktur ve `icon_url` dolu olsa bile dosya
+ * eksik olabilir (ölçüldü: `/servisler` sayfasında SSR edilen logoların bir
+ * kısmı 404 dönüyordu). Bu yüzden yedek, servis kodundan türetilen kararlı
+ * bir renk + baş harflerle ayrı ayrı tasarlandı.
+ *
+ * HİDRASYON: bu bileşenin İLK render'ı sunucuda ve istemcide aynıdır —
+ * `renkSec` saf bir karma, `broken` başlangıçta `false`, `onError` yalnız
+ * bağlandıktan sonra çalışır. Ölçüldü (`/fiyatlar`, SSR HTML ↔ hidre DOM):
+ * renk sınıfı, `font-size` ve baş harfler birebir aynı; React uyarı vermiyor.
+ * Sunucuda basılmış bir `<img>` hidrasyondan ÖNCE hata verse bile yedeğe
+ * düşüyor — `/servisler`'de 55 logodan 404 dönenlerin hepsi rozete döndü,
+ * DOM'da kırık `<img>` kalmadı.
  */
 
 /** Yedek rozet paleti — `globals.css` içindeki ölçülmüş vurgu aileleri. */
