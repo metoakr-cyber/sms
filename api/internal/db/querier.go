@@ -18,6 +18,14 @@ type Querier interface {
 	// 🔴 reviewed_at, status ile AYNI ifadede yazılır: deposit_reviewed_has_time
 	// CHECK'i (00008_orders.sql) iki adımlı yazımda 23514 ile düşer.
 	ApproveDeposit(ctx context.Context, arg ApproveDepositParams) (Deposit, error)
+	// Sitedeki özet: kaç onaylı yorum ve ortalama puan.
+	//
+	// 🔴 ORTALAMA ONDA BİRLİK TAM SAYI OLARAK döner (4.7 → 47), kayan nokta
+	// olarak değil. Para değil ama aynı gerekçe geçerli: `float64` üzerinden
+	// taşınan bir ortalama JSON'da 4.699999999999999 olur ve arayüzde iki farklı
+	// yerde iki farklı yuvarlanır. Bölme TEK YERDE, gösterimde yapılır.
+	// Yorum yoksa total 0 gelir ve ARAYÜZ BÖLÜMÜ HİÇ RENDER ETMEZ.
+	ApprovedReviewStats(ctx context.Context) (ApprovedReviewStatsRow, error)
 	AssignRole(ctx context.Context, arg AssignRoleParams) error
 	// SAHİPLENME: sağlayıcıda kapatma denemesini TEK bir işçiye verir.
 	//
@@ -54,8 +62,18 @@ type Querier interface {
 	CountDimensionMaps(ctx context.Context, arg CountDimensionMapsParams) (int64, error)
 	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
 	CountOrderMessages(ctx context.Context, orderID int64) (int64, error)
+	// Yönetim menüsündeki rozet için: kaç yorum karar bekliyor.
+	CountPendingReviews(ctx context.Context) (int64, error)
+	// Süzgeç koşulu ListReviewsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
+	// sayfalama "23 kayıt" der ama 12 satır gösterir.
+	CountReviewsForAdmin(ctx context.Context, status *ReviewStatus) (int64, error)
+	CountReviewsForUser(ctx context.Context, userID int64) (int64, error)
+	// Süzgeç koşulu ListTicketsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
+	// sayfalama "23 kayıt" der ama 12 satır gösterir.
+	CountTicketsForAdmin(ctx context.Context, arg CountTicketsForAdminParams) (int64, error)
 	CountUserDeposits(ctx context.Context, userID int64) (int64, error)
 	CountUserOrders(ctx context.Context, userID int64) (int64, error)
+	CountUserTickets(ctx context.Context, userID int64) (int64, error)
 	CountUsersForAdmin(ctx context.Context, arg CountUsersForAdminParams) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
 	// Bakiye yükleme talepleri (FR-500 … FR-503).
@@ -77,9 +95,41 @@ type Querier interface {
 	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
 	// ─────────────────────── Teklif ───────────────────────
 	CreateQuote(ctx context.Context, arg CreateQuoteParams) (PriceQuote, error)
+	// Müşteri yorumları.
+	//
+	// ÜÇ AYRI SORGU AİLESİ vardır ve karıştırılmaz:
+	//   *ForUser   → sahiplik SORGUNUN PARÇASIDIR (değişmez #7)
+	//   *ForAdmin  → sahiplik kısıtı yoktur; koruma izin ara katmanındadır
+	//   Approved*  → OTURUMSUZ, sitede gösterilir; KİŞİSEL VERİ SEÇMEZ
+	// Durum İSTEMCİDEN ALINMAZ: yeni yorum her zaman PENDING'dir (varsayılan) ve
+	// oradan yalnız durum makinesi çıkarır (değişmez #13).
+	//
+	// 🔴 "Bu kullanıcının bekleyen yorumu var mı?" diye ÖNCE SELECT YAPILMAZ.
+	// Kısıt kısmi benzersiz indekstedir (reviews_one_pending_per_user_idx) ve bu
+	// INSERT 23505 ile düşer. Uygulama katmanındaki kontrol iki eşzamanlı isteğin
+	// ikisi tarafından da geçilirdi.
+	// test: internal/service/review/review_integration_test.go#TestConcurrentSubmitsLeaveOnePending
+	CreateReview(ctx context.Context, arg CreateReviewParams) (Review, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	// Destek talepleri (FR-600).
+	//
+	// İKİ AYRI SORGU AİLESİ vardır ve karıştırılmaz:
+	//   *ForUser  → sahiplik SORGUNUN PARÇASIDIR (değişmez #7)
+	//   *ForAdmin → sahiplik kısıtı yoktur; koruma izin ara katmanındadır
+	CreateTicket(ctx context.Context, arg CreateTicketParams) (Ticket, error)
+	// 🔴 is_staff AÇIKÇA VERİLİR. Sütunun varsayılanı yoktur (00012_tickets.sql):
+	// parametreyi unutan bir çağrı derlenmez ya da veritabanında düşer, sessizce
+	// "kullanıcı yazdı" diye kaydedilmez (KK-600).
+	CreateTicketMessage(ctx context.Context, arg CreateTicketMessageParams) (TicketMessage, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeactivatePricingRule(ctx context.Context, id int64) error
+	// Kararı YAZAR, VERMEZ. Yeni durum serviste domain/review ile hesaplanır
+	// (değişmez #13); bu sorgu yalnız sonucu kaydeder.
+	//
+	// 🔴 status, rejection_reason ve reviewed_at AYNI İFADEDE yazılır:
+	// review_decided_has_time ve review_reason_only_when_rejected CHECK'leri
+	// iki adımlı bir yazımda 23514 ile düşer.
+	DecideReview(ctx context.Context, arg DecideReviewParams) (Review, error)
 	// Yöntem SİLİNİR ama geçmiş yükleme kayıtları KALIR: deposits.method_id
 	// ON DELETE SET NULL ve method_name anlık görüntü olarak saklanıyor.
 	DeleteDepositMethod(ctx context.Context, publicID uuid.UUID) error
@@ -148,9 +198,20 @@ type Querier interface {
 	// sipariş geçmişi bir yıl sonra da okunabilir olmalıdır.
 	GetQuoteContext(ctx context.Context, quoteID int64) (GetQuoteContextRow, error)
 	GetRemoteCode(ctx context.Context, arg GetRemoteCodeParams) (string, error)
+	// SAHİPLİK SORGUNUN PARÇASIDIR (değişmez #7). Başkasının yorumu ile var
+	// olmayan yorum AYNI sonucu (sıfır satır) verir; servis ikisini de
+	// ErrNotFound'a çevirir.
+	// test: internal/transport/http/handler/review_integration_test.go#TestUserCannotSeeOthersReview
+	GetReviewForUser(ctx context.Context, arg GetReviewForUserParams) (Review, error)
 	GetRoleByName(ctx context.Context, name string) (Role, error)
 	GetServiceByCode(ctx context.Context, code string) (Service, error)
 	GetSession(ctx context.Context, id string) (Session, error)
+	// Sayısal id dışarı verilmez: kullanıcı users.public_id ile gösterilir.
+	GetTicketForAdmin(ctx context.Context, publicID uuid.UUID) (GetTicketForAdminRow, error)
+	// SAHİPLİK SORGUNUN PARÇASIDIR (CLAUDE.md değişmez #7). Başkasının talebi ile
+	// var olmayan talep AYNI sonucu (sıfır satır) verir; servis ikisini de
+	// ErrNotFound'a çevirir.
+	GetTicketForUser(ctx context.Context, arg GetTicketForUserParams) (Ticket, error)
 	GetUserBalance(ctx context.Context, id int64) (int64, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id int64) (User, error)
@@ -180,6 +241,18 @@ type Querier interface {
 	// En spesifik olanı seçmek domain/pricing.SelectRule'ün işidir; öncelik
 	// mantığı SQL'e dağıtılmaz, tek yerde kalır (docs/trd.md FR-303).
 	ListApplicableRules(ctx context.Context, arg ListApplicableRulesParams) ([]PricingRule, error)
+	// 🔴 SİTEDE GÖSTERİLEN LİSTE — OTURUMSUZ ERİŞİLİR.
+	//
+	// E-POSTA, sayısal id ve user_id BU SORGUDA SEÇİLMEZ. "Yanıtta gizleriz"
+	// yeterli değildir: alan seçilirse bir gün birinin onu DTO'ya koyması bir
+	// satır uzaklıktadır ve sızıntı sessiz olur. Seçilmeyen sütun sızamaz.
+	// test: internal/transport/http/handler/review_integration_test.go#TestPublicReviewsNeverExposeEmail
+	//
+	// DISTINCT ON (user_id): bir kullanıcının zaman içinde birden fazla onaylı
+	// yorumu olabilir (fikri değişip yenisini yazar). Sitede YALNIZ EN SONU
+	// gösterilir; aksi hâlde aynı kişi listede iki kez çıkar ve yorum sayısı
+	// gerçekte olduğundan kalabalık görünür.
+	ListApprovedReviews(ctx context.Context, lim int32) ([]ListApprovedReviewsRow, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
 	// ─────────────────────── Denetim kaydı okuma (FR-705) ───────────────────────
 	// Aktör / varlık / eylem / tarih süzgeçli, sayfalı denetim kaydı.
@@ -278,6 +351,16 @@ type Querier interface {
 	ListRentalDurationsForCatalog(ctx context.Context, arg ListRentalDurationsForCatalogParams) ([]ListRentalDurationsForCatalogRow, error)
 	// Kiralık ızgarası: en az bir ülke×sürede stoklu servisler.
 	ListRentalServicesWithStock(ctx context.Context) ([]ListRentalServicesWithStockRow, error)
+	// Dinamik süzgeç sqlc.narg deseniyle; Go'da string birleştirilmez.
+	//
+	// Yönetim görünümü kullanıcıyı TANIMLAR (e-posta dâhil): moderasyon kararı
+	// kimin yazdığını bilmeden verilemez. Bu sütunlar SİTEDEKİ sorguda YOKTUR.
+	// Bekleyenler EN ESKİ ÖNCE: moderasyon bir kuyruktur, en uzun bekleyen ilk
+	// sırada olmalı. Karara bağlanmışlar en yeni önce: yönetici son ne yaptığına
+	// bakar. Tek bir sıralama ikisini de doğru yapamaz.
+	ListReviewsForAdmin(ctx context.Context, arg ListReviewsForAdminParams) ([]ListReviewsForAdminRow, error)
+	// Kullanıcının KENDİ yorumları ve durumları. En yeni üstte.
+	ListReviewsForUser(ctx context.Context, arg ListReviewsForUserParams) ([]Review, error)
 	// Servis IZGARASI için özet: yalnız en az bir ülkede STOKLU olan servisler,
 	// her biri için stoklu ülke sayısı.
 	//
@@ -286,6 +369,26 @@ type Querier interface {
 	// kabul edilemez (docs/frontend-contract.md §8). Izgara yalnız servisleri
 	// gösterir; ülkeler servis seçilince ayrıca çekilir (~6 KB).
 	ListServicesWithStock(ctx context.Context) ([]ListServicesWithStockRow, error)
+	// YÖNETİM GÖRÜNÜMÜ: yazarın kullanıcı adı da gelir — kim yanıtladı sorusu
+	// destek ekibinin iç sorusudur.
+	ListTicketMessagesForAdmin(ctx context.Context, ticketID int64) ([]ListTicketMessagesForAdminRow, error)
+	// KULLANICI GÖRÜNÜMÜ: personelin kullanıcı adı SEÇİLMEZ.
+	//
+	// Personelin kimliği kullanıcıya gösterilmez; yazar etiketi is_staff'tan
+	// türetilir ("Destek ekibi"). Sütunu getirip DTO'da atmak, bir gün birinin
+	// onu yanıta koymasını bir satır uzaklığa indirirdi.
+	// test: internal/transport/http/handler/ticket_integration_test.go#TestStaffUsernameNeverLeaksToUser
+	ListTicketMessagesForUser(ctx context.Context, ticketID int64) ([]ListTicketMessagesForUserRow, error)
+	// Dinamik süzgeç sqlc.narg deseniyle; Go'da string birleştirilmez.
+	//
+	// İKİ AYRI SÜZGEÇ vardır ve ikisi de gereklidir:
+	//   status      → tam durum eşleşmesi ("Kapatılanları göster")
+	//   only_pending→ YÖNETİCİNİN KUYRUĞU: OPEN **ve** USER_REPLIED birlikte
+	//
+	// "Açık talepler" TEK BİR DURUM DEĞİLDİR. Yalnız OPEN süzmek, kullanıcının
+	// yanıt yazdığı (USER_REPLIED) talepleri varsayılan ekrandan gizler — yani
+	// yanıt bekleyen müşteri görünmez olur.
+	ListTicketsForAdmin(ctx context.Context, arg ListTicketsForAdminParams) ([]ListTicketsForAdminRow, error)
 	// `activation-reaper` için: terminal ama sağlayıcıda kapatılmamış siparişler.
 	// KK-412: bu sorgunun sonucu uzun vadede BOŞ olmalıdır.
 	//
@@ -303,6 +406,8 @@ type Querier interface {
 	ListUserDeposits(ctx context.Context, arg ListUserDepositsParams) ([]Deposit, error)
 	ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]Order, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
+	// tickets_user_idx (user_id, last_reply_at DESC) tam olarak bu sıralamayı kullanır.
+	ListUserTickets(ctx context.Context, arg ListUserTicketsParams) ([]ListUserTicketsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	// Yönetim kullanıcı listesi.
 	//
@@ -333,6 +438,17 @@ type Querier interface {
 	// Teklifi KİLİTLER. Aynı teklifle iki eşzamanlı satın alma denemesinde
 	// yalnız biri geçmelidir (docs/trd.md KK-402).
 	LockQuoteForConsumption(ctx context.Context, arg LockQuoteForConsumptionParams) (PriceQuote, error)
+	// Yönetim yolu: ÇAĞIRANIN TRANSACTION'I İÇİNDE. Kilit, aynı yoruma iki
+	// yöneticinin aynı anda karar vermesini (biri onay, biri red) engeller.
+	LockReview(ctx context.Context, publicID uuid.UUID) (Review, error)
+	// Yönetim yolu: sahiplik kısıtı YOKTUR, izin kontrolü middleware'dedir
+	// (tickets:reply).
+	LockTicket(ctx context.Context, publicID uuid.UUID) (Ticket, error)
+	// ÇAĞIRANIN TRANSACTION'I İÇİNDE çağrılır. Kilit, aynı talebe iki mesajın
+	// eşzamanlı yazılıp durumun ikisinden yalnız birine göre hesaplanmasını
+	// engeller. Sahiplik yine SORGUDADIR — kilit almak yetki vermez.
+	// test: internal/service/ticket/ticket_integration_test.go#TestUserCannotWriteToOthersTicket
+	LockTicketForUser(ctx context.Context, arg LockTicketForUserParams) (Ticket, error)
 	// Kullanıcı satırını KİLİTLER. Bu satır olmadan çift harcama mümkündür:
 	// iki eşzamanlı istek aynı bakiyeyi okuyup ikisi de yeterli sanabilir.
 	// Kilit, transaction bitene kadar tutulur.
@@ -384,6 +500,10 @@ type Querier interface {
 	SetProviderRefundStatus(ctx context.Context, arg SetProviderRefundStatusParams) error
 	// Servis logosunu ayarlar. Yol `web/public/` köküne göredir: /servis-logolari/wa.svg
 	SetServiceIcon(ctx context.Context, arg SetServiceIconParams) (SetServiceIconRow, error)
+	// 🔴 closed_at, status ile AYNI ifadede yazılır: ticket_closed_has_time
+	// CHECK'i (00012_tickets.sql) iki adımlı yazımda 23514 ile düşer.
+	// Talep yeniden açılırken closed_at NULL'a döner.
+	SetTicketStatus(ctx context.Context, arg SetTicketStatusParams) (Ticket, error)
 	SetUserBalance(ctx context.Context, arg SetUserBalanceParams) error
 	SetUserStatus(ctx context.Context, arg SetUserStatusParams) error
 	// Yönetim: kullanıcı durumunu değiştirir.
@@ -401,6 +521,11 @@ type Querier interface {
 	// Kâr raporu ve muhasebe özeti girdisi.
 	SumLedgerByType(ctx context.Context, arg SumLedgerByTypeParams) ([]SumLedgerByTypeRow, error)
 	TouchSession(ctx context.Context, id string) error
+	// Mesaj eklendikten SONRA durumu ve son yanıt zamanını yazar.
+	//
+	// Yeni durum SERVİSTE domain/ticket ile hesaplanır (değişmez #13): bu sorgu
+	// karar vermez, kararı yazar.
+	TouchTicketAfterMessage(ctx context.Context, arg TouchTicketAfterMessageParams) (Ticket, error)
 	UpdateDepositMethod(ctx context.Context, arg UpdateDepositMethodParams) (DepositMethod, error)
 	UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) error
 	// API anahtarı güncelleme — AYRI bir sorgu.

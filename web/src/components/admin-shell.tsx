@@ -18,6 +18,7 @@ const NAV = [
   { href: '/yonetim/fiyatlar',         label: 'Fiyat kuralları' },
   { href: '/yonetim/odeme-yontemleri', label: 'Ödeme yöntemleri' },
   { href: '/yonetim/saglayicilar',     label: 'Sağlayıcılar' },
+  { href: '/yonetim/destek',           label: 'Destek' },
   { href: '/yonetim/denetim',          label: 'Denetim kaydı' },
 ];
 

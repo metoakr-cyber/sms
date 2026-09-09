@@ -80,8 +80,11 @@ type stubProvider struct {
 	statusMessages []port.RemoteMessage
 	// purchaseHook satın alma çağrısının ortasında çalıştırılır.
 	purchaseHook func()
-	expiresIn    time.Duration
-	now          func() time.Time
+	// forceRemoteID doluysa sağlayıcı HER satın almada bu kimliği döner —
+	// "sağlayıcı aynı aktivasyon kimliğini iki kez verdi" durumunu üretir.
+	forceRemoteID string
+	expiresIn     time.Duration
+	now           func() time.Time
 
 	/* ── Toplu yoklama (port.BatchPoller) ── */
 
@@ -148,8 +151,15 @@ func (p *stubProvider) Purchase(_ context.Context, _ port.Creds, cmd port.Purcha
 	if fail != nil {
 		return nil, fail
 	}
+	p.mu.Lock()
+	zorla := p.forceRemoteID
+	p.mu.Unlock()
+	uzakID := fmt.Sprintf("%d", 900000+n)
+	if zorla != "" {
+		uzakID = zorla
+	}
 	return &port.PurchaseResult{
-		RemoteOrderID: fmt.Sprintf("%d", 900000+n),
+		RemoteOrderID: uzakID,
 		PhoneNumber:   "+905551234567",
 		Cost:          money.New(1_000_000, money.USD),
 		ExpiresAt:     p.now().Add(p.expiresIn),
@@ -1059,5 +1069,61 @@ func TestClientDisconnectStillRefunds(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("🔴 iade defter kaydı yok (%d) — bakiye tesadüfen mi tuttu?", n)
+	}
+}
+
+// TestDuplicateRemoteIDIsNotInternalError
+//
+// 🔴 SAĞLAYICININ HATASI BİZİM 500'ÜMÜZ OLAMAZ.
+//
+// Sağlayıcı daha önce kullandığımız bir aktivasyon kimliğini tekrar verirse
+// `orders_remote_uniq` ihlali oluşur. Bu, kullanıcıya 500/INTERNAL olarak
+// dönüyordu: istemci "sunucu bozuldu" sanıp yeniden deniyor ve olay Sentry'de
+// gerçek arızalarla aynı kovaya düşüyordu. Yük testinde 684 kez yaşandı ve
+// gerçek hataları gizledi.
+//
+// Doğru sınıf: sağlayıcı erişilemez/hatalı (503). Para kaybı YOKTUR —
+// çağıran iadeyi yazar; bu test onu da doğrular.
+func TestDuplicateRemoteIDIsNotInternalError(t *testing.T) {
+	e := setup(t, 100_000)
+	ctx := context.Background()
+
+	// İlk sipariş: kimliği veritabanına yazılır.
+	ilk := e.newPendingOrder(t)
+	var remoteID string
+	if err := pool.QueryRow(ctx,
+		`SELECT remote_order_id FROM orders WHERE id=$1`, ilk.ID).Scan(&remoteID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sağlayıcı AYNI kimliği tekrar versin.
+	e.stub.mu.Lock()
+	e.stub.forceRemoteID = remoteID
+	e.stub.mu.Unlock()
+
+	quote := e.makeQuote(t, 2_500)
+	oncesi := e.balance(t)
+
+	_, err := e.svc.Create(ctx, ordersvc.CreateInput{UserID: e.userID, QuoteID: quote})
+	if err == nil {
+		t.Fatal("çakışan kimlikle sipariş yazıldı — tekil indeks çalışmıyor")
+	}
+
+	// (1) HATA SINIFI: iç hata DEĞİL, sağlayıcı hatası.
+	ae, ok := apperr.As(err)
+	if !ok {
+		t.Fatalf("tipsiz hata: %v", err)
+	}
+	if ae.Code == "INTERNAL" {
+		t.Errorf("🔴 sağlayıcı kaynaklı çakışma INTERNAL/500 olarak döndü — "+
+			"istemci yeniden dener ve olay Sentry'de gerçek arızaları gizler (hata: %v)", err)
+	}
+	if st := ae.HTTPStatus(); st == 500 {
+		t.Errorf("🔴 durum kodu 500 — sağlayıcı hatası 5xx/503 sınıfında olmalı ama INTERNAL değil")
+	}
+
+	// (2) PARA GERİ VERİLMİŞ olmalı.
+	if sonrasi := e.balance(t); sonrasi != oncesi {
+		t.Fatalf("🔴 iade yazılmadı: bakiye %d → %d", oncesi, sonrasi)
 	}
 }

@@ -9,6 +9,8 @@ package fake
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -22,6 +24,12 @@ type Provider struct {
 
 	clock port.Clock
 	seq   int64
+	// nonce süreç ömrü boyunca sabit, rastgele bir ek. Uzak sipariş
+	// kimliğinin KALICI bir veritabanında iki koşum arasında çakışmasını
+	// engeller — sayaç her açılışta sıfırlanıyor.
+	//
+	// test: fake_test.go#TestRemoteOrderIDIsUniquePerProcess
+	nonce string
 
 	catalog map[key]*entry        // fiyat/stok
 	orders  map[string]*fakeOrder // remoteID -> sipariş
@@ -82,7 +90,14 @@ func New(clock port.Clock) *Provider {
 	if clock == nil {
 		clock = port.RealClock{}
 	}
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		// Rastgelelik alınamıyorsa süreç zamanına düşeriz: amaç gizlilik
+		// değil, iki koşumun aynı kimliği üretmemesi.
+		b = []byte(fmt.Sprintf("%08x", time.Now().UnixNano()))[:4]
+	}
 	p := &Provider{
+		nonce:        hex.EncodeToString(b),
 		clock:        clock,
 		catalog:      make(map[key]*entry),
 		orders:       make(map[string]*fakeOrder),

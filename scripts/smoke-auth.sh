@@ -18,10 +18,18 @@ cd "$(dirname "$0")/.."
 # ortamı ezmez. İki yerde iki farklı öncelik olamaz.
 _pre_db="${DATABASE_URL:-}"
 _pre_redis="${REDIS_URL:-}"
+# PORT DA DIŞARIDAN VERİLEBİLİR OLMALI.
+#
+# Betik kendi sunucusunu başlatır ve port doluysa hiç koşmaz. .env'deki tek
+# değere bağlıyken `make dev` ayaktayken `make check` hiç çalışmıyordu:
+# geliştirici ya sunucusunu kapatacaktı ya da kapıyı atlayacaktı. İkincisi
+# daha kolay olduğu için genelde o seçilir.
+_pre_addr="${HTTP_ADDR:-}"
 set -a && source .env && set +a
 [ -n "$_pre_db" ] && DATABASE_URL="$_pre_db"
 [ -n "$_pre_redis" ] && REDIS_URL="$_pre_redis"
-export DATABASE_URL REDIS_URL
+[ -n "$_pre_addr" ] && HTTP_ADDR="$_pre_addr"
+export DATABASE_URL REDIS_URL HTTP_ADDR
 
 PORT="${HTTP_ADDR#:}"
 API="http://localhost:$PORT/api/v1"
@@ -152,6 +160,7 @@ SIZE=$(rediscli DBSIZE 2>/dev/null | tr -dc '0-9')
 # söylemeyen bir hata, hatanın kendisinden daha çok zaman kaybettirir.
 if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "✗ $PORT portu zaten kullanımda — muhtemelen 'make dev' çalışıyor."
+  echo "  Sunucuyu kapatmadan koşturmak için: HTTP_ADDR=:18091 $0"
   echo "  Duman testi kendi sunucusunu başlatır; önce diğerini durdurun."
   exit 1
 fi

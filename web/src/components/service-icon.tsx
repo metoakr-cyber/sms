@@ -13,10 +13,56 @@ import { cx } from './ui';
  * Logolar `web/public/servis-logolari/` altında durur ve veritabanındaki
  * `services.icon_url` alanı onlara işaret eder (`/servis-logolari/wa.svg`).
  * Ayarlamak için:  go run ./cmd/cli catalog:icon --service=wa --url=/servis-logolari/wa.svg
+ *
+ * ⚠️ GELİŞTİRME VERİTABANINDA BUGÜN `icon_url` BOŞ. Dosyalar `public/` altında
+ * duruyor ama katalog kayıtları onlara işaret etmiyor; yani ana sayfadaki her
+ * servis YEDEK görünümle çiziliyor. Bu yüzden yedek görünüm "geçici çözüm"
+ * değil, GÖRÜLEN görünümdür ve ona göre tasarlandı: servis kodundan türetilen
+ * kararlı bir renk + baş harfler. Katalog logolarla geri geldiğinde bileşen
+ * kendiliğinden gerçek logoya döner.
  */
+
+/** Yedek rozet paleti — `globals.css` içindeki ölçülmüş vurgu aileleri. */
+const PALET = ['mavi', 'mor', 'yesil', 'turuncu', 'pembe', 'deniz'] as const;
+export type ServisRenk = (typeof PALET)[number];
+
+const ZEMIN: Record<ServisRenk, string> = {
+  mavi:    'bg-[var(--v-mavi-zemin)]    text-[var(--v-mavi-metin)]',
+  mor:     'bg-[var(--v-mor-zemin)]     text-[var(--v-mor-metin)]',
+  yesil:   'bg-[var(--v-yesil-zemin)]   text-[var(--v-yesil-metin)]',
+  turuncu: 'bg-[var(--v-turuncu-zemin)] text-[var(--v-turuncu-metin)]',
+  pembe:   'bg-[var(--v-pembe-zemin)]   text-[var(--v-pembe-metin)]',
+  deniz:   'bg-[var(--v-deniz-zemin)]   text-[var(--v-deniz-metin)]',
+};
+
+/**
+ * Ada göre KARARLI renk seçer.
+ *
+ * Rastgele seçilseydi renk her render'da (ve sunucu ile istemci arasında)
+ * değişir, hidrasyon uyuşmazlığı üretirdi. Basit bir toplama karması yeterli:
+ * amaç güvenlik değil, "WhatsApp her yerde aynı renkte görünsün".
+ */
+function renkSec(anahtar: string): ServisRenk {
+  let t = 0;
+  for (let i = 0; i < anahtar.length; i++) t = (t * 31 + anahtar.charCodeAt(i)) >>> 0;
+  return PALET[t % PALET.length] ?? 'mavi';
+}
+
+/** Baş harfler: iki kelimeli adlarda her kelimenin ilki ("Google Voice" → GV). */
+function basHarfler(ad: string): string {
+  const kelimeler = ad.trim().split(/[\s._-]+/).filter(Boolean);
+  const [ilk, ikinci] = kelimeler;
+  if (ilk && ikinci) return `${ilk[0] ?? ''}${ikinci[0] ?? ''}`.toLocaleUpperCase('tr');
+  return ad.trim().slice(0, 2).toLocaleUpperCase('tr');
+}
+
 export function ServiceIcon({
-  name, iconUrl, className, size = 32,
-}: { name: string; iconUrl?: string; className?: string; size?: number }) {
+  name, iconUrl, className, size = 32, renk,
+}: {
+  name: string; iconUrl?: string; className?: string; size?: number;
+  /** Izgarada sıraya göre renk dağıtmak için. Verilmezse addan türetilir. */
+  renk?: ServisRenk;
+}) {
   const [broken, setBroken] = React.useState(false);
   const show = iconUrl && !broken;
 
@@ -24,9 +70,11 @@ export function ServiceIcon({
   // servis, logo düzeltildikten sonra da harf rozetinde kalırdı.
   React.useEffect(() => setBroken(false), [iconUrl]);
 
+  const secilen = renk ?? renkSec(name);
+
   return (
     <span
-      className={cx('grid shrink-0 place-items-center overflow-hidden rounded-lg', className)}
+      className={cx('grid shrink-0 place-items-center overflow-hidden rounded-xl', className)}
       style={{ width: size, height: size }}
       aria-hidden
     >
@@ -47,11 +95,13 @@ export function ServiceIcon({
         />
       ) : (
         <span
-          className="grid size-full place-items-center bg-brand-500/15 text-[11px]
-                     font-bold uppercase text-brand-300"
-          style={{ fontSize: Math.max(10, size * 0.36) }}
+          className={cx(
+            'grid size-full place-items-center font-bold uppercase tracking-tight',
+            ZEMIN[secilen],
+          )}
+          style={{ fontSize: Math.max(11, Math.round(size * 0.36)) }}
         >
-          {name.trim().slice(0, 2)}
+          {basHarfler(name)}
         </span>
       )}
     </span>

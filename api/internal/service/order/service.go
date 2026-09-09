@@ -19,7 +19,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -192,6 +194,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (db.Order, error) 
 		if refundErr := s.refundHold(t2, hold, err); refundErr != nil {
 			slog.Error("sipariş yazılamadı VE iade yazılamadı",
 				"quote", hold.QuotePublicID, "err", err, "refund_err", refundErr)
+		}
+		// Sağlayıcı kaynaklı hatalar (örn. tekrar eden aktivasyon kimliği)
+		// TİPLİ hataya çevrilir; ham hata yukarı giderse transport onu
+		// apperr.Internal ile sarar ve kullanıcıya 500 döner.
+		if errors.Is(err, port.ErrUnavailable) || errors.Is(err, port.ErrOutOfStock) {
+			return db.Order{}, mapProviderError(err)
 		}
 		return db.Order{}, err
 	}
@@ -378,12 +386,36 @@ func (s *Service) persist(ctx context.Context, h hold, res *port.PurchaseResult)
 			CancellableAt: now.Add(defaultCancelGrace),
 		})
 		if err != nil {
+			// 🔴 UZAK KİMLİK ÇAKIŞMASI BİZİM İÇ HATAMIZ DEĞİL.
+			//
+			// `orders_remote_uniq` ihlali (23505), sağlayıcının daha önce
+			// kullandığımız bir kimliği tekrar vermesi demektir. Kullanıcıya
+			// 500/INTERNAL dönmek iki şeyi birden bozar: durum kodu yanlış
+			// olur (istemci "sunucu bozuldu" sanır ve yeniden dener) ve
+			// Sentry'de gerçek arızalarla aynı kovaya düşer.
+			//
+			// Yük testinde bu 684 kez yaşandı ve gerçek hataları gizledi.
+			// Para kaybı YOKTUR: çağıran iadeyi yazar.
+			// test: order_integration_test.go#TestDuplicateRemoteIDIsNotInternalError
+			if isUniqueViolation(err, "orders_remote_uniq") {
+				return fmt.Errorf("%w: sağlayıcı daha önce kullanılmış bir "+
+					"aktivasyon kimliği döndürdü", port.ErrUnavailable)
+			}
 			return apperr.Internal(err)
 		}
 		out = ord
 		return nil
 	})
 	return out, err
+}
+
+// isUniqueViolation belirli bir tekil indeks ihlali mi.
+func isUniqueViolation(err error, kısıt string) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, kısıt)
 }
 
 // refundHold satın alma başarısızsa parayı geri verir.

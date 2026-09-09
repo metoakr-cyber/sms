@@ -408,6 +408,136 @@ func (ns NullRefundStatus) Value() (driver.Value, error) {
 	return string(ns.RefundStatus), nil
 }
 
+type ReviewStatus string
+
+const (
+	ReviewStatusPENDING  ReviewStatus = "PENDING"
+	ReviewStatusAPPROVED ReviewStatus = "APPROVED"
+	ReviewStatusREJECTED ReviewStatus = "REJECTED"
+)
+
+func (e *ReviewStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ReviewStatus(s)
+	case string:
+		*e = ReviewStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ReviewStatus: %T", src)
+	}
+	return nil
+}
+
+type NullReviewStatus struct {
+	ReviewStatus ReviewStatus
+	Valid        bool // Valid is true if ReviewStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullReviewStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.ReviewStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ReviewStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullReviewStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ReviewStatus), nil
+}
+
+type TicketPriority string
+
+const (
+	TicketPriorityLOW    TicketPriority = "LOW"
+	TicketPriorityNORMAL TicketPriority = "NORMAL"
+	TicketPriorityHIGH   TicketPriority = "HIGH"
+)
+
+func (e *TicketPriority) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = TicketPriority(s)
+	case string:
+		*e = TicketPriority(s)
+	default:
+		return fmt.Errorf("unsupported scan type for TicketPriority: %T", src)
+	}
+	return nil
+}
+
+type NullTicketPriority struct {
+	TicketPriority TicketPriority
+	Valid          bool // Valid is true if TicketPriority is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullTicketPriority) Scan(value interface{}) error {
+	if value == nil {
+		ns.TicketPriority, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.TicketPriority.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullTicketPriority) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.TicketPriority), nil
+}
+
+type TicketStatus string
+
+const (
+	TicketStatusOPEN        TicketStatus = "OPEN"
+	TicketStatusANSWERED    TicketStatus = "ANSWERED"
+	TicketStatusUSERREPLIED TicketStatus = "USER_REPLIED"
+	TicketStatusCLOSED      TicketStatus = "CLOSED"
+)
+
+func (e *TicketStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = TicketStatus(s)
+	case string:
+		*e = TicketStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for TicketStatus: %T", src)
+	}
+	return nil
+}
+
+type NullTicketStatus struct {
+	TicketStatus TicketStatus
+	Valid        bool // Valid is true if TicketStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullTicketStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.TicketStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.TicketStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullTicketStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.TicketStatus), nil
+}
+
 type TokenPurpose string
 
 const (
@@ -804,6 +934,20 @@ type RentalDetail struct {
 	CreatedAt     time.Time
 }
 
+type Review struct {
+	ID               int64
+	PublicID         uuid.UUID
+	UserID           int64
+	Rating           int16
+	Body             string
+	Status           ReviewStatus
+	RejectionReason  string
+	ReviewedByUserID *int64
+	ReviewedAt       *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type Role struct {
 	ID          int64
 	Name        string
@@ -838,6 +982,29 @@ type Session struct {
 	LastSeenAt time.Time
 	ExpiresAt  time.Time
 	RevokedAt  *time.Time
+}
+
+type Ticket struct {
+	ID          int64
+	PublicID    uuid.UUID
+	UserID      int64
+	Subject     string
+	Priority    TicketPriority
+	Status      TicketStatus
+	LastReplyAt time.Time
+	ClosedAt    *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type TicketMessage struct {
+	ID        int64
+	PublicID  uuid.UUID
+	TicketID  int64
+	UserID    *int64
+	IsStaff   bool
+	Body      string
+	CreatedAt time.Time
 }
 
 type User struct {

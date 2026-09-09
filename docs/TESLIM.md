@@ -46,7 +46,18 @@ Bunlar **kod işi değil**, sizin yapmanız gerekenler:
    **bilerek boş**; yerinde "hukuki inceleme sonrası yayımlanacak" uyarısı var.
    Yasal metin uydurulmaz. KVKK aydınlatma metni de gerekli.
 
-5. **Geri yükleme tatbikatı yapın.** Yedekleme betiği yazıldı ve kapıları
+5. **Servis logolarını geri yükleyin.** Geliştirme kataloğu silindiğinde
+   logolar da gitti, ama üretilmiş atamalar depoda duruyor
+   (`web/scripts/servis-logolari.sql`, 517 servis). Sağlayıcıyı ekleyip
+   katalog senkronunu yaptıktan sonra:
+
+   ```bash
+   psql "$DATABASE_URL" -f web/scripts/servis-logolari.sql
+   # yeni servisler için yeniden üretmek isterseniz:
+   cd web && node scripts/servis-logolari.mjs --uygula
+   ```
+
+6. **Geri yükleme tatbikatı yapın.** Yedekleme betiği yazıldı ve kapıları
    sabotajla test edildi, ama **gerçek bir geri yükleme hiç denenmedi**.
    `make restore-drill YEDEK=...` ile tatbikat veritabanına yükleyin ve
    `make reconcile` ile doğrulayın. Denenmemiş yedek, yedek değildir.
@@ -57,12 +68,11 @@ Bunlar **kod işi değil**, sizin yapmanız gerekenler:
 
 | Eksik | Etkisi | Neden yapılmadı |
 |---|---|---|
-| **Destek talebi sistemi** (FR-600) | Kullanıcı sorununu e-posta ile bildirir | Kapsam dışı bırakıldı; sipariş akışı önceliklendi |
 | **İkinci sağlayıcı** (M7) | Tek sağlayıcıya bağımlılık: HeroSMS çökerse satış durur | Adaptör arayüzü hazır, ikinci sağlayıcı ~1 gün |
 | **next-intl / çoklu dil** | Metinler bileşenlere sabit yazılı (Değişmez #14 ihlali) | Proje çapında karar; tüm ekranlar bugün böyle |
-| **Playwright uçtan uca testleri** | Ön yüz akışları otomatik test edilmiyor | `playwright.config` yok; responsive denetim betiği var ama akış testi değil |
 | **ESLint yapılandırması** | `make lint`in eslint adımı çalışmıyor | Depoda `eslint.config.*` yok |
-| **Yük testi** (NFR-800) | 50 eşzamanlı kullanıcıda davranış bilinmiyor | k6 senaryosu yazılmadı |
+| **Sağlayıcıda açık kalan numara** | Sipariş yazılamazsa numara ilk 120 sn iptal edilemiyor ve kayıt kalmadığı için yeniden deneme işi onu göremiyor — üretimde gerçek para | Yük testi ortaya çıkardı; kalıcı "yetim uzak sipariş" kaydı gerekiyor |
+| **SSE bağlantı sınırı** | Her akış ayrılmış bir Redis bağlantısı tutuyor; kullanıcı başına sınır yok | Ölçüldü (akış başına 1,0); tek sunucuda bugün sorun değil |
 | **Gerçek cihaz turu** | iOS Safari davranışı emülasyonla doğrulandı, cihazla değil | Ortamda cihaz yok |
 | **Boyut eşleştirme ekranı** (FR-702) | Ülke/servis eşleştirmesi elle düzenlenemiyor | Katalog senkronu otomatik dolduruyor; elle düzeltme CLI'dan |
 | **Kâr raporu** (FR-706) | Marj/kâr raporu yok | `ÖNERİLEN` işaretli, zorunlu değil |
@@ -130,8 +140,17 @@ cd web && AUDIT_EMAIL=... AUDIT_PASSWORD=... node scripts/responsive-check.mjs
   alınır, testin *gerçekten* düştüğü görülür. Düşmeyen test, test değildir.
   Bu turda iki test sabotajı geçti ve **testler güçlendirildi**, kod değil.
 
-**Kapsanmayanlar:** ön yüz akış testleri, yük testi, ikinci sağlayıcı sözleşme
-testi, gerçek cihaz.
+- **Uçtan uca akış testleri**: 19 akış × 4 tarayıcı projesi = **76 test**,
+  hepsi geçiyor. `webkit-mobile` dahil (iOS'ta tüm tarayıcılar WebKit).
+  Kendi veritabanı ve portlarıyla izole koşar: `./scripts/e2e.sh`
+- **Yük testi**: k6, 50 eşzamanlı kullanıcı. Ölçüm tutanağı
+  [yuk-testi-sonuc.md](yuk-testi-sonuc.md). En önemli sonuç: **yük altında
+  2.592 defter kaydı yazıldı ve mutabakat sapması sıfır kaldı.**
+- **SEO denetimi**: `cd web && node scripts/seo-check.mjs` — benzersiz başlık,
+  canonical, og:image gerçek boyutu, sitemap'te gizli yol olmaması, noindex.
+
+**Kapsanmayanlar:** ikinci sağlayıcı sözleşme testi, gerçek cihaz turu,
+uzun süreli dayanıklılık (soak) koşumu, Caddy arkasında SSE ölçümü.
 
 ---
 

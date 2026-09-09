@@ -21,6 +21,7 @@ import (
 	depositsvc "github.com/ikmetrik/sms-platform/api/internal/service/deposit"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
+	ticketsvc "github.com/ikmetrik/sms-platform/api/internal/service/ticket"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/middleware"
@@ -42,6 +43,9 @@ type Deps struct {
 	OrderSvc     *ordersvc.Service
 	OrderBus     handler.OrderStream
 	DepositSvc   *depositsvc.Service
+
+	// TicketSvc destek talepleri (FR-600).
+	TicketSvc *ticketsvc.Service
 
 	// RuleSvc fiyat kuralı yönetimi (FR-703). nil ise /admin/pricing-rules
 	// uçları 500 döner.
@@ -114,6 +118,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	catalogH := handler.NewCatalog(d.Queries, d.QuoteSvc, responder)
 	orderH := handler.NewOrder(d.OrderSvc, d.OrderBus, responder)
 	depositH := handler.NewDeposit(d.DepositSvc, responder)
+	ticketH := handler.NewTicket(d.TicketSvc, responder)
 
 	requireAuth := middleware.RequireAuth(middleware.AuthDeps{
 		Sessions: d.Sessions, Queries: d.Queries,
@@ -196,6 +201,33 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 				Limit: 10, Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			depositH.UploadReceipt)
+
+		// ─── Destek talepleri (FR-600) ───
+		//
+		// Kullanıcı uçlarında ayrı bir izin YOKTUR: sahiplik sorgunun
+		// parçasıdır ve başkasının talebi 404 döner.
+		//
+		// 🔴 DOĞRULANMIŞ E-POSTA İSTENMEZ — bilerek. Bakiye yüklemenin aksine
+		// destek, e-postası doğrulanmayan kullanıcının BAŞVURACAĞI yerdir:
+		// "doğrulama e-postası gelmiyor" diyen kişiyi destek kanalından da
+		// kilitlemek, onu tümüyle sessiz bırakırdı.
+		auth.GET("/tickets", ticketH.List)
+		auth.GET("/tickets/:id", ticketH.Get)
+
+		// Talep açmak DAR bir limit taşır: her talep bir yöneticiye iş üretir.
+		auth.POST("/tickets",
+			middleware.RateLimit(d.Limiter, "ticket", middleware.RateLimitConfig{
+				Limit: 5, Window: time.Minute, KeyFn: middleware.ByUser,
+			}, Fail),
+			ticketH.Create)
+
+		// Mesaj eklemenin limiti daha geniştir: yazışma sırasında art arda
+		// birkaç mesaj yazmak olağandır, yeni talep açmak değildir.
+		auth.POST("/tickets/:id/messages",
+			middleware.RateLimit(d.Limiter, "ticket-msg", middleware.RateLimitConfig{
+				Limit: 20, Window: time.Minute, KeyFn: middleware.ByUser,
+			}, Fail),
+			ticketH.AddMessage)
 
 		// Teklif: oturum + DOĞRULANMIŞ E-POSTA + hız limiti.
 		//
@@ -353,6 +385,25 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 			middleware.RequirePermission("deposits:approve", Fail), depositH.Approve)
 		admin.POST("/deposits/:id/reject",
 			middleware.RequirePermission("deposits:approve", Fail), depositH.Reject)
+
+		// ─── Destek talepleri (FR-600) ───
+		//
+		// İzin kodları docs/trd.md §izinler tablosundan gelir ve
+		// 00002_seed_rbac.sql'de ZATEN tanımlıdır: okuma `tickets:read`,
+		// yazma `tickets:reply`. Yeni bir `tickets:write` kodu ÜRETİLMEDİ —
+		// iki eş anlamlı izin, yetki matrisini okunamaz hâle getirir.
+		//
+		// Durum değişikliği de `tickets:reply` ister: kapatmak da yazışmaya
+		// müdahaledir ve yalnız okuma yetkisi olan personelin işi değildir.
+		admin.GET("/tickets",
+			middleware.RequirePermission("tickets:read", Fail), ticketH.AdminList)
+		admin.GET("/tickets/:id",
+			middleware.RequirePermission("tickets:read", Fail), ticketH.AdminGet)
+		admin.POST("/tickets/:id/messages",
+			middleware.RequirePermission("tickets:reply", Fail), ticketH.AdminAddMessage)
+		// PATCH: durum DEĞİŞTİRİR, dolayısıyla GET olamaz (değişmez #8).
+		admin.PATCH("/tickets/:id/status",
+			middleware.RequirePermission("tickets:reply", Fail), ticketH.AdminSetStatus)
 	}
 
 	// M2: /wallet/*  ·  M4: /catalog/*  ·  M5: /orders/*  ·  M6: /admin/*

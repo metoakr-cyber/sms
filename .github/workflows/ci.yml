@@ -143,6 +143,96 @@ jobs:
           NEXT_PUBLIC_RECAPTCHA_SITE_KEY: ''
         run: npm run build
 
+  e2e:
+    name: Uçtan uca (Playwright)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: smsplatform
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: smsplatform
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U smsplatform"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://smsplatform:ci@localhost:5432/smsplatform?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+      PGPASSWORD: ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: api/go.sum
+
+      - name: goose
+        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Bağımlılıklar
+        working-directory: web
+        run: npm ci
+
+      # Tarayıcı ikilileri sürüme göre önbelleklenir: her koşuda ~300 MB
+      # indirmek işi dakikalarca uzatır ve ağ dalgalanmasında kararsızlık üretir.
+      - name: Playwright sürümü
+        id: pw
+        working-directory: web
+        run: echo "surum=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.surum }}
+
+      # `scripts/e2e.sh` .env'i okur ve APP_ENV=development kapısını uygular.
+      # 🔴 Buradaki değerler GERÇEK SIR DEĞİLDİR; her koşuda üretilir ve
+      # yalnız bu geçici konteynerde yaşar.
+      - name: Ortam dosyası
+        run: |
+          cp .env.example .env
+          {
+            echo "APP_ENV=development"
+            echo "SESSION_SECRET=$(openssl rand -base64 32)"
+            echo "ENCRYPTION_KEY=$(openssl rand -base64 32)"
+            echo "WEBHOOK_HEROSMS_SECRET=$(openssl rand -hex 16)"
+            echo "DATABASE_URL=$DATABASE_URL"
+            echo "REDIS_URL=$REDIS_URL"
+          } >> .env
+
+      # Betik kendi veritabanını (smsplatform_e2e) ve kendi sunucularını kurar,
+      # dört tarayıcı projesinde akışları koşar ve hepsini durdurur.
+      - name: Uçtan uca testler
+        run: ./scripts/e2e.sh
+
+      # Başarısızlıkta KANIT SAKLANIR: iz, ekran görüntüsü ve sunucu log'ları
+      # olmadan CI'da düşen bir tarayıcı testi teşhis edilemez.
+      - name: Kanıtları yükle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-kanit
+          path: .e2e-logs
+          retention-days: 7
+
   guvenlik:
     name: Güvenlik taraması
     runs-on: ubuntu-latest

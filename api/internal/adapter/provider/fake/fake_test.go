@@ -362,3 +362,47 @@ func TestFakeListActiveRejectsBadCursor(t *testing.T) {
 		t.Fatal("geçersiz imleç kabul edildi")
 	}
 }
+
+// TestRemoteOrderIDIsUniquePerProcess
+//
+// 🔴 KALICI BİR VERİTABANINDA İKİ KOŞUM ÇAKIŞMAMALI.
+//
+// Uzak sipariş kimliği yalnız süreç içi bir sayaçtan üretiliyordu ve sayaç
+// her açılışta sıfırlanıyordu. Kalıcı bir geliştirme/test veritabanında
+// ikinci koşum "fake-1" ile başlıyor, `orders_remote_uniq` çakışıyor ve
+// POST /orders 500 dönüyordu — yük testinde 684 kez yaşandı ve satın alma
+// senaryosu ölçülemez hale geldi.
+func TestRemoteOrderIDIsUniquePerProcess(t *testing.T) {
+	ctx := context.Background()
+	creds := port.Creds{APIKey: "x"}
+	cmd := port.PurchaseCmd{
+		// tg×TR bilerek stoklu; wa×TR sahte sağlayıcıda kasten STOKSUZ
+		// (gerçek gözlemi yansıtıyor, catalog.go).
+		ServiceCode: "tg", CountryCode: "TR",
+		VerificationType: port.VerifySMS,
+		MaxCost:          money.New(10_000_000, money.USD),
+	}
+
+	// İki AYRI sağlayıcı örneği = iki ayrı süreç açılışı.
+	kimlikler := map[string]int{}
+	for tur := 0; tur < 2; tur++ {
+		p := fake.New(port.RealClock{})
+		for i := 0; i < 5; i++ {
+			res, err := p.Purchase(ctx, creds, cmd)
+			if err != nil {
+				t.Fatalf("tur %d, %d. satın alma: %v", tur, i, err)
+			}
+			kimlikler[res.RemoteOrderID]++
+		}
+	}
+
+	for id, n := range kimlikler {
+		if n > 1 {
+			t.Fatalf("🔴 %q kimliği %d kez üretildi — kalıcı veritabanında "+
+				"orders_remote_uniq çakışır ve satın alma 500 döner", id, n)
+		}
+	}
+	if len(kimlikler) != 10 {
+		t.Fatalf("10 benzersiz kimlik bekleniyordu, %d geldi", len(kimlikler))
+	}
+}

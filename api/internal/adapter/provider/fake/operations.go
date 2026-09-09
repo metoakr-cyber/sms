@@ -102,7 +102,17 @@ func (p *Provider) Purchase(ctx context.Context, _ port.Creds, cmd port.Purchase
 	p.seq++
 
 	now := p.clock.Now()
-	id := fmt.Sprintf("fake-%d", p.seq)
+	// 🔴 KİMLİĞE SÜREÇ BAŞINA BENZERSİZ BİR EK ŞART.
+	//
+	// Sayaç yalnız süreç içinde artıyor ve her açılışta 0'a dönüyor. Kalıcı
+	// bir geliştirme/test veritabanında ikinci koşum "fake-1" ile başlıyor,
+	// orders_remote_uniq çakışıyor ve POST /orders 500 dönüyor. Yük testinde
+	// bu 684 kez yaşandı ve satın alma senaryosunu ölçülemez hale getirdi.
+	//
+	// Ek, süreç ömrü boyunca sabit ve rastgele: iki koşum aynı kimliği
+	// üretemez, ama tek koşum içinde kimlikler yine sıralı ve okunur kalır.
+	// test: fake_test.go#TestRemoteOrderIDIsUniquePerProcess
+	id := fmt.Sprintf("fake-%s-%d", p.nonce, p.seq)
 	phone := fmt.Sprintf("%s%09d", fakeCountries[cmd.CountryCode].phoneCode, 100000000+p.seq)
 
 	o := &fakeOrder{

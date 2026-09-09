@@ -24,6 +24,7 @@ const NAV: Item[] = [
   { href: '/panel/numara-al',  label: 'Numara al', icon: I('M12 5v14M5 12h14') },
   { href: '/panel/siparisler', label: 'Siparişler', icon: I('M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2') },
   { href: '/panel/cuzdan',     label: 'Cüzdan',    icon: I('M3 8h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 8V6a2 2 0 0 1 2-2h11M17 13h.01') },
+  { href: '/panel/destek',     label: 'Destek',    icon: I('M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z') },
   { href: '/panel/hesap',      label: 'Hesap',     icon: I('M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8') },
 ];
 

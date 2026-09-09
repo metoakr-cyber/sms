@@ -1,0 +1,4 @@
+# Ölçüm çıktıları depoya girmez: her koşumda yeniden üretilir ve ham CSV
+# dosyaları onlarca megabayt olur. Rapor docs/yuk-testi-sonuc.md içindedir.
+*
+!.gitignore

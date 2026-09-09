@@ -31,8 +31,48 @@
   --color-bad:  #ea4d4d;
   --color-info: #3dc7be;
 
+  /*
+   * ONAY360 MARKA MAVİSİ — logodan alındı (#1a7fd4), H207 S78 L47.
+   * `brand-*` (Duralux çivit mavisi) panel ve yönetim arayüzünün rengidir ve
+   * ORADA KALIR; pazarlama yüzeyi markanın kendi mavisini kullanır. İkisini
+   * tek ölçeğe indirmek panelin tamamını yeniden boyamak demekti — bu ajanın
+   * dosyaları değil.
+   */
+  --color-onay-50:  #f0f8fe;
+  --color-onay-100: #ddeffd;
+  --color-onay-200: #b3daf9;
+  --color-onay-300: #78bbf2;
+  --color-onay-400: #47a1eb;
+  --color-onay-500: #1a7fd4;   /* marka mavisi — logo ile birebir */
+  --color-onay-600: #146bb3;
+  --color-onay-700: #0e5690;
+  --color-onay-800: #0d4573;
+  --color-onay-900: #0c3455;
+  --color-onay-950: #062137;
+
+  /* Marka kırmızısı. VURGU rengidir — geniş yüzeylerde kullanılmaz. */
+  --color-kirmizi-500: #e30613;
+  --color-kirmizi-600: #c2050f;
+
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
                "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/*
+ * TEMADAN BAĞIMSIZ değerler.
+ *
+ * Dolu ikon karolarının ve marka şeritlerinin üstünde her zaman BEYAZ simge
+ * durur; bu yüzden dolgular iki temada da aynıdır. Gradyanın EN AÇIK ucu bile
+ * beyazla ≥ 4.5:1 verecek şekilde seçildi (ölçüm raporda).
+ */
+:root {
+  --gradyan-marka:   linear-gradient(135deg, #1a75c4 0%, #3454d1 100%);
+  --gradyan-mavi:    linear-gradient(135deg, #1a75c4 0%, #125f9f 100%);
+  --gradyan-mor:     linear-gradient(135deg, #5b3fd6 0%, #4327a8 100%);
+  --gradyan-deniz:   linear-gradient(135deg, #1f8093 0%, #14606f 100%);
+  --gradyan-yesil:   linear-gradient(135deg, #18865e 0%, #0f6a49 100%);
+  --gradyan-pembe:   linear-gradient(135deg, #e61957 0%, #b8113f 100%);
+  --gradyan-turuncu: linear-gradient(135deg, #c44d08 0%, #973a05 100%);
 }
 
 /*
@@ -47,8 +87,36 @@
   --border:  var(--color-ink-700);
   --text:    var(--color-ink-100);
   --muted:   var(--color-ink-400);
+
+  /* Vurgu aileleri: yumuşak ZEMİN + üstünde okunan METİN/simge rengi.
+     Her çift ölçüldü, hepsi ≥ 4.5:1 (raporda tablo). */
+  --v-mavi-zemin:    #0f2c47;  --v-mavi-metin:    #78bbf2;
+  --v-mor-zemin:     #241b47;  --v-mor-metin:     #b39cf5;
+  --v-yesil-zemin:   #0c2e22;  --v-yesil-metin:   #55d69c;
+  --v-turuncu-zemin: #35240c;  --v-turuncu-metin: #f0b45c;
+  --v-pembe-zemin:   #3a1522;  --v-pembe-metin:   #f593ac;
+  --v-deniz-zemin:   #0b2d33;  --v-deniz-metin:   #58c9d6;
+
+  /* Bağlantı ve başlıktaki vurgulu kelime. `brand-400` AÇIK TEMADA 3.49:1
+     veriyordu (ölçüldü) — yani okunabilirlik sınırının altındaydı. */
+  --vurgu:      #78bbf2;
+  --vurgu-guclu:#a9d4f8;
+
+  /* Yüzey efektleri */
+  --golge-1: 0 1px 2px rgb(0 0 0 / 0.30);
+  --golge-2: 0 4px 14px -4px rgb(0 0 0 / 0.45), 0 2px 5px -2px rgb(0 0 0 / 0.35);
+  --golge-3: 0 18px 40px -12px rgb(0 0 0 / 0.60), 0 6px 14px -6px rgb(0 0 0 / 0.40);
+  --kahraman-isik:
+    radial-gradient(60rem 32rem at 16% -12%, rgb(26 127 212 / 0.22), transparent 62%),
+    radial-gradient(46rem 28rem at 92% 6%,  rgb(91  63 214 / 0.18), transparent 58%);
+  --nokta: rgb(148 163 184 / 0.16);
 }
 
+/*
+ * AÇIK TEMA — iki blok bilerek AYNIDIR ve BİRLİKTE güncellenir.
+ * (Biri `data-theme="light"` seçimi, diğeri işletim sistemi tercihi içindir;
+ * CSS'te bir @media kuralıyla bir normal kuralı tek bloğa indirmenin yolu yok.)
+ */
 :root[data-theme="light"] {
   color-scheme: light;
   --bg:      #f5f7fb;
@@ -56,7 +124,26 @@
   --raised:  #ffffff;
   --border:  #e3e7ef;
   --text:    #1d1f1e;
-  --muted:   #64748b;
+  /* #64748b idi: --bg üzerinde 4.44:1 — 4.5 sınırının ALTINDA. Ölçülünce çıktı. */
+  --muted:   #5b6779;
+
+  --v-mavi-zemin:    #e3f0fc;  --v-mavi-metin:    #0e5690;
+  --v-mor-zemin:     #eae6fd;  --v-mor-metin:     #4c1fae;
+  --v-yesil-zemin:   #dcf5e8;  --v-yesil-metin:   #056f45;
+  --v-turuncu-zemin: #fdefd9;  --v-turuncu-metin: #8a4b06;
+  --v-pembe-zemin:   #fde8ed;  --v-pembe-metin:   #a3123c;
+  --v-deniz-zemin:   #d8f2f4;  --v-deniz-metin:   #0a6470;
+
+  --vurgu:      #125f9f;
+  --vurgu-guclu:#0e5690;
+
+  --golge-1: 0 1px 2px rgb(15 23 42 / 0.06);
+  --golge-2: 0 4px 14px -4px rgb(15 23 42 / 0.10), 0 2px 5px -2px rgb(15 23 42 / 0.06);
+  --golge-3: 0 18px 40px -12px rgb(15 23 42 / 0.18), 0 6px 14px -6px rgb(15 23 42 / 0.08);
+  --kahraman-isik:
+    radial-gradient(60rem 32rem at 16% -12%, rgb(26 127 212 / 0.14), transparent 62%),
+    radial-gradient(46rem 28rem at 92% 6%,  rgb(91  63 214 / 0.10), transparent 58%);
+  --nokta: rgb(100 116 139 / 0.22);
 }
 
 @media (prefers-color-scheme: light) {
@@ -67,7 +154,25 @@
     --raised:  #ffffff;
     --border:  #e3e7ef;
     --text:    #1d1f1e;
-    --muted:   #64748b;
+    --muted:   #5b6779;
+
+    --v-mavi-zemin:    #e3f0fc;  --v-mavi-metin:    #0e5690;
+    --v-mor-zemin:     #eae6fd;  --v-mor-metin:     #4c1fae;
+    --v-yesil-zemin:   #dcf5e8;  --v-yesil-metin:   #056f45;
+    --v-turuncu-zemin: #fdefd9;  --v-turuncu-metin: #8a4b06;
+    --v-pembe-zemin:   #fde8ed;  --v-pembe-metin:   #a3123c;
+    --v-deniz-zemin:   #d8f2f4;  --v-deniz-metin:   #0a6470;
+
+    --vurgu:      #125f9f;
+    --vurgu-guclu:#0e5690;
+
+    --golge-1: 0 1px 2px rgb(15 23 42 / 0.06);
+    --golge-2: 0 4px 14px -4px rgb(15 23 42 / 0.10), 0 2px 5px -2px rgb(15 23 42 / 0.06);
+    --golge-3: 0 18px 40px -12px rgb(15 23 42 / 0.18), 0 6px 14px -6px rgb(15 23 42 / 0.08);
+    --kahraman-isik:
+      radial-gradient(60rem 32rem at 16% -12%, rgb(26 127 212 / 0.14), transparent 62%),
+      radial-gradient(46rem 28rem at 92% 6%,  rgb(91  63 214 / 0.10), transparent 58%);
+    --nokta: rgb(100 116 139 / 0.22);
   }
 }
 
@@ -151,13 +256,147 @@
     background-position: right 0.75rem center;
     background-size: 1.15rem;
   }
+
+  /* ───────── Pazarlama yüzeyi: renk, derinlik, hareket ───────── */
+
+  .golge-1 { box-shadow: var(--golge-1); }
+  .golge-2 { box-shadow: var(--golge-2); }
+  .golge-3 { box-shadow: var(--golge-3); }
+
+  /* Kahraman bölümün renkli ışığı. `background-image` olduğu için metin
+     kontrastını DEĞİŞTİRMEZ; zemin rengi altında var(--bg) durur. */
+  .kahraman-isik { background-image: var(--kahraman-isik); }
+
+  /* İnce nokta dokusu — düz gri zemine hayat verir, okunurluğu bozmaz. */
+  .nokta-doku {
+    background-image: radial-gradient(var(--nokta) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  .gradyan-marka   { background-image: var(--gradyan-marka); }
+  .gradyan-mavi    { background-image: var(--gradyan-mavi); }
+  .gradyan-mor     { background-image: var(--gradyan-mor); }
+  .gradyan-deniz   { background-image: var(--gradyan-deniz); }
+  .gradyan-yesil   { background-image: var(--gradyan-yesil); }
+  .gradyan-pembe   { background-image: var(--gradyan-pembe); }
+  .gradyan-turuncu { background-image: var(--gradyan-turuncu); }
+
+  /* Başlıkta vurgulanan kelime */
+  .vurgu-metin { color: var(--vurgu); }
+
+  /*
+   * Ana eylem butonu (marka gradyanı).
+   *
+   * 🔴 NEDEN AYRI SINIF: `ui.tsx` içindeki `Button` tabanı `transition-colors`
+   * yazıyor. Üstüne `transition-all` sınıfı eklemek İŞE YARAMAZ — Tailwind'de
+   * çakışmayı sınıf sırası değil ÜRETİLEN CSS SIRASI çözer ve `transition-colors`
+   * sonra geliyor. Ölçüldü: `hover:-translate-y-0.5` ve `transition-all`
+   * uygulanmıyordu, yalnız `brightness` tutuyordu. Buradaki tek sınıf beş
+   * durumu da tek yerde ve kesin olarak tanımlar.
+   */
+  .cta-marka {
+    background-image: var(--gradyan-marka);
+    box-shadow: var(--golge-2);
+    transition: filter .18s ease, box-shadow .18s ease, transform .18s ease;
+  }
+  @media (hover: hover) {
+    .cta-marka:hover {
+      filter: brightness(1.12);
+      box-shadow: var(--golge-3);
+      transform: translateY(-2px);
+    }
+  }
+  .cta-marka:active { transform: translateY(0) scale(0.985); filter: brightness(0.94); }
+  .cta-marka:disabled, .cta-marka[aria-busy="true"] {
+    filter: grayscale(0.35) brightness(0.9);
+    transform: none;
+    box-shadow: none;
+  }
+
+  /*
+   * Kart yükselmesi.
+   *
+   * Yalnız GERÇEK FARE olan cihazlarda. Dokunmatikte `:hover` dokunuştan sonra
+   * YAPIŞIR (frontend-contract §2.4) — kart havada asılı kalır ve kullanıcı
+   * neye dokunduğunu göremez.
+   */
+  .kart-hover { transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; }
+  @media (hover: hover) {
+    .kart-hover:hover { transform: translateY(-4px); box-shadow: var(--golge-3); }
+  }
+  .kart-hover:active { transform: translateY(-1px); }
+
+  /*
+   * BELİRME (fade + hafif yukarı kayma).
+   *
+   * 🔴 TASARIM KURALI: taban durum GÖRÜNÜRDÜR. Gizleme sınıfını yalnız
+   * JavaScript ekler ve yalnız EKRAN DIŞINDAKİ öğelere. Böylece
+   *   · JS çalışmazsa (arama motoru, hata) içerik yerinde durur,
+   *   · `prefers-reduced-motion` açıkken sayfa boş görünmez.
+   * Klasik hata, `opacity: 0`'ı CSS'e taban değer yazıp JS ile açmaktır;
+   * o kurulumda JS'in çalışmadığı her senaryoda sayfa BOŞTUR.
+   */
+  [data-belir] { opacity: 1; transform: none; }
+  [data-belir="gizli"] {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  [data-belir="acik"] {
+    opacity: 1;
+    transform: none;
+    transition: opacity .55s cubic-bezier(.22,.61,.36,1),
+                transform .55s cubic-bezier(.22,.61,.36,1);
+  }
+
+  /*
+   * Uzun servis listesi (fiyatlar / kiralama).
+   *
+   * 🔴 NEDEN nth-child: gerçek katalogda 712 servis var. Renk her `<li>`ye
+   * ayrı bir sınıf olarak yazılsaydı, yalnız renk için ~25 KB fazladan HTML
+   * (bir de RSC yükünde ikinci kez) taşınırdı. Buradaki kural HTML'e HİÇ
+   * BAYT EKLEMEZ; renk döngüsü tamamen CSS'te döner.
+   */
+  .servis-listesi > li { border-left-width: 3px; }
+  .servis-listesi > li:nth-child(6n+1) { border-left-color: var(--v-mavi-metin); }
+  .servis-listesi > li:nth-child(6n+2) { border-left-color: var(--v-mor-metin); }
+  .servis-listesi > li:nth-child(6n+3) { border-left-color: var(--v-deniz-metin); }
+  .servis-listesi > li:nth-child(6n+4) { border-left-color: var(--v-yesil-metin); }
+  .servis-listesi > li:nth-child(6n+5) { border-left-color: var(--v-turuncu-metin); }
+  .servis-listesi > li:nth-child(6n+6) { border-left-color: var(--v-pembe-metin); }
+
+  /* Yumuşak nabız — yalnız "canlı" göstergesi için, tek bir küçük nokta. */
+  @keyframes nabiz-halka {
+    0%   { transform: scale(1);   opacity: .55; }
+    70%  { transform: scale(2.4); opacity: 0; }
+    100% { transform: scale(2.4); opacity: 0; }
+  }
+  .nabiz::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: currentColor;
+    animation: nabiz-halka 2.2s ease-out infinite;
+  }
 }
 
-/* Hareket azaltma tercihi olan kullanıcıda animasyon yok */
+/*
+ * Hareket azaltma tercihi olan kullanıcıda animasyon yok.
+ *
+ * `[data-belir]` KESİN olarak görünür kılınır: süreyi 0.01ms'e çekmek
+ * yetmezdi, çünkü gizleme bir animasyon değil doğrudan bir `opacity: 0`
+ * durumu. Bu satır olmadan hareket kapalı kullanıcı BOŞ SAYFA görürdü.
+ */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  [data-belir], [data-belir="gizli"], [data-belir="acik"] {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .nabiz::after { display: none; }
+  .kart-hover:hover, .cta-marka:hover { transform: none !important; }
 }

@@ -76,7 +76,11 @@ step "go vet (integration)" bash -c 'cd api && go vet -tags=integration ./...'
 step "derleme"              bash -c 'cd api && go build ./...'
 step "birim testler"        bash -c 'cd api && go test ./... -race -count=1'
 step "entegrasyon testleri" bash -c 'cd api && go test -tags=integration -p 1 ./... -race -count=1'
-step "duman testi"          ./scripts/smoke-auth.sh
+# Duman testi KENDİ portunda koşar (18091).
+#
+# .env'deki geliştirme portunu kullansaydı `make dev` ayaktayken kontroller
+# HİÇ çalışmazdı — ve çalışmayan bir kapı, atlanan bir kapıdır.
+step "duman testi"          env HTTP_ADDR=:18091 ./scripts/smoke-auth.sh
 step "web tip denetimi"     bash -c 'cd web && npx tsc --noEmit'
 step "web derleme"          bash -c 'cd web && NEXT_DIST_DIR=.next-check npm run build >/dev/null'
 step "commit kapısı"        ./scripts/commit_gate_test.sh

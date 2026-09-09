@@ -2,6 +2,10 @@ import type { Metadata } from 'next';
 import { Card, Alert } from '@/components/ui';
 
 export const metadata: Metadata = {
+  // Sayfaya ÖZEL description şart: yoksa kök layout'un varsayılanı miras
+  // alınır ve iki ayrı sayfa birebir aynı açıklamayı taşır (S1 ihlali).
+  description:
+    'Onay360 kullanım şartları: hizmetin kapsamı, bakiye ve iade kuralları, yasak kullanımlar.',
   title: 'Kullanım Şartları',
   alternates: { canonical: '/kullanim-sartlari' },
 };
