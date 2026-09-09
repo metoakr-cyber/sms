@@ -88,7 +88,25 @@ type otpItem struct {
 	Date       string     `json:"date"`
 }
 
-func (o otpItem) normalize(fallbackID string) port.RemoteMessage {
+// normalize ham OTP kaydını normalize mesaja çevirir.
+//
+// 🔴 UYDURMA KİMLİK ÜRETİLMEZ. Sağlayıcı `id` vermezse `RemoteID` BOŞ kalır ve
+// dedup kararı servis katmanındaki tek noktaya (order.hashMessage) düşer.
+//
+// Eskiden üç çağrı yeri üç farklı yedek anahtar uyduruyordu ve ikisi de
+// bozuktu:
+//
+//   - `/otp/last` → "{id}:last". SABİT bir anahtar: kiralıkta 2., 3., 40.
+//     mesaj aynı anahtarı alır, ON CONFLICT DO NOTHING onları sessizce yutar
+//     ve kullanıcı YALNIZ İLK KODU görür.
+//   - `ListActive` → "{id}:{dizi indeksi}". Dizi sırası sağlayıcı sözleşmesi
+//     değil: sıra değişirse aynı mesaj her turda yeni bir satır olur.
+//
+// Üstelik ikisi aynı SMS için FARKLI anahtar üretiyordu; yoklama ve webhook
+// teyidi arka arkaya koştuğunda tek mesaj iki satır oluyordu — bu, kiralıktan
+// bağımsız olarak aktivasyonda da yaşanıyordu.
+// test: ../../../service/order/rental_integration_test.go#TestSameMessageFromBothPathsIsStoredOnce
+func (o otpItem) normalize() port.RemoteMessage {
 	pick := func(a, b string) string {
 		if a != "" {
 			return a
@@ -102,12 +120,8 @@ func (o otpItem) normalize(fallbackID string) port.RemoteMessage {
 		// Kodu kendi desenimizle çıkarırız (FR-410/10).
 		code = extractCode(body)
 	}
-	id := o.ID.String()
-	if id == "" {
-		id = fallbackID
-	}
 	return port.RemoteMessage{
-		RemoteID:   id,
+		RemoteID:   o.ID.String(),
 		Code:       code,
 		Body:       body,
 		Sender:     pick(o.Sender, o.PhoneFrom),
@@ -169,7 +183,7 @@ type apiError struct {
 //
 // 409 VE 422 BİRLİKTE ele alınır: modern uçta iş kuralı redlerinin hangi kodla
 // geldiği spec'te tanımsız (❓H13); yalnız birine bakmak sebebi kör eder.
-func mapLifecycleError(status int, body []byte, remoteID string) error {
+func mapLifecycleError(status int, body []byte) error {
 	var e apiError
 	_ = json.Unmarshal(body, &e)
 	title := strings.ToUpper(strings.TrimSpace(e.Title))
@@ -200,8 +214,8 @@ func mapLifecycleError(status int, body []byte, remoteID string) error {
 			_ = json.Unmarshal(e.Info.Data, &items)
 		}
 		msgs := make([]port.RemoteMessage, 0, len(items))
-		for i, it := range items {
-			msgs = append(msgs, it.normalize(fmt.Sprintf("%s:new:%d", remoteID, i)))
+		for _, it := range items {
+			msgs = append(msgs, it.normalize())
 		}
 		return port.NewOTPArrived(msgs, port.ErrCancelDenied)
 	}
@@ -432,7 +446,7 @@ func (p *Provider) GetStatus(ctx context.Context, c port.Creds, remoteOrderID st
 		if err := json.Unmarshal(body, &out); err != nil {
 			return nil, fmt.Errorf("herosms: otp/last ayrıştırılamadı: %w", err)
 		}
-		msg := out.Data.normalize(remoteOrderID + ":last")
+		msg := out.Data.normalize()
 		if msg.Body == "" && msg.Code == "" {
 			// Teyit BOŞ döndü. Durum DEĞİŞTİRİLMEZ (ADR-022): sahte bir
 			// webhook bu noktada COMPLETED yazdırmayı başaramamalı.
@@ -454,7 +468,7 @@ func (p *Provider) GetStatus(ctx context.Context, c port.Creds, remoteOrderID st
 		// Bu YÜZDEN mesajları kendi tarafımızda kalıcı tutuyoruz.
 		return nil, port.ErrOrderClosed
 	}
-	return nil, mapLifecycleError(status, body, remoteOrderID)
+	return nil, mapLifecycleError(status, body)
 }
 
 /* ═══════════════════ Cancel / Finish ═══════════════════ */
@@ -474,7 +488,7 @@ func (p *Provider) Cancel(ctx context.Context, c port.Creds, remoteOrderID strin
 	if status == http.StatusNoContent || status == http.StatusOK {
 		return nil
 	}
-	return mapLifecycleError(status, body, remoteOrderID)
+	return mapLifecycleError(status, body)
 }
 
 // Finish siparişi kapatır — İADE TALEP ETMEZ.
@@ -490,7 +504,7 @@ func (p *Provider) Finish(ctx context.Context, c port.Creds, remoteOrderID strin
 	if status == http.StatusNoContent || status == http.StatusOK {
 		return nil
 	}
-	return mapLifecycleError(status, body, remoteOrderID)
+	return mapLifecycleError(status, body)
 }
 
 /* ═══════════════════ Toplu yoklama ═══════════════════ */
@@ -539,8 +553,8 @@ func (p *Provider) ListActive(ctx context.Context, c port.Creds, cursor string, 
 	items := make([]port.ActiveOrder, 0, len(out.Data))
 	for _, a := range out.Data {
 		msgs := make([]port.RemoteMessage, 0, len(a.OtpList))
-		for i, o := range a.OtpList {
-			msgs = append(msgs, o.normalize(fmt.Sprintf("%s:%d", a.ID.String(), i)))
+		for _, o := range a.OtpList {
+			msgs = append(msgs, o.normalize())
 		}
 		items = append(items, port.ActiveOrder{
 			RemoteOrderID: a.ID.String(),

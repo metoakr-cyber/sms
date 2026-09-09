@@ -41,7 +41,20 @@ type Querier interface {
 	//
 	// `provider_closed_at IS NULL` koşulu da buradadır: zaten kapatılmış siparişe
 	// ikinci kez Cancel/Finish gönderilmez.
-	// test: refund_retry_integration_test.go#TestConcurrentCloseSendsSingleProviderCall
+	//
+	// 🔴 DURUM SÜZGECİ SAHİPLENMENİN PARÇASIDIR, ayrı bir `if` değil.
+	//
+	// Süzgeç Go tarafında dururken kapatılabilir olmayan bir satır (PENDING /
+	// ACTIVE) de sahiplenilebiliyordu: işçi satırı alıyor, durumu görüp
+	// `ReleaseOrderClose` ile bırakıyordu. O iki adımın ARASINDA sipariş terminal
+	// olursa, terminal geçişin doğurduğu kapatma goroutine'i sahiplenmeyi
+	// KAYBEDİYOR ve sessizce nil dönüyordu; hemen ardından gelen `release` de
+	// kirayı siliyordu. Sonuç: terminal sipariş, `provider_closed_at IS NULL` ve
+	// sağlayıcıya SIFIR çağrı — numara `activation-reaper`ın bir sonraki turuna
+	// kadar (≤60 sn) açıkta.
+	//
+	// Deterministik olarak üretilebiliyordu: `-count=10` → 10/10.
+	// test: rental_integration_test.go#TestRentalEndRaceWithProviderCloseHasSingleEffect
 	ClaimOrderClose(ctx context.Context, arg ClaimOrderCloseParams) (Order, error)
 	// Tek kullanımlıktır: UPDATE ... RETURNING ile atomik olarak tüketilir.
 	// Ayrı SELECT + UPDATE yapılsaydı iki eşzamanlı istek aynı token'ı kullanabilirdi.
@@ -90,11 +103,25 @@ type Querier interface {
 	//
 	// Katalog alanları ANLIK GÖRÜNTÜ olarak yazılır: servis/ülke satırları katalog
 	// senkronunda silinebilir, sipariş geçmişi buna dayanamaz.
+	// `product_kind` de bir ANLIK GÖRÜNTÜDÜR: "iade mi Finish mi" kararı katalog
+	// satırına JOIN ile verilemez, çünkü o satır silinebilir (product_id ON DELETE
+	// SET NULL). `refundable_until` NULL ise ek bir iptal tavanı yoktur (aktivasyon).
 	CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error)
 	CreatePricingRule(ctx context.Context, arg CreatePricingRuleParams) (PricingRule, error)
 	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
 	// ─────────────────────── Teklif ───────────────────────
 	CreateQuote(ctx context.Context, arg CreateQuoteParams) (PriceQuote, error)
+	// Kira dönemi kaydı — sipariş satırıyla AYNI transaction'da (T2) yazılır.
+	//
+	// Tablo 00008'de açıldı ama hiçbir kod ona yazmıyordu: `duration_hours`
+	// sağlayıcı çağrısından sonra çöpe gidiyordu ve `rental_ends_at` diye bir
+	// gerçek yoktu. Kira dönemi üzerine kurulacak her rapor "hiç kiralık yok"
+	// derdi — para akarken.
+	//
+	// YETKİLİ KAYNAK `orders.expires_at`TİR; bu satır dönemin KAYDIDIR. İkisini
+	// bağımsız iki doğruluk kaynağı yapmak, uzatmadan sonra birinin
+	// güncellenmemesiyle biter.
+	CreateRentalDetail(ctx context.Context, arg CreateRentalDetailParams) (RentalDetail, error)
 	// Müşteri yorumları.
 	//
 	// ÜÇ AYRI SORGU AİLESİ vardır ve karıştırılmaz:
@@ -234,6 +261,7 @@ type Querier interface {
 	// sipariş geçmişi bir yıl sonra da okunabilir olmalıdır.
 	GetQuoteContext(ctx context.Context, quoteID int64) (GetQuoteContextRow, error)
 	GetRemoteCode(ctx context.Context, arg GetRemoteCodeParams) (string, error)
+	GetRentalDetail(ctx context.Context, orderID int64) (RentalDetail, error)
 	// SAHİPLİK SORGUNUN PARÇASIDIR (değişmez #7). Başkasının yorumu ile var
 	// olmayan yorum AYNI sonucu (sıfır satır) verir; servis ikisini de
 	// ErrNotFound'a çevirir.
@@ -269,6 +297,25 @@ type Querier interface {
 	ListActiveDepositMethods(ctx context.Context) ([]DepositMethod, error)
 	// ─────────────────────── Sağlayıcı ───────────────────────
 	ListActiveProviders(ctx context.Context) ([]Provider, error)
+	// `rental-poller` için: dönemi süren kiralıklar.
+	//
+	// İKİ DURUM BİRDEN: 'PENDING' (henüz mesaj gelmedi) ve 'ACTIVE' (en az bir
+	// mesaj geldi, dönem sürüyor). Kiralıkta mesaj gelmesi yoklamayı bitirmez —
+	// ürünün tamamı "30 gün boyunca gelen HER mesajı gör"dür.
+	//
+	// 🔴 SIRALAMA `created_at` DEĞİL — ve bu bir hata düzeltmesidir.
+	//
+	// `created_at ASC` + `LIMIT` deseni aktivasyonda güvenlidir çünkü satırlar ~20
+	// dakikada kümeden çıkar; kiralıkta küme dönem boyunca (24–4320 saat) SABİT
+	// kalır. 101. kiralık, ilk 100'ün hiçbiri bitmeden hiçbir turda görünmezdi:
+	// webhook kaybolduğunda o kullanıcı 30 gün boyunca tek mesaj görmez.
+	//
+	// `last_polled_at` turu dönüşümlü yapar. `NULLS FIRST` yeni satırın ilk turda
+	// görülmesini garanti eder; `id` eşitlik hâlinde belirlenimli sıra verir
+	// (aynı damgayı taşıyan bir toplu güncellemeden sonra tur ilerlemeye devam
+	// etsin).
+	// test: ../internal/service/order/rental_integration_test.go#TestRentalPollNeverStarvesNewestRental
+	ListActiveRentalsForPoll(ctx context.Context, arg ListActiveRentalsForPollParams) ([]Order, error)
 	// ─────────────────────────── Yönetim ───────────────────────────
 	// Yönetim paneli — `orders:read_all` izni gerektirir.
 	ListAllOrders(ctx context.Context, arg ListAllOrdersParams) ([]ListAllOrdersRow, error)
@@ -330,7 +377,23 @@ type Querier interface {
 	// Sayısal id dışarı verilmez: kullanıcı users.public_id ile gösterilir.
 	ListDepositsForAdmin(ctx context.Context, arg ListDepositsForAdminParams) ([]ListDepositsForAdminRow, error)
 	ListDimensionMaps(ctx context.Context, arg ListDimensionMapsParams) ([]ProviderDimensionMap, error)
-	// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan siparişler.
+	// `rental-closer` için: kira dönemi bitmiş ama hâlâ kapatılmamış kiralıklar.
+	//
+	// 'PENDING' de dahildir: hiç mesaj almamış bir kiralık 'ACTIVE'e hiç geçmez ve
+	// dönem sonunda yine kapatılmalıdır (FR-412: her sipariş sağlayıcıda kapanır).
+	ListEndedRentals(ctx context.Context, arg ListEndedRentalsParams) ([]Order, error)
+	// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan AKTİVASYONLAR.
+	//
+	// 🔴 KİRALIKLAR DIŞARIDA — bu sorgunun sonucu TAM İADE demektir.
+	//
+	// Kiralıkta satılan şey süredir: numara 30 gün ayrıldı, sağlayıcıya ödendi,
+	// kullanıcı istediği an kullanabildi. Kod gelmemesi iade sebebi değildir ve
+	// sağlayıcının ücretsiz iptal penceresi (≈20 dk) 1. günde kapandığı için o
+	// parayı geri almanın yolu da yoktur: buradan yazılacak iadenin %100'ü bizim
+	// cebimizden çıkar ve "kiralık al, 30. günde paranı al" tekrarlanabilir bir
+	// sızıntı olur. Dönem sonu `ListEndedRentals` → EndRental ile işlenir; orada
+	// deftere kayıt yazılmaz.
+	// test: ../internal/service/order/rental_integration_test.go#TestRentalNeverAutoRefundsAtEndOfPeriod
 	ListExpiredPendingOrders(ctx context.Context, arg ListExpiredPendingOrdersParams) ([]Order, error)
 	// Kullanıcının hareket dökümü. SAHİPLİK sorgunun parçasıdır: user_id ayrı bir
 	// if kontrolü değil, WHERE koşuludur (docs/design.md §10).
@@ -371,7 +434,15 @@ type Querier interface {
 	// test: order_integration_test.go#TestOrphanHoldQuerySkipsAlreadyRefunded
 	ListOrphanHolds(ctx context.Context, arg ListOrphanHoldsParams) ([]PriceQuote, error)
 	// ─────────────────────────── İşçi sorguları ───────────────────────────
-	// `order-poller` için: kod bekleyen, süresi dolmamış siparişler.
+	// `order-poller` için: kod bekleyen, süresi dolmamış AKTİVASYON siparişleri.
+	//
+	// 🔴 KİRALIKLAR DIŞARIDA — sıklık farkı yüzünden, tercih olduğu için değil.
+	// Aktivasyon ~20 dakika yaşar; kiralık 24–4320 SAAT. Sıralama `created_at`
+	// olduğu için 100 canlı kiralık bu LIMIT'in başını günlerce işgal eder ve
+	// aktivasyon siparişleri hiç yoklanmaz: webhook kaybolduğunda kod hiç gelmez,
+	// order-expirer tam iade yazar — hem sağlayıcı maliyeti hem satış kaybı.
+	// Kiralıkların kendi turu vardır (ListActiveRentalsForPoll, 5 dakika).
+	// test: ../internal/service/order/rental_integration_test.go#TestRentalsDoNotStarveActivationPoll
 	ListPendingOrdersForPoll(ctx context.Context, arg ListPendingOrdersForPollParams) ([]Order, error)
 	ListPricingRules(ctx context.Context) ([]PricingRule, error)
 	// Saklama temizliği (DeleteExpiredQuotes) queries/retention.sql içindedir.
@@ -465,7 +536,28 @@ type Querier interface {
 	ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]Order, error)
 	// deposits_user_idx (user_id, created_at DESC) tam olarak bu sıralamayı kullanır.
 	ListUserDeposits(ctx context.Context, arg ListUserDepositsParams) ([]Deposit, error)
-	ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]Order, error)
+	//
+	// 🔴 `icon_url` CANLI KATALOGDAN gelir, sipariş kaydından DEĞİL.
+	//
+	// `orders.service_name` bilerek anlık görüntüdür: satış kaydı, katalog sonradan
+	// değişse bile ne satıldığını korumalıdır (para kaydı, 10 yıl saklanıyor).
+	// Logo ise sunum verisidir; markanın logosu güncellendiğinde eski siparişlerde
+	// de yeni logonun görünmesi İSTENİR. Bu yüzden sipariş satırına kopyalanmaz,
+	// her okumada katalogdan çekilir.
+	//
+	// LEFT JOIN gerekçesi: `service_code` satın alma anındaki metin anlık
+	// görüntüsüdür; katalog senkronu sağlayıcının kodunu değiştirirse eşleşme
+	// kaybolur. INNER JOIN, o kullanıcının geçmiş siparişini listeden sessizce
+	// düşürürdü. (Servis satırının SİLİNMESİ mümkün değil — orders → price_quotes
+	// → products → services yabancı anahtar zinciri buna izin vermiyor.)
+	// test: order_integration_test.go#TestListUserOrdersCarriesServiceIcon
+	//
+	// `sqlc.embed(o)` kullanılır, sütunlar tek tek sayılmaz: `SELECT o.*` ya da elle
+	// sütun listesi, sqlc'ye `db.Order` yerine YENİ bir satır tipi ürettirir ve aynı
+	// tipi bekleyen tüm çağrı yerleri kırılır. `embed` `db.Order`'ı olduğu gibi
+	// korur, `icon_url`'i yanına ekler — ve şemaya sütun eklendiğinde bu sorgu
+	// kendiliğinden güncel kalır.
+	ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]ListUserOrdersRow, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	// tickets_user_idx (user_id, last_reply_at DESC) tam olarak bu sıralamayı kullanır.
 	ListUserTickets(ctx context.Context, arg ListUserTicketsParams) ([]ListUserTicketsRow, error)
@@ -516,6 +608,10 @@ type Querier interface {
 	// Kilit, transaction bitene kadar tutulur.
 	LockUserForUpdate(ctx context.Context, id int64) (LockUserForUpdateRow, error)
 	MarkEmailVerified(ctx context.Context, id int64) error
+	// Yoklama turunun damgası. Sıradaki tur en uzun süredir yoklanmamış satırla
+	// başlasın diye, sağlayıcı çağrısından ÖNCE yazılır: sağlayıcı erişilemezse
+	// bile tur ilerler ve tek bir arızalı grup kümenin geri kalanını aç bırakmaz.
+	MarkOrdersPolled(ctx context.Context, arg MarkOrdersPolledParams) error
 	// Kapatma BAŞARILI OLDUKTAN SONRA çağrılır.
 	// Başarısızken yazılırsa reaper o siparişi bir daha hiç denemez ve aktivasyon
 	// sağlayıcıda açık kalır (FR-412).
@@ -525,6 +621,10 @@ type Querier interface {
 	MarkStaleOffersUnavailable(ctx context.Context, arg MarkStaleOffersUnavailableParams) (int64, error)
 	// Yönetim özeti. Tek sorguda: N ayrı COUNT sorgusu atmak, tablo büyüdükçe
 	// panelin açılışını yavaşlatır.
+	//
+	// KOVALAR TOPLAMI `total`A EŞİTTİR. Eskiden değildi: 'ACTIVE' ve 'FAILED'
+	// hiçbir kovaya girmiyordu, yani panel "toplam 100, dağılım 78" gösterirdi.
+	// Bir sayının nereye gittiği görünmüyorsa gösterge okunamaz.
 	OrderStatsSummary(ctx context.Context, since time.Time) (OrderStatsSummaryRow, error)
 	RecordCloseFailure(ctx context.Context, arg RecordCloseFailureParams) error
 	// ═══════════════════════════ SAKLAMA POLİTİKASI ═══════════════════════════

@@ -62,6 +62,46 @@ const defaultCancelGrace = 120 * time.Second
 // penceresini kaçırmamak için erken davranırız.
 const expirySafetyMargin = 15 * time.Second
 
+// rentalRefundWindow kiralık siparişin iptal ve TAM İADE penceresi.
+//
+// 🔴 BU BİR PARA POLİTİKASIDIR ve tek yerde durur.
+//
+// Sağlayıcı tarafındaki tavan 20 dakikadır (docs/provider-herosms.md §6.1,
+// DELETE açıklaması: "24 saat ve üzeri süreli aktivasyonda 20 dakikadan az
+// süre geçmişse"). O tavanın DIŞINDA yazacağımız her iade, sağlayıcıdan geri
+// gelmeyen net giderdir — kiralıkta iade tutarının tamamı bizim cebimizden
+// çıkar. 15 dakika, o tavanın altında bilinçli bir emniyet payıdır: işçi turu
+// (2 dk) + closeClaimLease (2 dk) + sağlayıcıyla saat farkı.
+//
+// Pencere İÇİNDE iade bize maliyetsizdir: sağlayıcı da aynı tutarı geri verir.
+// Pencere DIŞINDA iade yoktur — kiralıkta satılan şey koddur değil SÜREdir ve
+// numara dönem boyunca canlıdır.
+//
+// ❓ Değerin kendisi (15 mi 20 mi) bir İŞ KARARIDIR; 20'yi aşan her değer
+// sipariş başına tam maliyet kadar pazarlama gideridir. Ayrıca §6.1'deki
+// "hiç OTP almamışsa VEYA 24sa+ aktivasyonda 20 dk'dan az" ifadesinin VE mi
+// VEYA mı olduğu canlıda doğrulanmadı (❓H3); muhafazakâr okuma alındı.
+const rentalRefundWindow = 15 * time.Minute
+
+// rentalDurationTolerance sağlayıcının teslim ettiği sürede kabul edilen sapma.
+//
+// 🔴 TAM EŞİTLİK BEKLEMEK YANLIŞ ALARM ÜRETİR, hiç bakmamak PARA KAYBETTİRİR.
+// Aradaki değeri seçmek gerekiyor; 5 dakikanın gerekçesi:
+//
+//   - `expiredAt` SAĞLAYICININ saatinde ve numara TAHSİS EDİLDİĞİ anda
+//     hesaplanır; biz onu HTTP yanıtı elimize geçtikten sonra (≤10 sn) kendi
+//     saatimizle karşılaştırırız. İki saat arasındaki NTP sapması + ağ gecikmesi
+//     saniyeler mertebesindedir.
+//   - `expirySafetyMargin` (15 sn) zaten düşülüyor.
+//   - Satılabilir en kısa kiralık 24 saattir; 5 dakika onun %0,35'idir. Bu
+//     kadarlık bir eksik süreyi biz üstleniriz — kullanıcıya "numara alınamadı"
+//     demek, ona 24 saat yerine 23s55dk vermekten daha pahalıdır.
+//
+// Kapatmak istediğimiz hata bu ölçeğin ÇOK dışında: sağlayıcı `duration`ı yok
+// sayıp 20 dakikalık bir aktivasyon döndürdüğünde sapma 5 dakika değil
+// SAATLERdir (720 saatlik bir kiralıkta 719,7 saat).
+const rentalDurationTolerance = 5 * time.Minute
+
 type txRunner interface {
 	Queries() *db.Queries
 	InTx(ctx context.Context, fn func(*db.Queries) error) error
@@ -222,6 +262,11 @@ type hold struct {
 	// DurationHours > 0 ise KİRALIK sipariş. Sağlayıcıya `duration` olarak
 	// gider ve yanıtta `subtype: 2` bekleriz.
 	DurationHours int
+	// Kind sipariş satırına yazılacak ürün türü ANLIK GÖRÜNTÜSÜ.
+	//
+	// Boş bırakılırsa aktivasyon sayılır. Kararı burada (T1'de, teklifin ürün
+	// satırı elimizdeyken) veririz; T2'de katalog değişmiş olabilir.
+	Kind db.ProductKind
 
 	ServiceCode, ServiceName string
 	CountryISO2, CountryName string
@@ -305,10 +350,26 @@ func (s *Service) reserve(ctx context.Context, in CreateInput) (hold, error) {
 		}
 		// Ürün kiralıksa süreyi taşırız. Dakikadan saate çevrim TEK YERDE:
 		// iki birim arasında gidip gelmek er geç 60 kat hataya yol açar.
-		if prodRow, err := q.GetProductByID(ctx, quote.ProductID); err == nil {
-			if prodRow.Kind == db.ProductKindSMSRENTAL && prodRow.DurationMinutes != nil {
-				h.DurationHours = int(*prodRow.DurationMinutes / 60)
+		//
+		// 🔴 HATA YUTULMAZ. Bu blok eskiden `if …; err == nil` ile yazılmıştı:
+		// ürün satırı okunamazsa `DurationHours` sessizce 0 kalıyor, sipariş
+		// aktivasyon olarak satın alınıyordu. Sonuç, kullanıcının 30 günlük
+		// kiralık fiyatını ödeyip 20 dakikalık bir aktivasyon alması olurdu —
+		// tek bir `if` yüzünden gerçek para kaybı. Ürün türünü bilmiyorsak
+		// satın alma yapılmaz; para T1'de düşüldüğü için çağıran iadeyi yazar.
+		// test: ../order/rental_integration_test.go#TestRentalDurationCannotBeSilentlyLost
+		prodRow, err := q.GetProductByID(ctx, quote.ProductID)
+		if err != nil {
+			return apperr.Internal(fmt.Errorf("teklifin ürün satırı okunamadı: %w", err))
+		}
+		if prodRow.Kind == db.ProductKindSMSRENTAL {
+			if prodRow.DurationMinutes == nil || *prodRow.DurationMinutes < 60 {
+				return apperr.Internal(fmt.Errorf(
+					"kiralık ürün %d geçersiz süre taşıyor: %v",
+					quote.ProductID, prodRow.DurationMinutes))
 			}
+			h.DurationHours = int(*prodRow.DurationMinutes / 60)
+			h.Kind = db.ProductKindSMSRENTAL
 		}
 		return nil
 	})
@@ -372,18 +433,89 @@ func (s *Service) persist(ctx context.Context, h hold, res *port.PurchaseResult)
 		productID := h.ProductID
 		quoteID := h.QuoteID
 
+		kind := h.Kind
+		if kind == "" {
+			kind = db.ProductKindSMSACTIVATION
+		}
+
+		// 🔴 SAĞLAYICI ÖDENEN SÜREYİ GERÇEKTEN VERDİ Mİ?
+		//
+		// Kiralıkta satılan şey SÜREdir. Sağlayıcı `duration`ı yok sayar ya da
+		// desteklemediği kademeyi düşürüp 20 dakikalık bir aktivasyon
+		// döndürürse, elimizde kendi içinde çelişkili bir satır kalır:
+		// `product_kind = SMS_RENTAL`, `rental_details.duration_hours = 720`,
+		// ama `expires_at` 20 dakika sonrası. Ve kimse bakmaz —
+		// `ListExpiredPendingOrders` kiralığı bilerek dışlar, `Expire` kiralıkta
+		// kapalıdır, `rental-closer` satırı sessizce COMPLETED yapar. Kullanıcı
+		// 450 TL öder, 20 dakika numara alır, İADE ALMAZ. Ölçüldü:
+		// bakiye 55000 → 55000, iade satırı 0.
+		//
+		// Aynı satır bir AKTİVASYON olsaydı `order-expirer` tam iade yazardı;
+		// yani bu, kiralık için aktivasyondaki korumayı kaldırırken açılan
+		// yeni bir deliktir.
+		//
+		// İKİ ÖLÇÜT birden aranır ve ikisi de "sessizce kabul et" tarafına
+		// düşmez:
+		//   1. `Subtype` — sağlayıcı satışın kiralık olduğunu TEYİT etmeli.
+		//      Boş bırakan bir adaptör teyit etmemiştir; eksik veri "izin yok"
+		//      sayılır (adaptör sözleşmesi: PurchaseResult.Subtype doldurulur).
+		//   2. `ExpiresAt` — ödenen dönemi (tolerans payıyla) KAPSAMALI. Asıl
+		//      para ölçütü budur; `Subtype` doğru olup sürenin kısa gelmesi de
+		//      aynı kaybı verir.
+		//
+		// Hata `port.ErrUnavailable` ile sarılır: çağıran numarayı sağlayıcıda
+		// bırakmaz (`abandonRemote`) ve parayı iade eder (`refundHold`).
+		// test: rental_integration_test.go#TestRentalPurchaseFailsWhenProviderIgnoresDuration
+		if kind == db.ProductKindSMSRENTAL {
+			paid := time.Duration(h.DurationHours) * time.Hour
+			if res.Subtype != port.KindSMSRental {
+				slog.Error("sağlayıcı kiralık istendiği hâlde kiralık DÖNMEDİ — satın alma iptal",
+					"quote", h.QuotePublicID, "istenen_saat", h.DurationHours,
+					"donen_subtype", res.Subtype, "metric", "provider_rental_subtype_mismatch_total")
+				return fmt.Errorf("%w: kiralık satın alındı ama sağlayıcı %q döndürdü",
+					port.ErrUnavailable, res.Subtype)
+			}
+			if expires.Sub(now) < paid-rentalDurationTolerance {
+				slog.Error("sağlayıcı ödenen kiralama süresini vermedi — satın alma iptal",
+					"quote", h.QuotePublicID, "istenen_saat", h.DurationHours,
+					"verilen", expires.Sub(now).String(),
+					"metric", "provider_rental_duration_short_total")
+				return fmt.Errorf(
+					"%w: %d saatlik kiralık istendi, sağlayıcı %s verdi",
+					port.ErrUnavailable, h.DurationHours, expires.Sub(now).Round(time.Second))
+			}
+		}
+
+		// İADE PENCERESİNİN ÜST SINIRI — yalnız kiralıkta.
+		//
+		// Aktivasyonda NIL bırakılır: üst sınır zaten örtük olarak `expires_at`
+		// ve order-expirer iadeyi kendisi yazıyor. Kolonu aktivasyona da
+		// doldurmak, bugünkü davranışı hiç kazanç sağlamadan değiştirirdi.
+		var refundableUntil *time.Time
+		if kind == db.ProductKindSMSRENTAL {
+			until := now.Add(rentalRefundWindow)
+			// Pencere numaranın kendi ömrünü aşamaz: 24 saatlik en kısa
+			// kiralıkta bile aşmaz, ama sınırı burada tutmak sonradan
+			// eklenecek daha kısa bir ürünün sessizce delik açmasını önler.
+			if until.After(expires) {
+				until = expires
+			}
+			refundableUntil = &until
+		}
+
 		ord, err := q.CreateOrder(ctx, db.CreateOrderParams{
 			UserID: h.UserID, ProviderID: h.ProviderID,
 			RemoteOrderID: res.RemoteOrderID, ProviderActivationID: activationID,
 			PhoneNumber: res.PhoneNumber, VerificationType: db.VerificationTypeSms,
-			ProductID:   &productID,
+			ProductID: &productID, ProductKind: kind,
 			ServiceCode: h.ServiceCode, ServiceName: h.ServiceName,
 			CountryIso2: h.CountryISO2, CountryName: h.CountryName, PhoneCode: h.PhoneCode,
 			QuoteID:        &quoteID,
 			PricePaidMinor: h.SellPriceMinor, CostMicro: res.Cost.Minor(),
-			FxRate:        mustNumeric(h.FXRate),
-			ExpiresAt:     expires,
-			CancellableAt: now.Add(defaultCancelGrace),
+			FxRate:          mustNumeric(h.FXRate),
+			ExpiresAt:       expires,
+			CancellableAt:   now.Add(defaultCancelGrace),
+			RefundableUntil: refundableUntil,
 		})
 		if err != nil {
 			// 🔴 UZAK KİMLİK ÇAKIŞMASI BİZİM İÇ HATAMIZ DEĞİL.
@@ -403,6 +535,22 @@ func (s *Service) persist(ctx context.Context, h hold, res *port.PurchaseResult)
 			}
 			return apperr.Internal(err)
 		}
+
+		// KİRA DÖNEMİ KAYDI — sipariş satırıyla AYNI transaction'da.
+		//
+		// Ayrı bir transaction'a bırakılsaydı, arada bir kesinti "kiralık
+		// sipariş var ama dönem kaydı yok" durumunu bırakırdı ve dönem
+		// üzerinden kurulan her rapor o siparişi hiç görmezdi.
+		if kind == db.ProductKindSMSRENTAL {
+			if _, err := q.CreateRentalDetail(ctx, db.CreateRentalDetailParams{
+				OrderID:       ord.ID,
+				DurationHours: int32(h.DurationHours),
+				RentalEndsAt:  expires,
+			}); err != nil {
+				return apperr.Internal(fmt.Errorf("kira dönemi kaydı yazılamadı: %w", err))
+			}
+		}
+
 		out = ord
 		return nil
 	})

@@ -202,3 +202,66 @@ func TestWebhookBodyCodeIsIgnored(t *testing.T) {
 
 var _ = fmt.Sprintf
 var _ = db.OrderStatusPENDING
+
+// TestWebhookRetriesDoNotDuplicateMessage — F5
+//
+// 🔴 WEBHOOK AT-LEAST-ONCE ÇALIŞIR; DEDUP ANAHTARI HAREKETLİ OLAMAZ.
+//
+// `hashMessage` sıfır `ReceivedAt`i bilerek sabit boş dizeye düşürüyor —
+// anahtar kararlı olsun diye. `HandleWebhook` ise `DeliverMessages`ten ÖNCE o
+// sıfırı `now()` ile dolduruyordu ve her yeniden denemede farklı bir `now()`
+// farklı bir hash üretiyordu. Ölçüldü: TEK SMS 4 satır, dördü de "yeni"
+// sayılıp SSE'den ayrı ayrı yayınlandı — kullanıcı aynı kodu dört kez gördü.
+//
+// Gövdedeki `receivedAt` de çözüm değil: webhook imzasızdır (değişmez #23) ve
+// URL'i bilen biri her istekte farklı bir zaman göndererek aynı SMS'i
+// defalarca yeni satıra çevirebilirdi.
+func TestWebhookRetriesDoNotDuplicateMessage(t *testing.T) {
+	e := setup(t, 10000)
+	ctx := context.Background()
+
+	q := e.makeQuote(t, 2500)
+	ord, err := e.svc.Create(ctx, ordersvc.CreateInput{UserID: e.userID, QuoteID: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// SAĞLAYICI TEYİDİ ZAMANSIZ mesaj döner: `parseTime` RFC 3339 dışını sıfır
+	// döndürür (docs/provider-herosms.md §7.3 — üç kaynak, üç tarih biçimi).
+	e.stub.mu.Lock()
+	e.stub.statusMessages = []port.RemoteMessage{
+		{Code: "555555", Body: "Kodunuz 555555", Sender: "SERVIS"}, // ReceivedAt SIFIR
+	}
+	e.stub.mu.Unlock()
+
+	// Aynı bildirim sekiz kez gelebilir; dördü yeter. Her denemede saat ilerler
+	// — hareketli çıpanın hatayı ürettiği koşul tam olarak budur.
+	body, _ := json.Marshal(map[string]any{
+		"activationId": ord.RemoteOrderID,
+		"phoneFrom":    "89854",
+		"service":      "wa",
+		"code":         "555555",
+		"text":         "Kodunuz 555555",
+		"receivedAt":   "8 Eylül 2026 12:00", // RFC 3339 DEĞİL: ayrıştırılamaz
+	})
+	for i := 0; i < 4; i++ {
+		e.clock.Advance(30 * time.Second)
+		if err := e.svc.HandleWebhook(ctx, e.provID, body); err != nil {
+			t.Fatalf("%d. bildirim: %v", i+1, err)
+		}
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM order_messages WHERE order_id=$1`, ord.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("🔴 TEK SMS %d satır oldu — webhook yeniden denemeleri dedup "+
+			"anahtarını her seferinde değiştiriyor", n)
+	}
+	if k := e.pub.kodIcerenOlaylar("555555"); k != 1 {
+		t.Errorf("aynı kod SSE'den %d kez yayınlandı, beklenen 1 — kullanıcı "+
+			"aynı mesajı defalarca görürdü", k)
+	}
+}

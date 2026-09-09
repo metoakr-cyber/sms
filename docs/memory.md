@@ -203,6 +203,36 @@ Alan adı SPF/DKIM ayarı şart — aksi halde doğrulama e-postaları spam'e d�
 M7'de karar verilecek. Aday: 5sim (mevcut kodda yarım adaptör var) veya SMS-Activate
 (HeroSMS ile aynı protokol ailesinden → adaptör yeniden kullanılabilir).
 
+### 2026-09-09 · Kiralık yaşam döngüsü denetimi — dokuz kusur, tek ilke
+
+Adversaryal bir denetim kiralık yaşam döngüsünde sekiz kusur buldu (üçü doğrudan para kaybı,
+gerçek bir test veritabanında koşturularak kanıtlandı); düzeltme sırasında dokuzuncusu çıktı.
+Ayrıntılı liste §5'te (tuzaklar). **Ortak kök şu tek cümlede toplanıyor:**
+
+> **Bir para guard'ının VARSAYILANI güvenli tarafa düşmeli. Eksik/NULL veri "sınır yok" değil,
+> "izin yok" demektir.**
+
+Bu ilke sekiz kusurun en ağırından (F1) çıkarıldı ama diğerlerinin çoğunu da açıklıyor:
+sağlayıcı `subtype` bildirmiyorsa satış kiralık SAYILMAZ (F2); sağlayıcı kapatma sonucunu
+teyit etmediyse sipariş KAPALI SAYILMAZ (F6); iptal reddedildiyse iade ALINMIŞ SAYILMAZ (F9).
+
+**Üç yapısal ders, bir sonraki özellikte de geçerli:**
+
+1. **Ölçek değişince sorgu deseni de değişmeli.** Aktivasyonda güvenli olan
+   `ORDER BY created_at LIMIT n`, dönem boyunca sabit kalan bir kümede açlık üretir (F3).
+   "Aynı desen zaten çalışıyor" bir gerekçe değildir; desenin dayandığı VARSAYIM taşınmalıdır.
+2. **Yeniden denenen bir kararın çıpası sabit olmalı.** "Şu an"a bakan bir karar, retry
+   aralığı pencereyi kestiğinde aynı sipariş için iki farklı sonuç üretir (F4).
+3. **Taklit sağlayıcı FAZLA İYİMSER olursa koca bir hata sınıfı görünmez olur.** `fake` ve
+   `stub` `DurationHours`u her zaman onurlandırdığı için "sağlayıcı ödenen süreyi vermezse ne
+   olur" sorusunun testte karşılığı yoktu — cevabı "kullanıcı parasını kaybeder"di (F2).
+   Yeni bir kuralı test etmeden önce, taklidin o kuralı İHLAL EDEBİLDİĞİNDEN emin ol.
+
+**İki savunma hattı kuralı somutlaştı:** `refundable_until` için hem DB kısıtı
+(`order_rental_has_refund_window`, VERİYİ savunur) hem domain kontrolü (`CanUserCancel`,
+KARARI savunur) var. Biri atlanabilir yolları (veri taşıma, admin kaydı, ileride `prolong`),
+diğeri kısıtın düşürüldüğü/unutulduğu durumu kapatır.
+
 ---
 
 ## 2. Domain sözlüğü
@@ -635,6 +665,16 @@ gösteriyor: 5sim'de `country` boyutu `"turkey"` gibi bir metin, HeroSMS'te `62`
 | **Yerel geri sayım sekme donunca durur** | Kullanıcı "2 dakikam vardı" der, süre çoktan dolmuş | Kalan süre **her zaman** sunucudaki `expiresAt`'ten hesaplanır |
 | 🔴 **Eski binary katalog tohumunu 30 dk'da bir geri alır** | `offer-sync` işi 30 dakikada bir koşar ve o turda görülmeyen teklifleri "bayat" işaretler (`MarkStaleOffersUnavailable`). Sahte sağlayıcının tohumunu genişletip **çalışan sunucuyu yeniden başlatmazsanız**, eski binary bir sonraki turda kataloğu eski hâline döndürür ve "senkronladım ama yine 6 servis" sanılır | Tohum değiştikten sonra `go run ./cmd/server`'ı **yeniden başlat**, sonra `cli catalog:sync` |
 | **Türkçe aramada `toLowerCase()` yetmez** | `"İNSTAGRAM".toLowerCase()` → `"i̇nstagram"` (birleşik nokta); `includes("instagram")` **eşleşmez** ve kullanıcı aradığı servisi bulamaz | `toLocaleLowerCase('tr')` + açık harf eşlemesi — `components/katalog/servis-listesi.tsx` |
+| 🔴 **Para guard'ı NULL veriyle sessizce AÇILIR (fail-open)** | `CanUserCancel` üst sınırı yalnız `refundable_until` doluyken uyguluyordu. Aktivasyonda nil doğru anlama gelir ("ek sınır yok"); kiralıkta aynı nil 29 gün kullanılmış numaranın TAM İADESİ demek — ölçüldü: bakiye 55000 → 100000 | **Eksik veri "sınır yok" değil "izin yok"tur.** İki hat: domain `IsRental && RefundableUntil == nil → red`, DB `order_rental_has_refund_window` kısıtı. Biri kararı, diğeri veriyi savunur |
+| 🔴 **Kolon ekleyen migration'ın `DEFAULT`'u geri almadan sonra KİMLİĞİ SİLER** | `ADD COLUMN product_kind DEFAULT 'SMS_ACTIVATION'` taze veritabanında doğru, ama `Down`→`Up` turundan sonra canlı kiralıklar aktivasyona döner → `ListExpiredPendingOrders` onları görür → 30 günlük tam iade | Kolonu ekleyen her migration, kimliği başka bir tablodan GERİ DOLDURMALI (`rental_details.order_id`). Tatbikat: atılabilir bir DB'de `up → down → up` ve satır içeriğini karşılaştır |
+| 🔴 **Sağlayıcı ödenen SÜREYİ vermeyebilir** | `duration` yok sayılır ya da desteklenmeyen kademe düşürülür: 720 saatlik kiralık 20 dakika sürer. Hiçbir iş bunu yakalamaz (kiralık `Expire`'dan bilerek muaf) → kullanıcı iade ALMAZ. Taklit sağlayıcılar süreyi hep onurlandırdığı için testte de görünmez | `persist` içinde `Subtype` + `expiredAt` doğrulanır (tolerans 5 dk). Taklide **"süreyi onurlandırmayan" kip** eklenmeden bu sınıf test edilemez |
+| 🔴 **Sabit sıralamalı `LIMIT` + dönem boyunca DEĞİŞMEYEN küme = açlık** | Aktivasyonda `ORDER BY created_at LIMIT 100` güvenlidir (satır ~20 dk'da kümeden çıkar). Kiralıkta küme 24–4320 saat sabit: 101. kiralık HİÇ yoklanmaz | Dönüşümlü tur: `last_polled_at NULLS FIRST` + turdan önce damga. Ölçek değişince sorgu deseni de değişmeli |
+| 🔴 **Yeniden denenen kararın çıpası "şu an" olamaz** | `within := now.Before(refundableUntil)` her denemede yeniden hesaplanıyordu; 15 dk'lık pencere 2 dk'lık retry aralığının ortasında bitince aynı sipariş 1. denemede `Cancel`, 7. denemede `Finish` alıyordu — sağlayıcı iadesinden vazgeçilip eksene "hiç talep etmedik" yazılıyordu | Karar SABİT bir çıpaya bağlanır (`cancelled_at`). Yeniden denenen her karar için sorulacak soru: "çıpa hareketli mi?" |
+| 🔴 **`Cancel` ile `Finish`in BAŞARISIZLIĞI da aynı şey değildir** | `recordCloseFailure` hangi çağrının denendiğini bilmiyordu: başarısız `Finish` iade eksenine `DENIED` yazıp siparişi "kapandı" işaretliyordu. Kiralıkta bu kural: dönem sonu HER kiralığa `Finish` gider | Eylem parametre olarak taşınır; `Finish` başarısızlığı iade eksenine DOKUNMAZ ve satır yeniden deneme yolunda kalır |
+| 🔴 **İade ekseni NİYETİ değil GERÇEKLEŞENİ yazmalı** | `Cancel` `NEW_OTP_RECEIVED` ile reddedilip yerine `Finish` gönderildiğinde satıra `provider_refund_status = REFUNDED` + tam maliyet yazılıyordu: sağlayıcı iadeyi açıkça reddetmişken defterde "iade alındı" duruyordu | `effective` (gerçekten başarılı olan çağrı) ayrı tutulur |
+| 🔴 **Aynı kuralı iki kanalda ayrı ayrı uygulamak** | `visibleMessages` iade edilmiş siparişin kodunu gizliyordu, SSE yayını gizlemiyordu — ekranı açık kullanıcı hem parayı hem kodu alıyordu | Kod kullanıcıya İKİ kanaldan ulaşır (GET + akış); süzgeç ikisinde de olmalı ve aynı yorumla bağlanmalı |
+| 🔴 **Sahiplen-sonra-bırak deseni bir çağrıyı YUTAR** | `ClaimOrderClose` terminal olmayan satırı da sahipleniyor, sonra bırakıyordu. Aradaki aralıkta terminal olan siparişin kapatma goroutine'i sahiplenmeyi kaybedip sessizce nil dönüyordu: terminal + `provider_closed_at IS NULL` + sağlayıcıya SIFIR çağrı | Uygunluk koşulu sahiplenme sorgusunun İÇİNDE olmalı (`AND status IN (…terminal…)`), Go tarafında ayrı bir `if` değil |
+| **Webhook yeniden denemesinde `now()` dedup anahtarına giremez** | Sıfır `ReceivedAt` `now()` ile doldurulunca at-least-once teslim her seferinde farklı hash üretiyordu: TEK SMS 4 satır + 4 SSE olayı | Zaman sağlayıcı TEYİDİNDEN gelir; gelmiyorsa sıfır kalır (`hashMessage` onu kararlı ele alır). Gövdedeki `receivedAt` de kullanılmaz — imzasız gövde saldırgana satır çoğaltma imkânı verir |
 
 ---
 

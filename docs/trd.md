@@ -118,8 +118,10 @@ Her satır: tarih, tip, tutar, işlem sonrası bakiye, ilgili sipariş/yükleme 
 ## 3. Katalog ve fiyatlandırma
 
 ### FR-300 · Ürün kataloğu `ZORUNLU`
-Ürün = `(kind, service, country, operator, duration)`. v1'de yalnız `kind = SMS_ACTIVATION` aktif.
-`SMS_RENTAL` şemada tanımlıdır ama listelenmez.
+Ürün = `(kind, service, country, operator, duration)`. `SMS_ACTIVATION` v1'de aktif.
+`SMS_RENTAL` **arka uçta v1'de tamamlandı** (FR-417…FR-420, `rental-poller`/`rental-closer`
+işleri koşuyor) ama ürün satırı üretilmesi `catalog:rentals` senkronuna bağlıdır ve **ön yüzü
+henüz yoktur** — bkz. TESLIM.md §3.
 
 > **KK-300:** Yeni bir `product_kind` eklemek `orders`, `ledger_entries` ve `price_quotes`
 > tablolarında **hiçbir şema değişikliği** gerektirmez.
@@ -423,6 +425,45 @@ karşılanmayan iade olarak kâr sızar.
 > **KK-416:** Satın almadan 10 saniye sonra iptal butonu devre dışıdır ve geri sayım gösterir.
 > ⚠️ `minActivationTime: 120` değerinin sabit mi servis/ülkeye göre değişken mi olduğu
 > **spec'te yok** (❓H2) → değer sağlayıcı yanıtından okunur, sabit kodlanmaz.
+
+### FR-417 · Kiralıkta ürün SÜREDİR `ZORUNLU`
+Kiralık siparişe gelen ilk SMS dönemi **bitirmez**: sipariş `PENDING → ACTIVE` olur, sağlayıcıda
+kapatılmaz ve dönem boyunca gelen her mesajı almaya devam eder. Dönem sonunda `EndRental`
+siparişi `COMPLETED` yapar ve **deftere hiçbir kayıt yazmaz** — kod gelmemiş olması iade sebebi
+değildir, çünkü satılan şey koddur değil süredir.
+
+> **KK-417a:** Kiralığa üç mesaj teslim edilir; üçü de kaydedilir, üçü de SSE'den yayınlanır ve
+> sağlayıcıya hiçbir kapatma çağrısı gitmez.
+> **KK-417b:** Hiç mesaj almamış bir kiralık dönem sonunda `COMPLETED` olur, `REFUND` defter
+> satırı **sıfırdır** ve bakiye değişmez.
+
+### FR-418 · Kiralık iptal ve iade penceresi `ZORUNLU`
+Kiralık sipariş yalnız satın almadan sonraki **15 dakika** içinde ve **hiç mesaj gelmemişken**
+iptal edilebilir. Pencerenin üst sınırı sipariş satırında (`refundable_until`) saklanır;
+**boş bırakılamaz** — hem veritabanı kısıtı (`order_rental_has_refund_window`) hem domain
+kontrolü bunu zorlar. Eksik veri "sınır yok" değil **"izin yok"** anlamına gelir.
+
+> **KK-418a:** 29 gün kullanılmış bir kiralığın iptal isteği reddedilir ve deftere hiçbir kayıt
+> yazılmaz — `refundable_until` NULL olsa bile.
+> **KK-418b:** Kiralık bir sipariş satırının `refundable_until` alanı `NULL` yapılamaz (23514).
+
+### FR-419 · Sağlayıcı ödenen süreyi teslim etmeli `ZORUNLU`
+Satın alma yanıtı sipariş yazılmadan **önce** doğrulanır: `subtype` kiralığı teyit etmeli ve
+`expiredAt` ödenen dönemi (tolerans **5 dakika**) kapsamalı. Sağlamıyorsa sipariş **hiç
+yazılmaz**; numara sağlayıcıda kapatılır ve para iade edilir.
+
+> **KK-419a:** 720 saatlik kiralık istenip 20 dakikalık aktivasyon dönerse `POST /orders`
+> hata verir, sipariş satırı oluşmaz, bakiye satın alma öncesine döner ve `Σ defter == bakiye`
+> korunur.
+> **KK-419b:** 1 dakikalık sapma satın almayı **düşürmez** (yanlış alarm üretmez).
+
+### FR-420 · Kiralık yoklaması açlığa düşmez `ZORUNLU`
+`rental-poller` turu **dönüşümlüdür**: sıralama `last_polled_at NULLS FIRST` ve her tur
+işlediği satırları damgalar. Sabit sıralamalı bir `LIMIT`, dönem boyunca değişmeyen bir kümede
+limit üstündeki kiralıkları hiç yoklamazdı.
+
+> **KK-420:** Limitin iki katı canlı kiralıkla iki tur koşulduğunda, **en yeni** kiralık da
+> yoklanmış olur.
 
 ---
 
@@ -809,7 +850,7 @@ data: {"orderId":"uuid","status":"REFUNDED","refunded":{"minor":1250,"currency":
 
 | Öğe | v1'de var olan | v1.1'de yapılacak |
 |---|---|---|
-| Kiralık numara | `product_kind = SMS_RENTAL`, `rental_details`, `order_messages`, `ProviderPort.Extend/ListMessages`. **Doğrulandı:** HeroSMS'te kiralık = aynı satın alma uç noktası + `duration` (24..4320 sa), `subtype: 2` | UI, süre bazlı fiyatlandırma, `prolong` akışı |
+| Kiralık numara | **Arka uç yaşam döngüsü TAMAM** (FR-417…FR-420): `ACTIVE` durumu, `rental_details`, dönem sonu iadesizliği, 15 dk iptal penceresi, dönüşümlü yoklama. **Doğrulandı:** HeroSMS'te kiralık = aynı satın alma uç noktası + `duration` (24..4320 sa), `subtype: 2` | UI (panel `ACTIVE`'i tanımıyor), süre bazlı fiyatlandırma, `prolong` akışı |
 | Referans/affiliate | `users.referral_code`, `users.referred_by_user_id`, `referrals`, `referral_rules`, `LedgerType.COMMISSION` | Davet linki, komisyon hesaplama işi, raporlama ekranı |
 | İkinci sağlayıcı | `providers.protocol`, adaptör kayıt defteri, sözleşme testi altyapısı | 5sim adaptörü + gerçek hesap |
 | Kart ödemesi | `deposit_methods.kind` genişletilebilir | Üye işyeri entegrasyonu (yasal ön koşul — `roadmap.md` M9) |

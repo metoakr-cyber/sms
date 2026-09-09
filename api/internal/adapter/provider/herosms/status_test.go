@@ -98,15 +98,20 @@ func TestOtpNormalizesAlternateFieldNames(t *testing.T) {
 			if err := json.Unmarshal([]byte(c.raw), &o); err != nil {
 				t.Fatal(err)
 			}
-			m := o.normalize("yedek-kimlik")
+			m := o.normalize()
 			if m.Code != c.code {
 				t.Errorf("kod = %q, beklenen %q", m.Code, c.code)
 			}
 			if m.Body != c.body {
 				t.Errorf("gövde = %q, beklenen %q", m.Body, c.body)
 			}
-			if m.RemoteID != "yedek-kimlik" {
-				t.Errorf("kimlik yoksa yedek kullanılmalı, alınan %q", m.RemoteID)
+			// 🔴 UYDURMA KİMLİK ÜRETİLMEZ. Sağlayıcı `id` vermediyse alan BOŞ
+			// kalır; dedup kararı servis katmanındaki tek noktaya
+			// (order.hashMessage) düşer. Adaptörün burada bir anahtar
+			// uydurması, aynı SMS'in iki yoldan iki farklı anahtarla iki satır
+			// olarak yazılmasına yol açıyordu.
+			if m.RemoteID != "" {
+				t.Errorf("sağlayıcı kimlik vermedi ama adaptör bir kimlik uydurdu: %q", m.RemoteID)
 			}
 		})
 	}
@@ -144,7 +149,7 @@ func TestFlexStringAcceptsBothTypes(t *testing.T) {
 func TestCancelRejectionsAreDistinguished(t *testing.T) {
 	t.Run("erken iptal → geçici, sağlayıcının verdiği süre kadar", func(t *testing.T) {
 		body := []byte(`{"title":"EARLY_CANCEL_DENIED","info":{"minActivationTime":180}}`)
-		err := mapLifecycleError(http.StatusConflict, body, "42")
+		err := mapLifecycleError(http.StatusConflict, body)
 		ra, ok := port.AsRetryAfter(err)
 		if !ok {
 			t.Fatalf("RetryAfterError bekleniyordu, alınan: %v", err)
@@ -155,7 +160,7 @@ func TestCancelRejectionsAreDistinguished(t *testing.T) {
 	})
 
 	t.Run("süre yoksa tipik değere düşer ama sabit backoff değildir", func(t *testing.T) {
-		err := mapLifecycleError(422, []byte(`{"title":"EARLY_CANCEL_DENIED"}`), "42")
+		err := mapLifecycleError(422, []byte(`{"title":"EARLY_CANCEL_DENIED"}`))
 		ra, ok := port.AsRetryAfter(err)
 		if !ok || ra.After != 120*time.Second {
 			t.Fatalf("120s yedeği bekleniyordu, alınan: %v", err)
@@ -164,7 +169,7 @@ func TestCancelRejectionsAreDistinguished(t *testing.T) {
 
 	t.Run("pencere doldu → KALICI red", func(t *testing.T) {
 		for _, title := range []string{"FREE_CANCELLATION_EXPIRED", "OTP_RECEIVED"} {
-			err := mapLifecycleError(422, []byte(`{"title":"`+title+`"}`), "42")
+			err := mapLifecycleError(422, []byte(`{"title":"`+title+`"}`))
 			if _, retry := port.AsRetryAfter(err); retry {
 				t.Errorf("%s yeniden denenebilir sayıldı — kalıcı red olmalı", title)
 			}
@@ -174,7 +179,7 @@ func TestCancelRejectionsAreDistinguished(t *testing.T) {
 	t.Run("yeni kod geldi → mesajlar taşınır", func(t *testing.T) {
 		body := []byte(`{"title":"NEW_OTP_RECEIVED","info":{"data":[
 			{"id":"9","code":"7788","text":"Kod 7788","receivedAt":"2026-09-08T10:00:00Z"}]}}`)
-		err := mapLifecycleError(http.StatusConflict, body, "42")
+		err := mapLifecycleError(http.StatusConflict, body)
 		oe, ok := port.AsOTPArrived(err)
 		if !ok {
 			t.Fatalf("OTPArrivedError bekleniyordu, alınan: %v", err)
@@ -187,7 +192,7 @@ func TestCancelRejectionsAreDistinguished(t *testing.T) {
 	t.Run("409 ve 422 aynı şekilde ele alınır", func(t *testing.T) {
 		// Modern uçta iş kuralı reddinin hangi kodla geldiği spec'te tanımsız.
 		for _, code := range []int{http.StatusConflict, http.StatusUnprocessableEntity} {
-			err := mapLifecycleError(code, []byte(`{"title":"OTP_RECEIVED"}`), "42")
+			err := mapLifecycleError(code, []byte(`{"title":"OTP_RECEIVED"}`))
 			if err == nil {
 				t.Fatalf("HTTP %d için hata bekleniyordu", code)
 			}

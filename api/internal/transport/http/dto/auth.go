@@ -330,6 +330,10 @@ type OrderResponse struct {
 	PhoneNumber string `json:"phoneNumber"`
 	ServiceCode string `json:"serviceCode"`
 	ServiceName string `json:"serviceName"`
+	// Logo alanının kaynağı canlı katalogdur (bkz. queries/orders.sql,
+	// ListUserOrders). Boş geldiğinde ön yüz harf rozetiyle çizer
+	// (service-icon.tsx onError yedeği).
+	IconURL     string `json:"iconUrl,omitempty"`
 	CountryISO2 string `json:"countryIso2"`
 	CountryName string `json:"countryName"`
 	PhoneCode   string `json:"phoneCode,omitempty"`

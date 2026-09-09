@@ -57,7 +57,14 @@ Bunlar **kod işi değil**, sizin yapmanız gerekenler:
    cd web && node scripts/servis-logolari.mjs --uygula
    ```
 
-6. **Geri yükleme tatbikatı yapın.** Yedekleme betiği yazıldı ve kapıları
+6. **`make migrate-up` çalıştırın.** Kiralık yaşam döngüsü iki yeni migration
+   getirdi (`00014_order_active_status`, `00015_rental_lifecycle`) ve geliştirme
+   veritabanına **bilerek uygulanmadı** (koşan sunucu eski ikili). `00014` tek
+   başına durur: PostgreSQL'de bir enum'a eklenen değer aynı transaction içinde
+   kullanılamaz. `00014`'ün `Down`'ı **gerekçeli olarak boştur** (enum değeri
+   düşürülemez) — onayınızı bekleyen bilinçli bir istisna.
+
+7. **Geri yükleme tatbikatı yapın.** Yedekleme betiği yazıldı ve kapıları
    sabotajla test edildi, ama **gerçek bir geri yükleme hiç denenmedi**.
    `make restore-drill YEDEK=...` ile tatbikat veritabanına yükleyin ve
    `make reconcile` ile doğrulayın. Denenmemiş yedek, yedek değildir.
@@ -77,6 +84,10 @@ Bunlar **kod işi değil**, sizin yapmanız gerekenler:
 | **Boyut eşleştirme ekranı** (FR-702) | Ülke/servis eşleştirmesi elle düzenlenemiyor | Katalog senkronu otomatik dolduruyor; elle düzeltme CLI'dan |
 | **Kâr raporu** (FR-706) | Marj/kâr raporu yok | `ÖNERİLEN` işaretli, zorunlu değil |
 | **Redis dağıtık kilidi** | İkinci bir sunucu örneği eklenirse işler çift koşar | Tek sunucu tasarımı; ikinci örnekten ÖNCE gerekli |
+| 🔴 **Kiralık ÖN YÜZÜ yok** | Panelde `ACTIVE` durumu tanınmıyor: dönemi süren kiralık "Bilinmeyen durum" görünüyor ve detay düğmesi hiç çizilmiyor (`panel/siparisler/page.tsx` `STATUS`/`OPENABLE`) → kullanıcı 30 gün boyunca gelen mesajlarını AÇAMIYOR. `code-waiter.tsx` süre dolunca "Süre doldu — iade işleniyor" diyor; kiralıkta iade işlenmiyor | Bu dalga yalnız arka uçtu; `web/` kapsam dışıydı. **Kiralık satışa açılmadan önce zorunlu iş** |
+| 🔴 **`OrderResponse` kiralığı ayırt etmiyor** | DTO'da `kind`, `rental{}`, `refundableUntil` yok → panel 15 dakikalık iptal penceresini gösteremiyor, oysa kullanım şartlarına yazılması gereken bir kuraldır | `transport/dto` bu dalganın dosya listesinde değildi |
+| 🔴 **`products` tablosunda sıfır `SMS_RENTAL`** | `catalog:rentals` senkronu hiç koşmadı; `/kiralama` sayfası "kiralanabilir servis listelenmiyor" gösteriyor | Ayrı iş; `legacyGetRaw` bulgusu (BAD_KEY → sessiz "kiralık yok") da önce çözülmeli |
+| **Uzatma (`prolong`) yok** | `/kiralama` SSS'si ve blog "uzatılabilir" diyor, kullanım şartları md. 7.5 "uzatılamaz" diyor — ikisi de JSON-LD olarak yayında. **Yayında yanlış vaat** | Uç nokta yazılmadı; `Extend()` adaptörde var ama çağıranı yok. Ya metin düzeltilmeli ya uç nokta yazılmalı |
 
 ---
 
@@ -93,6 +104,11 @@ Bunlar **kod işi değil**, sizin yapmanız gerekenler:
 - **İade edilmiş siparişe gecikmeli gelen kod kullanıcıya gösterilmez.**
   Kayıt veritabanında durur (iade tartışmasının kanıtı odur) ama üç kanalın
   üçünde de gizlenir. Aksi hâlde kullanıcı hem parayı hem numarayı alırdı.
+  ⚠️ Bu cümle bir denetime kadar **yanlıştı**: REST yanıtı ve durum olayı
+  süzüyordu, **canlı akış (SSE) süzmüyordu** — ekranı açık olan kullanıcı kodu
+  görüyordu. Düzeltildi (`DeliverMessages` yayın süzgeci); regresyonu
+  `rental_integration_test.go#TestRefundedOrderCodeIsNotPublishedOverSSE`
+  tutuyor. Ders: kod kullanıcıya İKİ kanaldan ulaşır; kural ikisinde de olmalı.
 - **Türkiye numarası satılamıyor.** Sağlayıcının API'si Türkiye için 122
   serviste de `physical = 0` döndürüyor (kıyas: 195 ülkenin 67'sinde > 0).
   Ülke listede en üstte ama **seçilemez** durumda. Ayrıntı: [memory.md](memory.md) §H23.

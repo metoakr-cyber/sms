@@ -7,17 +7,45 @@
  * artırır ve kayıt defterine değiştirilemez bir satır yazar. Bu yüzden hem
  * onay hem red iki adımlıdır ve ikinci adım yazılacak tutarı/gerekçeyi
  * AÇIKÇA tekrar gösterir (CLAUDE.md değişmez #4, ekran kuralı #9).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * 🔴 DEĞİŞMEYECEK İKİ ŞEY — bu dalganın en kritik kısıtı
+ * ══════════════════════════════════════════════════════════════════════════
+ * 1. ONAY ADIMLARINDA İLK ODAK "VAZGEÇ"TEDİR. Buraya klavyeyle gelinir:
+ *    kullanıcı bir önceki adımda Enter ile "Devam et"e basar. Enter BASILI
+ *    KALIRSA `click` olayı keydown tekrarıyla yeniden üretilir; odak "Evet"te
+ *    olsaydı basılı kalan TEK BİR TUŞ parayı yazardı. Bu azınlık bir
+ *    davranıştır ve bilerek seçilmiştir (§7.5).
+ * 2. `toMinor` POLİTİKASI: bu ekran `TUTAR_ZORUNLU` kullanır — negatif RET,
+ *    boş HATA. `bakiye` ekranının `izinNegatif: true` ayarıyla karıştırılmaz.
+ *
+ * Mobil kart + masaüstü tablo tek `VeriTablosu` sütun tanımından türer. Elle
+ * yazılan iki kopya üç yerde AYRIŞMIŞTI ("İncele" ↔ "İncele ve karar ver",
+ * "Tutar" ↔ "Bildirilen tutar", "—" ↔ "Yok"); artık yapısal olarak imkânsız.
  */
 
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { ApiError, apiBlob, apiFetch } from '@/lib/api';
 import { formatMoney, formatDateTime } from '@/lib/format';
-import { Card, Button, Field, Alert, Badge, Skeleton, Empty, Spinner } from '@/components/ui';
+import { TUTAR_ZORUNLU, toMinor } from '@/lib/para';
+import { Alert, Button, Card, Empty, Field, Spinner, cx } from '@/components/ui';
 import { Modal } from '@/components/modal';
+import {
+  CokSatir,
+  DurumRozeti,
+  HataDurumu,
+  KayitSayaci,
+  SAYFA_BOYUTU,
+  SayfaBasligi,
+  Sayfalama,
+  Secim,
+  SuzgecCubugu,
+  VeriTablosu,
+  apiHatasi,
+  type Sutun,
+} from '@/components/yonetim';
 import type { AdminDeposit, DepositStatus, Money } from '@/lib/types';
-
-const PAGE = 20;
 
 /** Yanıt zarfları — sunucu DTO'ları (dto/deposit.go). */
 interface AdminDepositList {
@@ -47,50 +75,23 @@ const STATUS_FILTERS: Array<{ value: '' | DepositStatus; label: string }> = [
   { value: '', label: 'Tümü' },
 ];
 
-function statusTone(s: DepositStatus): 'ok' | 'warn' | 'bad' | 'neutral' {
-  switch (s) {
-    case 'COMPLETED': return 'ok';
-    case 'PENDING':   return 'warn';
-    case 'REJECTED':  return 'bad';
-    default:          return 'neutral';
-  }
-}
-
-/**
- * TL girişi → kuruş.
- *
- * KAYAN NOKTA KULLANILMAZ: `12.50 * 100` JavaScript'te 1249.9999… verebilir
- * ve bir kuruş kaybolur (yonetim/bakiye/page.tsx ile aynı kalıp).
- */
-function toMinor(input: string): { minor: number } | { error: string } {
-  const s = input.trim().replace(/\s/g, '').replace(',', '.');
-  if (s === '') return { error: 'Tutar giriniz.' };
-  if (!/^\d+(\.\d{1,2})?$/.test(s)) {
-    return { error: 'Geçerli bir tutar giriniz (en fazla 2 ondalık).' };
-  }
-  const [whole = '0', frac = ''] = s.split('.');
-  const minor = Number(whole) * 100 + Number(frac.padEnd(2, '0'));
-  if (!Number.isSafeInteger(minor)) return { error: 'Tutar çok büyük.' };
-  return { minor };
-}
-
 function tryMoney(minor: number): Money {
   return { minor, currency: 'TRY', formatted: '' };
 }
 
 /**
- * Modal içinde odağı `[data-autofocus]` öğesine taşır.
+ * Modal içinde odağı `[data-autofocus]` öğesine taşır — ADIM DEĞİŞTİĞİNDE.
  *
- * İki ayrı sorunu birden kapatır — ikisi de ölçümle bulundu (odak `BODY`'de
- * kalıyordu):
- *  1. modal.tsx'teki `el?.focus() ?? panel.focus()` zinciri HER ZAMAN ikinci
- *     dala da girer (`focus()` `undefined` döner), yani odağı panele geri alır
- *     ve `data-autofocus` işlevsiz kalır.
- *  2. Diyalog adım değiştirdiğinde tıklanan düğme DOM'dan kalkar; odak
- *     `<body>`'ye düşer ve klavye kullanıcısı modalın arkasındaki sayfaya
- *     Tab'lamaya başlar.
+ * `modal.tsx` açılıştaki ilk odağı zaten doğru veriyor; bu kanca onun
+ * kapatmadığı ikinci sorunu kapatır: diyalog adım değiştirdiğinde tıklanan
+ * düğme DOM'dan kalkar, odak `<body>`'ye düşer ve klavye kullanıcısı modalın
+ * ARKASINDAKİ sayfaya Tab'lamaya başlar. `modal.tsx`'in odak etkisi
+ * `[open, onClose]` bağımlılığıyla çalışır, adım değişimini GÖRMEZ.
+ *
+ * Bu yüzden tek adımlı diyaloglarda (`odeme-yontemleri`) bu kanca YOKTUR ve
+ * ortak katmana da taşınmadı — çok adımlı diyaloğa özgüdür.
  */
-function useDialogFocus(ref: React.RefObject<HTMLElement | null>, dep: unknown) {
+function useAdimOdagi(ref: React.RefObject<HTMLElement | null>, adim: unknown) {
   React.useEffect(() => {
     // setTimeout(0): modal.tsx'in kendi odak etkisi bu render'dan SONRA
     // çalışır; ondan önce odaklarsak panel odağı geri alır.
@@ -98,51 +99,24 @@ function useDialogFocus(ref: React.RefObject<HTMLElement | null>, dep: unknown) 
       ref.current?.querySelector<HTMLElement>('[data-autofocus]')?.focus();
     }, 0);
     return () => window.clearTimeout(t);
-  }, [ref, dep]);
-}
-
-/** Hata gösterimi — mesaj + alan hataları + istek numarası (§9). */
-function ErrorBox({ err, className }: { err: ApiError; className?: string }) {
-  return (
-    <Alert className={className}>
-      <p>{err.message}</p>
-      {err.fields?.length ? (
-        <ul className="mt-1 list-inside list-disc">
-          {err.fields.map((f) => <li key={f.field}>{f.message}</li>)}
-        </ul>
-      ) : null}
-      {err.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {err.requestId}</p>}
-    </Alert>
-  );
+  }, [ref, adim]);
 }
 
 /**
- * Ham `<select>` stili.
+ * Diyalog adımlarının düğme sırası — `OnayDiyalogu` ile AYNI düzen: mobilde
+ * alt alta (birincil üstte), `sm:` üstünde birincil sağda. DOM sırası her iki
+ * kırılımda da "birincil → ikincil"dir; odak `data-autofocus` ile verilir,
+ * DOM sırası değiştirilerek DEĞİL — ekran okuyucu birincili önce duymalıdır.
  *
- * `appearance-none` ZORUNLUDUR: WebKit'te yerel `menulist` görünümü yüksekliği
- * kendi hesaplar ve `min-h-12`'yi YOK SAYAR — ölçümde kutu 25 px çıkıyordu,
- * yani 44 px dokunma hedefinin çok altında (§2.3). Görünüm kapatılınca oku
- * kendimiz çizeriz; `Chevron` bunun içindir.
+ * `OnayDiyalogu` KULLANILAMAZ: o bileşen kendi `Modal`'ını açar; onay burada
+ * ayrı bir diyalog değil, açık diyaloğun bir ADIMIdır (girilen tutar ve not
+ * korunur). İç içe iki modal yerine yalnız düzen paylaşılır.
  */
-const selectClass =
-  'raised min-h-12 w-full appearance-none rounded-xl border px-3 pr-10 text-base ' +
-  'outline-none focus:border-brand-400 disabled:opacity-60';
-
-function Chevron() {
+function AdimDugmeleri({ children }: { children: React.ReactNode }) {
   return (
-    <svg
-      className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted)]"
-      viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden
-    >
-      <path d="M6 9l6 6 6-6" />
-    </svg>
+    <div className="flex flex-col gap-2 sm:flex-row-reverse sm:justify-start">{children}</div>
   );
 }
-
-const textareaClass =
-  'raised w-full rounded-xl border px-3.5 py-2.5 text-base outline-none ' +
-  'focus:border-brand-400 disabled:opacity-60';
 
 export default function AdminDepositsPage() {
   const [status, setStatus] = React.useState<'' | DepositStatus>('PENDING');
@@ -150,9 +124,9 @@ export default function AdminDepositsPage() {
   const [selected, setSelected] = React.useState<AdminDeposit | null>(null);
 
   const q = useQuery({
-    queryKey: ['admin-deposits', { status, limit: PAGE, offset }],
+    queryKey: ['admin-deposits', { status, limit: SAYFA_BOYUTU, offset }],
     queryFn: () => {
-      const qs = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
+      const qs = new URLSearchParams({ limit: String(SAYFA_BOYUTU), offset: String(offset) });
       if (status) qs.set('status', status);
       return apiFetch<AdminDepositList>(`/admin/deposits?${qs.toString()}`);
     },
@@ -161,185 +135,206 @@ export default function AdminDepositsPage() {
   });
 
   const total = q.data?.total ?? 0;
-  const hasPrev = offset > 0;
-  const hasNext = offset + PAGE < total;
-  const listErr = q.error instanceof ApiError ? q.error : null;
+  const listErr = apiHatasi(q.error);
+
+  /*
+   * `Sayfalama` GÖRÜNÜR MÜ? — tek sayfaya sığan listede o bileşen kendini hiç
+   * çizmez, yani bu ifade "sayfalama ekranda var mı" ile aynı şeydir.
+   *
+   * Duyuru `false` yerine `!sayfali`: kapalı bırakmak, `Sayfalama`nın da
+   * görünmediği kısa listede (varsayılan süzgeç "Onay bekleyenler" çoğu gün
+   * 25 kaydın altındadır) ekran okuyucuyu SÜZGEÇ DEĞİŞİMİNDE tamamen sessiz
+   * bırakıyordu — çift duyuruyu çözerken tek duyuruyu da kaldırmıştı.
+   * `kullanicilar` ve `denetim` zaten bu ifadeyi kullanıyor; beş ekranın beşi
+   * artık aynı kuralda (§9.2 "ekranlar arası tutarsız bileşen dili").
+   */
+  const sayfali = total > SAYFA_BOYUTU;
+
+  /*
+   * SÜTUNLAR — tek tanım, iki sunum.
+   *
+   * "Yöntem" ve "Dekont" `lg:` altında gizlenir (`oncelik: 3`) ve bilgi
+   * KAYBOLMAZ: ikisi de mobil kartta ve inceleme diyaloğunda yerinde durur.
+   * Yedi sütun 768px'te sığmıyordu; sığdırmaya çalışmak tabloyu yatay
+   * kaydırmaya iterdi ki bu kabul edilmez (§6.1 kural 1).
+   */
+  const sutunlar: ReadonlyArray<Sutun<AdminDeposit>> = [
+    {
+      anahtar: 'tarih',
+      baslik: 'Tarih',
+      sayisal: true, // §3.5: tarih sütunu da tabular-nums taşır
+      hucre: (d) => <span className="text-muted">{formatDateTime(d.createdAt)}</span>,
+    },
+    {
+      anahtar: 'kullanici',
+      baslik: 'Kullanıcı',
+      mobilRol: 'baslik',
+      /*
+        🔴 `truncate` TEK BAŞINA TABLOYU TAŞIRIR — ölçüldü, 768px'te 806px.
+        `truncate` `white-space: nowrap` demektir; `table-layout: auto` bir
+        hücrenin max-content genişliğini içerikten hesapladığı için uzun bir
+        e-posta sütunu ZORLA GENİŞLETİR ve kırpma hiç devreye girmez. Üst
+        sınırı veren bir kap şart (özgün kod bunu `<td>`'ye yazıyordu).
+        Kartta üst sınır YOKTUR: orada kap `min-w-0` bir flex öğesidir ve
+        daralma zaten çalışır — bu, `sunum`un meşru kullanımıdır (genişlik),
+        metin farkı değil.
+      */
+      hucre: (d, sunum) => (
+        <div className={sunum === 'tablo' ? 'max-w-[9rem] lg:max-w-[14rem]' : 'min-w-0'}>
+          <span className="block truncate font-medium">{d.userUsername}</span>
+          {/* `text-sm`, `text-xs` DEĞİL (§3.2): e-posta bir veri alanıdır ve
+              destek yazışmasında okunur. */}
+          <span className="block truncate text-sm text-muted">{d.userEmail}</span>
+        </div>
+      ),
+    },
+    {
+      anahtar: 'yontem',
+      baslik: 'Yöntem',
+      oncelik: 3,
+      hucre: (d, sunum) => (
+        <span className={cx('block', sunum === 'tablo' ? 'max-w-[10rem] truncate' : 'break-anywhere')}>
+          {d.method}
+        </span>
+      ),
+    },
+    {
+      /*
+        BAŞLIK "Bildirilen tutar" — "Tutar" DEĞİL.
+        Özgün kod mobilde "Bildirilen tutar", masaüstünde "Tutar" yazıyordu.
+        Bir para ekranında bu ayrım önemlidir: bu sütun kullanıcının BİLDİRDİĞİ
+        tutardır, bakiyeye yazılan değil. İnceleme diyaloğu da aynı sözcüğü
+        kullanır — ekran içinde tek sözlük.
+      */
+      anahtar: 'tutar',
+      baslik: 'Bildirilen tutar',
+      hizala: 'sag',
+      sayisal: true,
+      hucre: (d) => (
+        <>
+          <span className="font-semibold">{formatMoney(d.amount)}</span>
+          {/* "yazılan" YALNIZ FARKLIYSA çıkar. Özgün mobil kart onu her
+              COMPLETED satırda gösteriyordu — aynı sayıyı iki kez yazmak fark
+              varmış izlenimi verir. Diyalogdaki "Yazılan tutar" hep oradadır. */}
+          {d.status === 'COMPLETED' && d.credited.minor !== d.amount.minor && (
+            <span className="block text-sm font-normal text-[var(--color-ok)]">
+              yazılan: {formatMoney(d.credited)}
+            </span>
+          )}
+        </>
+      ),
+    },
+    {
+      anahtar: 'dekont',
+      baslik: 'Dekont',
+      oncelik: 3,
+      // Tek metin: özgün kod mobilde "Yok", masaüstünde "—" yazıyordu.
+      hucre: (d) => (d.hasReceipt ? 'Var' : <span className="text-muted">Yok</span>),
+    },
+    {
+      anahtar: 'durum',
+      baslik: 'Durum',
+      mobilRol: 'rozet',
+      // Ton `durumTonu()` ile TEK haritadan gelir; etiket sunucunun
+      // `statusLabel`'ıdır — istemcide ikinci bir Türkçe sözlük kurulmaz.
+      hucre: (d) => <DurumRozeti durum={d.status} etiket={d.statusLabel} />,
+    },
+    {
+      anahtar: 'islem',
+      baslik: 'İşlem',
+      basligiGizle: true,
+      hizala: 'sag',
+      mobilRol: 'eylem',
+      // Metin `sunum`dan TÜRETİLMEZ (§6): mobilde "İncele ve karar ver",
+      // masaüstünde "İncele" yazan özgün ayrışma tam olarak buydu. Fark
+      // yalnız genişliktedir.
+      hucre: (d, sunum) => (
+        <Button
+          variant="outline"
+          size="sm"
+          fullWidth={sunum === 'kart'}
+          onClick={() => setSelected(d)}
+        >
+          {d.status === 'PENDING' ? 'İncele' : 'Ayrıntılar'}
+        </Button>
+      ),
+    },
+  ];
+
+  const suzgecli = status !== 'PENDING';
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Bakiye talepleri</h1>
-        <p className="mt-1 text-sm text-muted">
-          Kullanıcıların bildirdiği ödemeleri inceleyip onaylayın veya reddedin.
-        </p>
-      </div>
+    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+      <SayfaBasligi
+        baslik="Bakiye talepleri"
+        aciklama="Kullanıcıların bildirdiği ödemeleri inceleyip onaylayın veya reddedin."
+      />
 
       <Card>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <label className="flex w-full flex-col gap-1.5 sm:max-w-xs">
-            <span className="text-sm font-medium">Durum</span>
-            <div className="relative">
-              <select
-                className={selectClass}
-                value={status}
-                onChange={(e) => {
-                  setStatus(e.target.value as '' | DepositStatus);
-                  setOffset(0); // süzgeç değişti; eski sayfa numarası anlamsız
-                }}
-              >
-                {STATUS_FILTERS.map((f) => (
-                  <option key={f.value || 'all'} value={f.value}>{f.label}</option>
-                ))}
-              </select>
-              <Chevron />
-            </div>
-          </label>
-          {total > 0 && (
-            <div className="shrink-0"><Badge tone="neutral">{total} kayıt</Badge></div>
-          )}
-        </div>
+        <SuzgecCubugu sag={<KayitSayaci toplam={total} />}>
+          {/* `onTemizle` VERİLMEDİ: tek bir açılır listede varsayılana dönüş
+              zaten listenin kendisidir. Süzgeçten boşalan sonuçta "Tümünü
+              göster" eylemi ayrıca sunulur (§6.3). */}
+          <Secim
+            etiket="Durum"
+            className="sm:w-64"
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value as '' | DepositStatus);
+              setOffset(0); // süzgeç değişti; eski sayfa numarası anlamsız
+            }}
+          >
+            {STATUS_FILTERS.map((f) => (
+              <option key={f.value || 'all'} value={f.value}>{f.label}</option>
+            ))}
+          </Secim>
+        </SuzgecCubugu>
 
-        {q.isLoading ? (
-          <div className="mt-4 flex flex-col gap-2">
-            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}
-          </div>
-        ) : listErr ? (
-          <ErrorBox err={listErr} className="mt-4" />
-        ) : !q.data?.items.length ? (
-          <Empty
-            title="Talep yok"
-            hint={status === 'PENDING'
-              ? 'Onay bekleyen bakiye talebi bulunmuyor.'
-              : 'Bu süzgece uyan bir talep bulunmuyor.'}
-          />
-        ) : (
-          <>
-            {/* MOBİL: kart listesi. Yatay kaydırılan tablo kabul edilmez (§2.5). */}
-            <ul className="mt-4 flex flex-col gap-2 md:hidden">
-              {q.data.items.map((d) => (
-                <li key={d.id} className="raised rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{d.userUsername}</p>
-                      <p className="truncate text-xs text-muted break-anywhere">{d.userEmail}</p>
-                    </div>
-                    <Badge tone={statusTone(d.status)}>{d.statusLabel}</Badge>
-                  </div>
-
-                  <dl className="mt-3 flex flex-col gap-1.5 border-t border-[var(--border)] pt-2 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Bildirilen tutar</dt>
-                      <dd className="font-semibold">{formatMoney(d.amount)}</dd>
-                    </div>
-                    {d.status === 'COMPLETED' && (
-                      <div className="flex items-center justify-between gap-3">
-                        <dt className="text-muted">Yazılan tutar</dt>
-                        <dd className="font-semibold text-[var(--color-ok)]">{formatMoney(d.credited)}</dd>
-                      </div>
-                    )}
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Yöntem</dt>
-                      <dd className="min-w-0 truncate">{d.method}</dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Tarih</dt>
-                      <dd>{formatDateTime(d.createdAt)}</dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Dekont</dt>
-                      <dd>{d.hasReceipt ? 'Var' : 'Yok'}</dd>
-                    </div>
-                  </dl>
-
-                  <Button
-                    variant="outline" size="sm" fullWidth className="mt-3"
-                    onClick={() => setSelected(d)}
-                  >
-                    {d.status === 'PENDING' ? 'İncele ve karar ver' : 'Ayrıntılar'}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-
-            {/*
-              MASAÜSTÜ: gerçek tablo.
-
-              "Yöntem" ve "Dekont" sütunları `lg:` altında GİZLENİR ve bilgi
-              kaybolmaz — ikisi de karttaki ve diyalogdaki yerinde durur.
-              Yedi sütun 768 px'te sığmıyordu; sığdırmaya çalışmak tabloyu
-              yatay kaydırmaya iterdi ki bu kabul edilmez (§2.5).
-            */}
-            <div className="mt-4 hidden md:block">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs
-                                 uppercase tracking-wide text-muted">
-                    <th scope="col" className="py-2 pr-3 font-medium">Tarih</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Kullanıcı</th>
-                    <th scope="col" className="hidden py-2 pr-3 font-medium lg:table-cell">Yöntem</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Tutar</th>
-                    <th scope="col" className="hidden py-2 pr-3 font-medium lg:table-cell">Dekont</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Durum</th>
-                    <th scope="col" className="py-2 text-right font-medium">
-                      <span className="sr-only">İşlem</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {q.data.items.map((d) => (
-                    <tr key={d.id} className="border-b border-[var(--border)] align-top last:border-0">
-                      <td className="py-3 pr-3 whitespace-nowrap text-muted">
-                        {formatDateTime(d.createdAt)}
-                      </td>
-                      <td className="max-w-[9rem] py-3 pr-3 lg:max-w-[14rem]">
-                        <span className="block truncate font-medium">{d.userUsername}</span>
-                        <span className="block truncate text-xs text-muted">{d.userEmail}</span>
-                      </td>
-                      <td className="hidden max-w-[10rem] py-3 pr-3 lg:table-cell">
-                        <span className="block truncate">{d.method}</span>
-                      </td>
-                      <td className="py-3 pr-3 text-right whitespace-nowrap font-semibold">
-                        {formatMoney(d.amount)}
-                        {d.status === 'COMPLETED' && d.credited.minor !== d.amount.minor && (
-                          <span className="block text-xs font-normal text-[var(--color-ok)]">
-                            yazılan: {formatMoney(d.credited)}
-                          </span>
-                        )}
-                      </td>
-                      <td className="hidden py-3 pr-3 text-muted lg:table-cell">
-                        {d.hasReceipt ? 'Var' : '—'}
-                      </td>
-                      <td className="py-3 pr-3">
-                        <Badge tone={statusTone(d.status)}>{d.statusLabel}</Badge>
-                      </td>
-                      <td className="py-3 text-right">
-                        <Button variant="outline" size="sm" onClick={() => setSelected(d)}>
-                          {d.status === 'PENDING' ? 'İncele' : 'Ayrıntılar'}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {(hasPrev || hasNext) && (
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <Button variant="outline" size="sm" disabled={!hasPrev}
-                        onClick={() => setOffset((o) => Math.max(0, o - PAGE))}>
-                  Önceki
-                </Button>
-                <span className="text-xs text-muted">
-                  {offset + 1}–{Math.min(offset + PAGE, total)} / {total}
-                </span>
-                <Button variant="outline" size="sm" disabled={!hasNext}
-                        onClick={() => setOffset((o) => o + PAGE)}>
-                  Sonraki
+        <VeriTablosu
+          className="mt-6"
+          baslik="Bakiye talepleri listesi"
+          sutunlar={sutunlar}
+          satirlar={q.data?.items}
+          satirAnahtari={(d) => d.id}
+          yukleniyor={q.isLoading}
+          hata={listErr}
+          // `Sayfalama` de duyuruyor; sayfalı listede tek duyuru kalsın
+          // (yukarıdaki `sayfali` notu). Sayfalı liste ayrıca `VeriTablosu`nun
+          // "N kayıt listelendi" metninin YANLIŞ olduğu tek durumdur: N sayfadaki
+          // satır sayısıdır, toplam değil.
+          duyuru={!sayfali}
+          bos={
+            /* §6.3: süzgeçten boş ≠ gerçekten boş. Varsayılan süzgeç "Onay
+               bekleyenler" olduğu için ikinci hâl İYİ HABERDİR; eylem sunulmaz. */
+            suzgecli ? (
+              <div className="flex flex-col items-center gap-4">
+                <Empty
+                  title="Sonuç yok"
+                  hint="Seçtiğiniz duruma uyan bir talep bulunmuyor. Süzgeci genişletip tüm talepleri görebilirsiniz."
+                />
+                <Button
+                  variant="outline"
+                  onClick={() => { setStatus(''); setOffset(0); }}
+                >
+                  Tümünü göster
                 </Button>
               </div>
-            )}
-          </>
-        )}
+            ) : (
+              <Empty
+                title="Bekleyen talep yok"
+                hint="Onay bekleyen bakiye talebi bulunmuyor. Kullanıcı bir ödeme bildirdiğinde talep burada belirir."
+              />
+            )
+          }
+        />
+
+        <Sayfalama
+          className="mt-6"
+          offset={offset}
+          limit={SAYFA_BOYUTU}
+          toplam={total}
+          onDegis={setOffset}
+        />
       </Card>
 
       {selected && (
@@ -366,7 +361,7 @@ function ReviewDialog({ deposit, onClose }: { deposit: AdminDeposit; onClose: ()
   const [formErrors, setFormErrors] = React.useState<Record<string, string>>({});
 
   const stepRef = React.useRef<HTMLDivElement>(null);
-  useDialogFocus(stepRef, step);
+  useAdimOdagi(stepRef, step);
 
   const pending = deposit.status === 'PENDING';
 
@@ -404,8 +399,13 @@ function ReviewDialog({ deposit, onClose }: { deposit: AdminDeposit; onClose: ()
    * Alan BOŞSA sunucu `creditedMinor: 0` görür ve kullanıcının BİLDİRDİĞİ
    * tutarı yazar. Yönetici farklı bir tutar yazabilir çünkü kriptoda ağ
    * ücreti düşer: kullanıcı 500 ₺ gönderir, hesaba 493,40 ₺ düşer.
+   *
+   * 🔴 BOŞLUK KONTROLÜ BURADA YAPILIR, `toMinor`'da DEĞİL: bu ekranın ayarı
+   * `TUTAR_ZORUNLU`'dur ve boş girdiyi HATA sayar. "Boş = bildirilen tutar"
+   * kuralı bu alana özgüdür ve `toMinor`'a taşınırsa üçüncü bir para
+   * politikası doğar (`lib/para.ts` dosya başı).
    */
-  const parsed = credited.trim() === '' ? null : toMinor(credited);
+  const parsed = credited.trim() === '' ? null : toMinor(credited, TUTAR_ZORUNLU);
   const creditedMinor = parsed && 'minor' in parsed ? parsed.minor : 0;
   const effective: Money = creditedMinor === 0 ? deposit.amount : tryMoney(creditedMinor);
   const differs = creditedMinor !== 0 && creditedMinor !== deposit.amount.minor;
@@ -439,11 +439,7 @@ function ReviewDialog({ deposit, onClose }: { deposit: AdminDeposit; onClose: ()
     setStep('rejectConfirm');
   }
 
-  const mutErr =
-    (approve.error instanceof ApiError && approve.error) ||
-    (reject.error instanceof ApiError && reject.error) ||
-    null;
-
+  const mutErr = apiHatasi(approve.error) ?? apiHatasi(reject.error);
   const result = approve.data ?? reject.data ?? null;
 
   const titles: Record<Step, string> = {
@@ -457,254 +453,274 @@ function ReviewDialog({ deposit, onClose }: { deposit: AdminDeposit; onClose: ()
 
   return (
     <Modal open onClose={onClose} title={titles[step]}>
+      {/*
+        ══════════════════════════════════════════════════════════════════════
+        🔴 ADIM KUTULARI `role="alert"` TAŞIMAYA DEVAM EDER — bilinçli karar
+        ══════════════════════════════════════════════════════════════════════
+        Bir denetim raporu bu kutuları "açılışta koşulsuz çizilen statik uyarı"
+        saydı; ölçtüm, DEĞİLLER. Diyaloğun kendisi koşullu monte ediliyor
+        (`{selected && <ReviewDialog/>}`) ve adım kutularının tamamı, diyalog
+        ZATEN AÇIKKEN basılan bir düğmeyle ("Onayla" / "Reddet" / "Devam et")
+        ekrana giriyor. Yani §7.4'ün tarifi birebir karşılanıyor: eylemin
+        sonucunda beliren yeni içerik.
+
+        Ve burada susmanın bedeli ölçülebilir: adım değişiminde ekran okuyucuya
+        HİÇBİR ŞEY söylenmez.
+         · `Modal`ın başlığı (`titles[step]`) adım başına değişiyor ama AÇIK bir
+           diyaloğun erişilebilir adının değişmesi duyurulmaz.
+         · `useAdimOdagi` odağı yeni adımın `[data-autofocus]` öğesine taşır;
+           onay adımlarında bu öğe "Vazgeç" düğmesidir (§7.5) — etiketi
+           neyin onaylandığı hakkında tek kelime söylemez.
+        Kutular susturulursa ekran okuyucu kullanıcısı "Devam et"e bastıktan
+        sonra yalnız "Vazgeç, düğme" duyar ve KİME NE KADAR para yazılacağını
+        bilmeden onaylar. Bu bir para sistemidir; kesinti burada doğru davranış.
+
+        Statik olan TEK kutu `ReceiptViewer`ın "dekont yok" bilgisidir — o
+        diyaloğun ilk çiziminde durduğu için `duyur={false}` aldı.
+      */}
       <div ref={stepRef}>
-      {step === 'detail' && (
-        <div className="flex flex-col gap-4">
-          <DepositFacts deposit={deposit} />
-          <ReceiptViewer depositId={deposit.id} hasReceipt={deposit.hasReceipt} />
+        {step === 'detail' && (
+          <div className="flex flex-col gap-5">
+            <DepositFacts deposit={deposit} />
+            <ReceiptViewer depositId={deposit.id} hasReceipt={deposit.hasReceipt} />
 
-          {pending ? (
-            <div className="flex flex-col gap-2">
-              <Button
-                data-autofocus
-                fullWidth
-                onClick={() => { setFormErrors({}); setStep('approve'); }}
-              >
-                Onayla
-              </Button>
-              <Button
-                variant="danger" fullWidth
-                onClick={() => { setFormErrors({}); setStep('reject'); }}
-              >
-                Reddet
-              </Button>
-              <Button variant="ghost" fullWidth onClick={onClose}>Kapat</Button>
-            </div>
-          ) : (
-            <Button data-autofocus variant="outline" fullWidth onClick={onClose}>Kapat</Button>
-          )}
-        </div>
-      )}
-
-      {step === 'approve' && (
-        <form onSubmit={submitApproveForm} className="flex flex-col gap-4" noValidate>
-          <Alert tone="warn">
-            Onay, kullanıcının bakiyesini <strong>gerçekten</strong> artırır ve kayıt
-            defterine geri alınamaz bir satır yazar. Ödemenin hesabınıza geçtiğini
-            doğrulamadan onaylamayın.
-          </Alert>
-
-          <div className="raised rounded-xl border p-3 text-sm">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-muted">Kullanıcının bildirdiği</span>
-              <span className="font-semibold">{formatMoney(deposit.amount)}</span>
-            </div>
-            <div className="mt-1.5 flex items-center justify-between gap-3">
-              <span className="text-muted">Bakiyeye yazılacak</span>
-              <span className="font-semibold text-[var(--color-ok)]">{formatMoney(effective)}</span>
-            </div>
+            {pending ? (
+              <div className="flex flex-col gap-2">
+                <Button
+                  data-autofocus
+                  fullWidth
+                  onClick={() => { setFormErrors({}); setStep('approve'); }}
+                >
+                  Onayla
+                </Button>
+                <Button
+                  variant="danger" fullWidth
+                  onClick={() => { setFormErrors({}); setStep('reject'); }}
+                >
+                  Reddet
+                </Button>
+                <Button variant="ghost" fullWidth onClick={onClose}>Kapat</Button>
+              </div>
+            ) : (
+              <Button data-autofocus variant="outline" fullWidth onClick={onClose}>Kapat</Button>
+            )}
           </div>
+        )}
 
-          <Field
-            data-autofocus
-            label="Yazılacak tutar (TL)"
-            value={credited}
-            onChange={(e) => setCredited(e.target.value)}
-            placeholder={`Boş bırakılırsa ${formatMoney(deposit.amount)}`}
-            inputMode="decimal" autoComplete="off"
-            error={formErrors.credited}
-            hint="Boş bırakırsanız kullanıcının bildirdiği tutar yazılır. Kripto ağ
-                  ücreti veya eksik havale nedeniyle hesaba GEÇEN tutar farklıysa,
-                  gerçekten geçen tutarı buraya yazın."
-          />
-
-          {differs && (
+        {step === 'approve' && (
+          <form onSubmit={submitApproveForm} className="flex flex-col gap-5" noValidate>
             <Alert tone="warn">
-              Bildirilen tutar ile yazılacak tutar <strong>farklı</strong>. Kullanıcı
-              ekstresinde yazılan tutarı görecek; farkın nedenini aşağıdaki nota
-              yazmanız ileride yapılacak incelemeyi kolaylaştırır.
+              Onay, kullanıcının bakiyesini <strong>gerçekten</strong> artırır ve kayıt
+              defterine geri alınamaz bir satır yazar. Ödemenin hesabınıza geçtiğini
+              doğrulamadan onaylamayın.
             </Alert>
-          )}
 
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Yönetici notu (isteğe bağlı)</span>
-            <textarea
-              className={textareaClass} rows={3} maxLength={300}
+            {/* İki tutarın yan yana okunduğu tek yer — `tabular-nums` (§3.5)
+                olmadan basamaklar hizalanmaz ve fark gözden kaçar. */}
+            <dl className="raised flex flex-col gap-3 rounded-xl border p-4 text-sm">
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-muted">Kullanıcının bildirdiği</dt>
+                <dd className="font-semibold tabular-nums">{formatMoney(deposit.amount)}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-muted">Bakiyeye yazılacak</dt>
+                <dd className="font-semibold tabular-nums text-[var(--color-ok)]">
+                  {formatMoney(effective)}
+                </dd>
+              </div>
+            </dl>
+
+            <Field
+              data-autofocus
+              label="Yazılacak tutar (TL)"
+              value={credited}
+              onChange={(e) => setCredited(e.target.value)}
+              placeholder={`Boş bırakılırsa ${formatMoney(deposit.amount)}`}
+              inputMode="decimal" autoComplete="off"
+              error={formErrors.credited}
+              hint="Boş bırakırsanız kullanıcının bildirdiği tutar yazılır. Kripto ağ
+                    ücreti veya eksik havale nedeniyle hesaba GEÇEN tutar farklıysa,
+                    gerçekten geçen tutarı buraya yazın."
+            />
+
+            {differs && (
+              <Alert tone="warn">
+                Bildirilen tutar ile yazılacak tutar <strong>farklı</strong>. Kullanıcı
+                ekstresinde yazılan tutarı görecek; farkın nedenini aşağıdaki nota
+                yazmanız ileride yapılacak incelemeyi kolaylaştırır.
+              </Alert>
+            )}
+
+            <CokSatir
+              etiket="Yönetici notu (isteğe bağlı)"
+              rows={3} maxLength={300}
               value={adminNote} onChange={(e) => setAdminNote(e.target.value)}
               placeholder="Örn. 12.09 tarihli havale, dekont doğrulandı."
+              ipucu="Yalnız yöneticiler görür; kullanıcıya gösterilmez."
+              hata={formErrors.adminNote}
             />
-            <span className="text-xs text-muted">
-              Yalnız yöneticiler görür; kullanıcıya gösterilmez.
-            </span>
-            {formErrors.adminNote && (
-              <span role="alert" className="text-xs text-[var(--color-bad)]">{formErrors.adminNote}</span>
+
+            <AdimDugmeleri>
+              <Button type="submit" fullWidth className="sm:w-auto">Devam et</Button>
+              <Button
+                type="button" variant="outline" fullWidth className="sm:w-auto"
+                onClick={() => setStep('detail')}
+              >
+                Geri
+              </Button>
+            </AdimDugmeleri>
+          </form>
+        )}
+
+        {step === 'approveConfirm' && (
+          <div className="flex flex-col gap-5">
+            <Alert tone="warn">
+              <p>
+                <strong>{deposit.userUsername}</strong> adlı kullanıcının bakiyesine
+                {' '}<strong>{formatMoney(effective)}</strong> yazılacak.
+              </p>
+              <p className="mt-2">Bu işlem geri alınamaz.</p>
+            </Alert>
+
+            {differs && (
+              <p className="text-sm text-muted">
+                Kullanıcı {formatMoney(deposit.amount)} bildirmişti; siz
+                {' '}{formatMoney(effective)} onaylıyorsunuz.
+              </p>
             )}
-          </label>
 
-          <div className="flex flex-col gap-2">
-            <Button type="submit" fullWidth>Devam et</Button>
-            <Button type="button" variant="ghost" fullWidth onClick={() => setStep('detail')}>
-              Geri
-            </Button>
+            {mutErr && <HataDurumu hata={mutErr} />}
+
+            <AdimDugmeleri>
+              <Button
+                fullWidth className="sm:w-auto" loading={approve.isPending}
+                onClick={() => approve.mutate({ creditedMinor, adminNote: adminNote.trim() })}
+              >
+                Evet, bakiyeye yaz
+              </Button>
+              {/*
+                🔴 ODAK "VAZGEÇ"TEDİR, "Evet"te DEĞİL — dosya başındaki
+                gerekçeye bakınız. Bu özniteliği onay düğmesine taşımak,
+                basılı kalan tek bir tuşun para yazmasına yol açar.
+              */}
+              <Button
+                data-autofocus variant="outline" fullWidth className="sm:w-auto"
+                disabled={approve.isPending}
+                onClick={() => setStep('approve')}
+              >
+                Vazgeç
+              </Button>
+            </AdimDugmeleri>
           </div>
-        </form>
-      )}
+        )}
 
-      {step === 'approveConfirm' && (
-        <div className="flex flex-col gap-4">
-          <Alert tone="warn">
-            <p>
-              <strong>{deposit.userUsername}</strong> adlı kullanıcının bakiyesine
-              {' '}<strong>{formatMoney(effective)}</strong> yazılacak.
-            </p>
-            <p className="mt-2">Bu işlem geri alınamaz.</p>
-          </Alert>
+        {step === 'reject' && (
+          <form onSubmit={submitRejectForm} className="flex flex-col gap-5" noValidate>
+            <Alert tone="info">
+              Red bakiyeyi değiştirmez. Yazdığınız neden <strong>kullanıcıya aynen
+              gösterilir</strong>; anlaşılır ve nazik bir cümle yazın.
+            </Alert>
 
-          {differs && (
-            <p className="text-sm text-muted">
-              Kullanıcı {formatMoney(deposit.amount)} bildirmişti; siz
-              {' '}{formatMoney(effective)} onaylıyorsunuz.
-            </p>
-          )}
-
-          {mutErr && <ErrorBox err={mutErr} />}
-
-          <div className="flex flex-col gap-2">
-            {/*
-              ODAK "Vazgeç"TEDİR, "Evet"te DEĞİL.
-
-              Buraya klavyeyle gelinir: kullanıcı bir önceki adımda Enter ile
-              "Devam et"e basar. Enter tuşu basılı tutulursa `click` keydown'da
-              tekrar üretilir; odak "Evet"te olsaydı basılı kalan tek bir tuş
-              parayı yazardı. Onay ayrı ve bilinçli bir hareket olmalıdır.
-            */}
-            <Button
-              fullWidth loading={approve.isPending}
-              onClick={() => approve.mutate({ creditedMinor, adminNote: adminNote.trim() })}
-            >
-              Evet, bakiyeye yaz
-            </Button>
-            <Button
-              data-autofocus variant="ghost" fullWidth disabled={approve.isPending}
-              onClick={() => setStep('approve')}
-            >
-              Vazgeç
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === 'reject' && (
-        <form onSubmit={submitRejectForm} className="flex flex-col gap-4" noValidate>
-          <Alert tone="info">
-            Red bakiyeyi değiştirmez. Yazdığınız neden <strong>kullanıcıya aynen
-            gösterilir</strong>; anlaşılır ve nazik bir cümle yazın.
-          </Alert>
-
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Red nedeni (kullanıcı görür)</span>
-            <textarea
+            <CokSatir
               data-autofocus
-              className={textareaClass} rows={3} maxLength={300}
+              etiket="Red nedeni (kullanıcı görür)"
+              rows={3} maxLength={300}
               value={reason} onChange={(e) => setReason(e.target.value)}
               placeholder="Örn. Bildirilen tutarda bir ödeme hesabımıza ulaşmadı."
-              aria-invalid={formErrors.reason ? true : undefined}
+              ipucu="En az 5, en fazla 300 karakter."
+              hata={formErrors.reason}
             />
-            {formErrors.reason ? (
-              <span role="alert" className="text-xs text-[var(--color-bad)]">{formErrors.reason}</span>
-            ) : (
-              <span className="text-xs text-muted">En az 5, en fazla 300 karakter.</span>
-            )}
-          </label>
 
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Yönetici notu (isteğe bağlı)</span>
-            <textarea
-              className={textareaClass} rows={2} maxLength={300}
+            <CokSatir
+              etiket="Yönetici notu (isteğe bağlı)"
+              rows={2} maxLength={300}
               value={adminNote} onChange={(e) => setAdminNote(e.target.value)}
               placeholder="Yalnız yöneticilerin göreceği iç not."
+              hata={formErrors.adminNote}
             />
-            {formErrors.adminNote && (
-              <span role="alert" className="text-xs text-[var(--color-bad)]">{formErrors.adminNote}</span>
-            )}
-          </label>
 
-          <div className="flex flex-col gap-2">
-            <Button type="submit" variant="danger" fullWidth>Devam et</Button>
-            <Button type="button" variant="ghost" fullWidth onClick={() => setStep('detail')}>
-              Geri
-            </Button>
-          </div>
-        </form>
-      )}
+            <AdimDugmeleri>
+              <Button type="submit" variant="danger" fullWidth className="sm:w-auto">
+                Devam et
+              </Button>
+              <Button
+                type="button" variant="outline" fullWidth className="sm:w-auto"
+                onClick={() => setStep('detail')}
+              >
+                Geri
+              </Button>
+            </AdimDugmeleri>
+          </form>
+        )}
 
-      {step === 'rejectConfirm' && (
-        <div className="flex flex-col gap-4">
-          <Alert tone="warn">
-            <p>
-              <strong>{deposit.userUsername}</strong> adlı kullanıcının
-              {' '}{formatMoney(deposit.amount)} tutarındaki talebi reddedilecek.
-            </p>
-          </Alert>
+        {step === 'rejectConfirm' && (
+          <div className="flex flex-col gap-5">
+            <Alert tone="warn">
+              <p>
+                <strong>{deposit.userUsername}</strong> adlı kullanıcının
+                {' '}{formatMoney(deposit.amount)} tutarındaki talebi reddedilecek.
+              </p>
+            </Alert>
 
-          <div className="raised rounded-xl border p-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted">
-              Kullanıcının göreceği metin
-            </p>
-            <p className="mt-1.5 text-sm break-anywhere">{reason.trim()}</p>
-          </div>
-
-          {mutErr && <ErrorBox err={mutErr} />}
-
-          <div className="flex flex-col gap-2">
-            {/* Odak "Vazgeç"te — gerekçe için onay adımına bakınız. */}
-            <Button
-              variant="danger" fullWidth loading={reject.isPending}
-              onClick={() => reject.mutate({ reason: reason.trim(), adminNote: adminNote.trim() })}
-            >
-              Evet, reddet
-            </Button>
-            <Button
-              data-autofocus variant="ghost" fullWidth disabled={reject.isPending}
-              onClick={() => setStep('reject')}
-            >
-              Vazgeç
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === 'done' && result && (
-        <div className="flex flex-col gap-4">
-          {/*
-            TEKRARLANAN ONAY HATA DEĞİLDİR: sunucu 200 + alreadyApplied döner.
-            Kırmızı bir hata göstermek, yöneticiye "olmadı, tekrar dene"
-            dedirtir — oysa iş çoktan yapılmıştır.
-          */}
-          <Alert tone={result.alreadyApplied ? 'info' : 'ok'}>
-            {result.alreadyApplied
-              ? 'Bu talep daha önce sonuçlandırılmıştı; hiçbir şey yeniden yazılmadı.'
-              : `Talep ${result.deposit.statusLabel.toLocaleLowerCase('tr-TR')}.`}
-          </Alert>
-
-          <div className="raised rounded-xl border p-3 text-sm">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-muted">Durum</span>
-              <Badge tone={statusTone(result.deposit.status)}>{result.deposit.statusLabel}</Badge>
+            <div className="raised rounded-xl border p-4">
+              {/* `uppercase` kaldırıldı: CSS büyük harf dönüşümü Türkçede
+                  `i → I` üretir (`İ` değil). `text-xs` de (§3.2). */}
+              <p className="text-sm font-medium text-muted">Kullanıcının göreceği metin</p>
+              <p className="mt-2 break-anywhere text-sm">{reason.trim()}</p>
             </div>
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <span className="text-muted">Bakiyeye yazılan</span>
-              <span className="font-semibold">{formatMoney(result.deposit.credited)}</span>
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <span className="text-muted">Kullanıcının yeni bakiyesi</span>
-              <span className="font-semibold">{formatMoney(result.balance)}</span>
-            </div>
-          </div>
 
-          <Button data-autofocus fullWidth onClick={onClose}>Kapat</Button>
-        </div>
-      )}
+            {mutErr && <HataDurumu hata={mutErr} />}
+
+            <AdimDugmeleri>
+              <Button
+                variant="danger" fullWidth className="sm:w-auto" loading={reject.isPending}
+                onClick={() => reject.mutate({ reason: reason.trim(), adminNote: adminNote.trim() })}
+              >
+                Evet, reddet
+              </Button>
+              {/* Odak "Vazgeç"te — gerekçe için onay adımına bakınız. */}
+              <Button
+                data-autofocus variant="outline" fullWidth className="sm:w-auto"
+                disabled={reject.isPending}
+                onClick={() => setStep('reject')}
+              >
+                Vazgeç
+              </Button>
+            </AdimDugmeleri>
+          </div>
+        )}
+
+        {step === 'done' && result && (
+          <div className="flex flex-col gap-5">
+            {/* TEKRARLANAN ONAY HATA DEĞİLDİR: sunucu 200 + alreadyApplied
+                döner. Kırmızı kutu yöneticiye "tekrar dene" dedirtir — oysa
+                iş çoktan yapılmıştır. */}
+            <Alert tone={result.alreadyApplied ? 'info' : 'ok'}>
+              {result.alreadyApplied
+                ? 'Bu talep daha önce sonuçlandırılmıştı; hiçbir şey yeniden yazılmadı.'
+                : `Talep ${result.deposit.statusLabel.toLocaleLowerCase('tr-TR')}.`}
+            </Alert>
+
+            <dl className="raised flex flex-col gap-3 rounded-xl border p-4 text-sm">
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-muted">Durum</dt>
+                <dd>
+                  <DurumRozeti durum={result.deposit.status} etiket={result.deposit.statusLabel} />
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-muted">Bakiyeye yazılan</dt>
+                <dd className="font-semibold tabular-nums">{formatMoney(result.deposit.credited)}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-muted">Kullanıcının yeni bakiyesi</dt>
+                <dd className="font-semibold tabular-nums">{formatMoney(result.balance)}</dd>
+              </div>
+            </dl>
+
+            <Button data-autofocus fullWidth onClick={onClose}>Kapat</Button>
+          </div>
+        )}
       </div>
     </Modal>
   );
@@ -712,30 +728,47 @@ function ReviewDialog({ deposit, onClose }: { deposit: AdminDeposit; onClose: ()
 
 /* ═══════════════════════ Talep bilgileri ═══════════════════════ */
 
-function Row({ label, value }: { label: string; value: React.ReactNode }) {
+function Satir({
+  etiket, deger, sayisal,
+}: { etiket: string; deger: React.ReactNode; sayisal?: boolean }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-1.5">
-      <dt className="shrink-0 text-muted">{label}</dt>
-      <dd className="min-w-0 text-right font-medium break-anywhere">{value}</dd>
+    <div className="flex items-start justify-between gap-4 py-3">
+      <dt className="shrink-0 text-muted">{etiket}</dt>
+      <dd className={cx('min-w-0 break-anywhere text-right font-medium', sayisal && 'tabular-nums')}>
+        {deger}
+      </dd>
     </div>
   );
 }
 
 function DepositFacts({ deposit: d }: { deposit: AdminDeposit }) {
   return (
-    <dl className="raised divide-y divide-[var(--border)] rounded-xl border px-3 py-1 text-sm">
-      <Row label="Kullanıcı" value={<>{d.userUsername}<span className="block text-xs font-normal text-muted">{d.userEmail}</span></>} />
-      <Row label="Durum" value={<Badge tone={statusTone(d.status)}>{d.statusLabel}</Badge>} />
-      <Row label="Yöntem" value={d.method} />
-      <Row label="Bildirilen tutar" value={formatMoney(d.amount)} />
-      {d.status !== 'PENDING' && <Row label="Yazılan tutar" value={formatMoney(d.credited)} />}
-      {d.network && <Row label="Ağ" value={d.network} />}
-      {d.txHash && <Row label="İşlem numarası" value={<code className="font-mono text-xs">{d.txHash}</code>} />}
-      {d.userNote && <Row label="Kullanıcı notu" value={d.userNote} />}
-      {d.adminNote && <Row label="Yönetici notu" value={d.adminNote} />}
-      {d.rejectionReason && <Row label="Red nedeni" value={d.rejectionReason} />}
-      <Row label="Oluşturuldu" value={formatDateTime(d.createdAt)} />
-      {d.reviewedAt && <Row label="İncelendi" value={formatDateTime(d.reviewedAt)} />}
+    <dl className="raised divide-y divide-[var(--border)] rounded-xl border px-4 text-sm">
+      <Satir
+        etiket="Kullanıcı"
+        deger={
+          <>
+            {d.userUsername}
+            <span className="block font-normal text-muted">{d.userEmail}</span>
+          </>
+        }
+      />
+      <Satir etiket="Durum" deger={<DurumRozeti durum={d.status} etiket={d.statusLabel} />} />
+      <Satir etiket="Yöntem" deger={d.method} />
+      <Satir etiket="Bildirilen tutar" deger={formatMoney(d.amount)} sayisal />
+      {d.status !== 'PENDING' && (
+        <Satir etiket="Yazılan tutar" deger={formatMoney(d.credited)} sayisal />
+      )}
+      {d.network && <Satir etiket="Ağ" deger={d.network} />}
+      {d.txHash && (
+        // Monospace MEŞRU (§9.2): işlem numarası karakter karakter okunur.
+        <Satir etiket="İşlem numarası" deger={<code className="font-mono">{d.txHash}</code>} />
+      )}
+      {d.userNote && <Satir etiket="Kullanıcı notu" deger={d.userNote} />}
+      {d.adminNote && <Satir etiket="Yönetici notu" deger={d.adminNote} />}
+      {d.rejectionReason && <Satir etiket="Red nedeni" deger={d.rejectionReason} />}
+      <Satir etiket="Oluşturuldu" deger={formatDateTime(d.createdAt)} sayisal />
+      {d.reviewedAt && <Satir etiket="İncelendi" deger={formatDateTime(d.reviewedAt)} sayisal />}
     </dl>
   );
 }
@@ -749,6 +782,10 @@ function DepositFacts({ deposit: d }: { deposit: AdminDeposit }) {
  * veya <a href> tarayıcıyı indirmeye zorlar. Dosyayı blob olarak alıp object
  * URL üretiriz — ve BIRAKMAYI unutmayız: her açılışta yeni bir blob bellekte
  * kalırsa, on talebi inceleyen bir yönetici on dosyayı taşır.
+ *
+ * 🔴 BU BLOK BU DALGADA DEĞİŞTİRİLMEDİ (yalnız `ErrorBox` → `HataDurumu`).
+ * Sızıntı ve iptal mantığı ölçümle kurulmuştur; sunum düzeltmesi uğruna
+ * dokunulmaz.
  */
 function ReceiptViewer({ depositId, hasReceipt }: { depositId: string; hasReceipt: boolean }) {
   const [file, setFile] = React.useState<{ url: string; mime: string } | null>(null);
@@ -804,7 +841,10 @@ function ReceiptViewer({ depositId, hasReceipt }: { depositId: string; hasReceip
 
   if (!hasReceipt) {
     return (
-      <Alert tone="info">
+      // `duyur={false}`: bu kutu inceleme diyaloğunun İLK adımında, diyalog
+      // açılırken çizilir — koşulu bir eylem değil, talebin hâli. Diyaloğun
+      // kendi açılış duyurusunu kesmemeli (§7.4).
+      <Alert tone="info" duyur={false}>
         Bu talepte dekont yok. Havale taleplerinde dekont beklenir; onaylamadan
         önce ödemeyi hesap hareketlerinizden doğrulayın.
       </Alert>
@@ -814,17 +854,17 @@ function ReceiptViewer({ depositId, hasReceipt }: { depositId: string; hasReceip
   const isImage = file?.mime.startsWith('image/');
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
       {!file && (
         <Button variant="outline" fullWidth onClick={load} disabled={loading}>
           {loading ? <><Spinner /> Dekont açılıyor…</> : 'Dekontu göster'}
         </Button>
       )}
 
-      {err && <ErrorBox err={err} />}
+      {err && <HataDurumu hata={err} />}
 
       {file && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-3">
           {isImage ? (
             /* next/image KULLANILMAZ: kaynak bir `blob:` URL'idir, optimize
                edici uzak/yerel bir yol bekler ve bunu işleyemez. */
@@ -839,7 +879,7 @@ function ReceiptViewer({ depositId, hasReceipt }: { depositId: string; hasReceip
               className="h-[50dvh] w-full rounded-xl border border-[var(--border)]"
               aria-label="Dekont"
             >
-              <p className="p-3 text-sm text-muted">
+              <p className="p-4 text-sm text-muted">
                 Bu dosya tarayıcıda gösterilemiyor.
               </p>
             </object>
@@ -847,8 +887,10 @@ function ReceiptViewer({ depositId, hasReceipt }: { depositId: string; hasReceip
           <a
             href={file.url} download="dekont"
             className="inline-flex min-h-11 items-center justify-center rounded-xl border
-                       border-[var(--border)] px-3.5 text-sm font-medium
-                       hover:bg-[var(--raised)]"
+                       border-[var(--border)] px-4 text-sm font-medium
+                       hover:bg-[var(--raised)]
+                       [transition-property:background-color]
+                       [transition-duration:var(--sure-hizli)]"
           >
             Dekontu indir
           </a>

@@ -191,3 +191,51 @@ func TestWhatsAppTurkeyStaysOutOfStock(t *testing.T) {
 		t.Fatal("WhatsApp hiçbir ülkede stoklu değil — katalogda hiç görünmez")
 	}
 }
+
+// TestFakeImplementsRentalProvider
+//
+// `Capabilities()` KindSMSRental bildiriyorsa arayüz de gerçekten uygulanmış
+// olmalıdır. Eskiden bildirim vardı, uygulama yoktu: `SyncRentals`
+// `adapter.(port.RentalProvider)` iddiasında düşüp "sağlayıcı kiralık
+// desteklemiyor" diyerek sessizce dönüyordu — geliştirme ve testte kiralık
+// katalog senkronu HİÇ çalışmıyordu.
+func TestFakeImplementsRentalProvider(t *testing.T) {
+	p := fake.New(nil)
+
+	var bildiriyor bool
+	for _, k := range p.Capabilities() {
+		if k == port.KindSMSRental {
+			bildiriyor = true
+		}
+	}
+	if !bildiriyor {
+		t.Skip("sağlayıcı kiralık yeteneği bildirmiyor")
+	}
+
+	rp, ok := any(p).(port.RentalProvider)
+	if !ok {
+		t.Fatal("KindSMSRental bildiriliyor ama port.RentalProvider uygulanmamış — " +
+			"SyncRentals bu sağlayıcıda sessizce hiçbir şey yapmaz")
+	}
+
+	offers, err := rp.ListRentOffers(context.Background(), port.Creds{}, "tg")
+	if err != nil {
+		t.Fatalf("ListRentOffers: %v", err)
+	}
+	if len(offers) == 0 {
+		t.Fatal("kiralık katalog BOŞ — senkron hiçbir SMS_RENTAL ürünü üretemezdi")
+	}
+	for _, o := range offers {
+		if o.DurationHours <= 0 {
+			t.Errorf("süresiz kiralık teklifi: %+v", o)
+		}
+		if o.Cost.IsZero() {
+			t.Errorf("maliyeti sıfır kiralık teklifi: %+v", o)
+		}
+	}
+
+	durs, err := rp.AllowedDurations(context.Background(), port.Creds{})
+	if err != nil || len(durs) == 0 {
+		t.Fatalf("AllowedDurations = %v, %v", durs, err)
+	}
+}

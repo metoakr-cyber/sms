@@ -8,14 +8,37 @@
  *   · yeni yöntem PASİF doğar (sunucu),
  *   · eksik alanlı yöntem aktifleştirilemez (sunucu 422 + burada kilitli düğme),
  *   · `config` kısmi gönderilmez; sunucuda MERGE DEĞİL, YERİNE GEÇER.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * BU DALGADA NE DEĞİŞTİ (davranış DEĞİL, yapı)
+ * ══════════════════════════════════════════════════════════════════════════
+ * Mobil kart listesi ile masaüstü tablosu elle İKİ KEZ yazılıyordu (~110 satır
+ * ikiz kod). İkisi de `VeriTablosu`'nun tek sütun tanımından türüyor artık;
+ * bir etiketi bir yerde değiştirip diğerini unutmak YAPISAL OLARAK imkânsız.
+ * `toMinor` / `fromMinor` / `ErrorBox` / `selectClass` / `Chevron` /
+ * `textareaClass` / `useDialogFocus` yerel kopyaları kaldırıldı — hepsinin
+ * ortak karşılığı var (`lib/para.ts`, `components/yonetim`).
  */
 
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, apiFetch } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
-import { Card, Button, Field, Alert, Badge, Skeleton, Empty } from '@/components/ui';
+import { TUTAR_ZORUNLU, minorToText, toMinor } from '@/lib/para';
+import { Alert, Button, Card, Empty, Field, cx } from '@/components/ui';
 import { Modal } from '@/components/modal';
+import {
+  CokSatir,
+  DurumRozeti,
+  HataDurumu,
+  OnayDiyalogu,
+  SayfaBasligi,
+  Secim,
+  VeriTablosu,
+  apiHatasi,
+  ikiliTon,
+  type Sutun,
+} from '@/components/yonetim';
 import type { DepositMethod } from '@/lib/types';
 
 interface DepositMethodList { items: DepositMethod[] }
@@ -51,93 +74,51 @@ const CONFIG_FIELDS: Record<Kind, Array<{ key: string; label: string; required: 
 const HARD_MIN_MINOR = 1000;
 const HARD_MAX_MINOR = 5_000_000;
 
-/**
- * TL girişi → kuruş. KAYAN NOKTA YOK: `12.50 * 100` bir kuruş kaybettirebilir
- * (yonetim/bakiye/page.tsx ile aynı kalıp).
- */
-function toMinor(input: string): { minor: number } | { error: string } {
-  const s = input.trim().replace(/\s/g, '').replace(',', '.');
-  if (s === '') return { error: 'Tutar giriniz.' };
-  if (!/^\d+(\.\d{1,2})?$/.test(s)) {
-    return { error: 'Geçerli bir tutar giriniz (en fazla 2 ondalık).' };
-  }
-  const [whole = '0', frac = ''] = s.split('.');
-  const minor = Number(whole) * 100 + Number(frac.padEnd(2, '0'));
-  if (!Number.isSafeInteger(minor)) return { error: 'Tutar çok büyük.' };
-  return { minor };
+/* ═══════════════════════ Liste parçaları ═══════════════════════ */
+
+/** `maxAmount.minor === 0` ÜST SINIR YOK demektir; 0,00 ₺ tavan DEĞİL. */
+function amountRange(m: DepositMethod): string {
+  const min = formatMoney(m.minAmount);
+  return m.maxAmount.minor === 0 ? `${min} ve üzeri` : `${min} – ${formatMoney(m.maxAmount)}`;
 }
 
-/**
- * Kuruş → düzenlenebilir TL metni (form ÖN DOLDURMA için).
- *
- * `formatted` alanı "₺" ve binlik ayracı taşır; girdi kutusuna konursa
- * kullanıcı onu düzenleyemez. Burada bölme YAPILMAZ; tam sayı ayrıştırması
- * kullanılır — para aritmetiği değil, gösterim ayrıştırmasıdır.
- */
-function fromMinor(minor: number): string {
-  const whole = Math.trunc(minor / 100);
-  const frac = Math.abs(minor % 100);
-  return `${whole},${String(frac).padStart(2, '0')}`;
-}
-
-/**
- * Modal açılınca odağı `[data-autofocus]` öğesine taşır.
- *
- * modal.tsx'teki `el?.focus() ?? panel.focus()` zinciri HER ZAMAN ikinci dala
- * da girer (`focus()` `undefined` döner) ve odağı panele geri alır — yani
- * `data-autofocus` tek başına işlevsizdir. Ölçümde odak diyalog panelinde
- * kalıyordu; klavye kullanıcısı forma ulaşmak için fazladan Tab basıyordu.
- */
-function useDialogFocus(ref: React.RefObject<HTMLElement | null>) {
-  React.useEffect(() => {
-    // setTimeout(0): modal.tsx'in kendi odak etkisinden SONRA çalışsın.
-    const t = window.setTimeout(() => {
-      ref.current?.querySelector<HTMLElement>('[data-autofocus]')?.focus();
-    }, 0);
-    return () => window.clearTimeout(t);
-  }, [ref]);
-}
-
-function ErrorBox({ err, className }: { err: ApiError; className?: string }) {
+function ConfigSummary({ method }: { method: DepositMethod }) {
+  const fields = CONFIG_FIELDS[method.kind];
+  const filled = fields.filter((f) => (method.config[f.key] ?? '').trim() !== '');
+  if (!filled.length) return <span className="text-muted">Bilgi girilmemiş</span>;
   return (
-    <Alert className={className}>
-      <p>{err.message}</p>
-      {err.fields?.length ? (
-        <ul className="mt-1 list-inside list-disc">
-          {err.fields.map((f) => <li key={f.field}>{f.message}</li>)}
-        </ul>
-      ) : null}
-      {err.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {err.requestId}</p>}
-    </Alert>
+    <div className="flex flex-col gap-1">
+      {filled.map((f) => (
+        <p key={f.key} className="break-anywhere">
+          <span className="text-muted">{f.label}: </span>
+          {method.config[f.key]}
+        </p>
+      ))}
+    </div>
   );
 }
 
 /**
- * Ham `<select>` stili.
+ * Aktifleştirmeyi engelleyen eksik alanlar — yoksa `null`.
  *
- * `appearance-none` ZORUNLUDUR: WebKit'te yerel `menulist` görünümü yüksekliği
- * kendi hesaplar ve `min-h-12`'yi YOK SAYAR — ölçümde kutu 25 px çıkıyordu,
- * 44 px dokunma hedefinin çok altında (§2.3). Ok bu yüzden elle çizilir.
+ * Eksik alan varsa "Aktifleştir" düğmesi KİLİTLİDİR ve nedeni ALTINDA YAZAR.
+ * Sunucu da reddeder (422); buradaki kilit, yöneticiyi anlamsız bir hataya
+ * çarptırmamak içindir. PASİFLEŞTİRME HER ZAMAN SERBESTTİR — bir yöntemi
+ * hızla kapatmak için hiçbir ön koşul aranmaz; bu yüzden kontrol
+ * `!m.isActive` ile başlar.
+ *
+ * 🔴 `title` TEK BAŞINA YETMEZ: dokunmatik ekranda hover yoktur, yani
+ * "Önce doldurun: iban" ipucu telefonda HİÇ görünmez
+ * (frontend-contract.md §2.3). Özgün kodda bu metin masaüstünde durum
+ * rozetinin altındaydı, mobilde ayrı bir yerde. Artık tek yerde ve KİLİTLİ
+ * DÜĞMENİN yanında: açıkladığı şey durum değil, çalışmayan düğmedir.
  */
-const selectClass =
-  'raised min-h-12 w-full appearance-none rounded-xl border px-3 pr-10 text-base ' +
-  'outline-none focus:border-brand-400 disabled:opacity-60';
-
-function Chevron() {
-  return (
-    <svg
-      className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted)]"
-      viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden
-    >
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
+function aktiflikEngeli(m: DepositMethod): string[] | null {
+  const eksik = m.missingFields ?? [];
+  return !m.isActive && eksik.length > 0 ? eksik : null;
 }
 
-const textareaClass =
-  'raised w-full rounded-xl border px-3.5 py-2.5 text-base outline-none ' +
-  'focus:border-brand-400 disabled:opacity-60';
+/* ═══════════════════════ Ekran ═══════════════════════ */
 
 type Dialog =
   | { kind: 'create' }
@@ -165,158 +146,207 @@ export default function DepositMethodsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-deposit-methods'] }),
   });
 
-  const listErr = q.error instanceof ApiError ? q.error : null;
+  const listErr = apiHatasi(q.error);
   // Aktifleştirme reddi `fields` DEĞİL, düz bir mesajdır (handler/admin.go).
-  const activeErr = setActive.error instanceof ApiError ? setActive.error : null;
-  const items = q.data?.items ?? [];
+  const activeErr = apiHatasi(setActive.error);
+  const items = q.data?.items;
+
+  /*
+   * SÜTUNLAR — tek tanım, iki sunum.
+   *
+   * `oncelik: 3` verilen dört sütun `lg:` altında gizlenir ve HİÇBİR BİLGİ
+   * KAYBOLMAZ: dördü de mobil kartta ve düzenleme formunda durmaya devam
+   * eder (§6.1 kural 3). 768px'te görünen dört sütun — Yöntem, Tutar
+   * aralığı, Durum, İşlemler — yatay kaydırma üretmeden sığar.
+   */
+  const sutunlar: ReadonlyArray<Sutun<DepositMethod>> = [
+    {
+      anahtar: 'yontem',
+      baslik: 'Yöntem',
+      mobilRol: 'baslik',
+      /*
+        🔴 ÜST SINIR ŞART: `truncate` = `white-space: nowrap`, ve
+        `table-layout: auto` hücrenin max-content genişliğini içerikten
+        hesaplar — uzun bir yöntem adı tabloyu ZORLA genişletir, kırpma hiç
+        devreye girmez (`talepler`de 768px'te ölçüldü: 806px). Kartta sınır
+        yoktur; orada kap `min-w-0` bir flex öğesidir.
+      */
+      hucre: (m, sunum) => (
+        <div className={sunum === 'tablo' ? 'max-w-[9rem] lg:max-w-[12rem]' : 'min-w-0'}>
+          <span className="block truncate font-medium">{m.name}</span>
+          {/* Monospace MEŞRU (§9.2): `code` bir kimliktir, karakter karakter okunur. */}
+          <code className="block truncate font-mono text-sm text-muted">{m.code}</code>
+        </div>
+      ),
+    },
+    {
+      anahtar: 'tip',
+      baslik: 'Tip',
+      oncelik: 3,
+      hucre: (m) => <span className="whitespace-nowrap">{KIND_LABEL[m.kind]}</span>,
+    },
+    {
+      anahtar: 'bilgiler',
+      baslik: 'Bilgiler',
+      oncelik: 3,
+      hucre: (m, sunum) => (
+        <div className={sunum === 'tablo' ? 'max-w-[16rem]' : undefined}>
+          <ConfigSummary method={m} />
+        </div>
+      ),
+    },
+    {
+      anahtar: 'aralik',
+      baslik: 'Tutar aralığı',
+      /*
+        `sayisal: true` VERİLMEDİ, `tabular-nums` ELLE yazıldı — bilerek.
+        `VeriTablosu` `sayisal` ile `tabular-nums` + `whitespace-nowrap`'i
+        birlikte uygular; ikincisi TEK bir tutar için doğru, bir ARALIK için
+        değil: "10.000,00 ₺ – 500.000,00 ₺" kırılamayınca sütun ~190px
+        istiyor ve 768px'te eylem sütununu düğmeleri alt alta itecek kadar
+        eziyor (ölçüldü). §3.5'in istediği şey `tabular-nums`; `nowrap` onun
+        gereği değil, `sayisal` bayrağının paket arkadaşı.
+      */
+      hucre: (m) => <span className="tabular-nums">{amountRange(m)}</span>,
+    },
+    {
+      anahtar: 'sira',
+      baslik: 'Sıra',
+      hizala: 'sag',
+      sayisal: true,
+      oncelik: 3,
+      hucre: (m) => m.sortOrder,
+    },
+    {
+      anahtar: 'durum',
+      baslik: 'Durum',
+      mobilRol: 'rozet',
+      // `DurumRozeti` üç kanal taşır: metin + biçim (SVG) + renk. Açık temada
+      // durum renkleri kontrast eşiğini geçemiyor (rapora bkz.) — metin ve
+      // biçim kanalları tam bu yüzden teorik değil.
+      hucre: (m) => (
+        <DurumRozeti
+          durum={m.isActive ? 'ACTIVE' : 'INACTIVE'}
+          ton={ikiliTon(m.isActive)}
+          etiket={m.isActive ? 'Aktif' : 'Pasif'}
+        />
+      ),
+    },
+    {
+      anahtar: 'islemler',
+      baslik: 'İşlemler',
+      basligiGizle: true,
+      hizala: 'sag',
+      mobilRol: 'eylem',
+      /*
+        `sunum` YALNIZ SUNUM FARKI İÇİN kullanılır (§6): mobilde tam genişlik
+        alt alta, masaüstünde içerik kadar yan yana. METİNLER İKİSİNDE DE
+        AYNIDIR — ölçülen etiket ayrışmalarının tamamı buradan doğmuştu.
+      */
+      hucre: (m, sunum) => {
+        const kart = sunum === 'kart';
+        const engel = aktiflikEngeli(m);
+        return (
+          /*
+            `min-w-[13rem]` masaüstünde: eylem sütunu üç düğmeyi ALT ALTA
+            itmesin. Ölçüldü — sınırsız bırakıldığında tablo bu sütuna
+            WebKit'te 134px veriyor ve satır 249px'e çıkıyor (Chromium 177px;
+            iki motor genişliği farklı dağıtıyor, yani "Chromium'da iyi
+            görünüyor" bir kanıt değil). 13rem iki düğmeyi yan yana tutar ve
+            768px'te tablonun min-content toplamını aşırtmaz.
+          */
+          <div className={cx('flex flex-col gap-2', !kart && 'min-w-[13rem] items-end')}>
+            <div className={kart ? 'flex flex-col gap-2' : 'flex flex-wrap justify-end gap-2'}>
+              <Button
+                variant="outline" size="sm" fullWidth={kart}
+                onClick={() => setDialog({ kind: 'edit', method: m })}
+              >
+                Düzenle
+              </Button>
+              <Button
+                variant="outline" size="sm" fullWidth={kart}
+                disabled={setActive.isPending || Boolean(engel)}
+                title={engel ? `Önce doldurun: ${engel.join(', ')}` : undefined}
+                onClick={() => setActive.mutate({ id: m.id, isActive: !m.isActive })}
+              >
+                {m.isActive ? 'Pasifleştir' : 'Aktifleştir'}
+              </Button>
+              <Button
+                variant="danger" size="sm" fullWidth={kart}
+                onClick={() => setDialog({ kind: 'delete', method: m })}
+              >
+                Sil
+              </Button>
+            </div>
+            {engel && (
+              // `text-sm`, `text-xs` değil (§3.2): bu metin yöneticinin
+              // düğmeyi neden kullanamadığını anlatan asıl bilgidir.
+              <p className={cx('text-sm text-[var(--color-warn)]', !kart && 'text-right')}>
+                Aktifleştirilemez — eksik: {engel.join(', ')}
+              </p>
+            )}
+          </div>
+        );
+      },
+    },
+  ];
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Ödeme yöntemleri</h1>
-        <p className="mt-1 text-sm text-muted">
-          Kullanıcıların bakiye yüklerken göreceği hesap bilgileri. Yalnız
-          <strong> aktif </strong> yöntemler kullanıcıya gösterilir.
-        </p>
-      </div>
+    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+      {/*
+        "Yeni yöntem" düğmesi kart başlığından SAYFA BAŞLIĞINA taşındı.
+        Gerekçe: birincil ekleme eylemi tüm yönetim ekranlarında AYNI YERDE
+        durmalı (§9.2 "ekranlar arası tutarsız bileşen dili") ve `SayfaBasligi`
+        bu yuvayı tam bunun için taşıyor. Eylem kaldırılmadı, yalnız yeri
+        sabitlendi; boş durumda ayrıca ikinci bir kopyası sunulur.
+      */}
+      <SayfaBasligi
+        baslik="Ödeme yöntemleri"
+        aciklama="Kullanıcıların bakiye yüklerken göreceği hesap bilgileri. Yalnız aktif yöntemler kullanıcıya gösterilir."
+      >
+        <Button onClick={() => setDialog({ kind: 'create' })}>Yeni yöntem</Button>
+      </SayfaBasligi>
 
-      <Alert tone="warn">
+      {/* `duyur={false}`: sayfa açılışında koşulsuz çizilen statik uyarı —
+          kesintili duyuru için bir eylem yok (§7.4). Metin ekranda ve okuma
+          sırasında yerinde durur; yalnız "sözü kes" bayrağı kalkar. */}
+      <Alert tone="warn" duyur={false}>
         Buradaki IBAN ve cüzdan adresi kullanıcının parayı göndereceği yerdir.
         Kaydetmeden önce karakter karakter doğrulayın; yanlış bir adres, paranın
         geri getirilemeyeceği bir yere gitmesi demektir.
       </Alert>
 
-      {activeErr && <ErrorBox err={activeErr} />}
+      {activeErr && <HataDurumu hata={activeErr} />}
 
       <Card>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Tanımlı yöntemler</h2>
-          <Button size="sm" onClick={() => setDialog({ kind: 'create' })}>Yeni yöntem</Button>
-        </div>
+        <h2 className="text-lg font-semibold">Tanımlı yöntemler</h2>
 
-        {q.isLoading ? (
-          <div className="mt-4 flex flex-col gap-2">
-            {[0, 1, 2].map((i) => <Skeleton key={i} className="h-28" />)}
-          </div>
-        ) : listErr ? (
-          <ErrorBox err={listErr} className="mt-4" />
-        ) : !items.length ? (
-          <Empty
-            title="Henüz yöntem yok"
-            hint="Kullanıcılar bakiye yükleyemez. En az bir yöntem ekleyip bilgilerini doldurun."
-          />
-        ) : (
-          <>
-            {/* MOBİL: kart listesi. Yatay kaydırılan tablo kabul edilmez (§2.5). */}
-            <ul className="mt-4 flex flex-col gap-2 md:hidden">
-              {items.map((m) => (
-                <li key={m.id} className="raised rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{m.name}</p>
-                      <p className="truncate text-xs text-muted">
-                        {KIND_LABEL[m.kind]} · <code className="font-mono">{m.code}</code>
-                      </p>
-                    </div>
-                    <Badge tone={m.isActive ? 'ok' : 'neutral'}>
-                      {m.isActive ? 'Aktif' : 'Pasif'}
-                    </Badge>
-                  </div>
-
-                  <dl className="mt-3 flex flex-col gap-1.5 border-t border-[var(--border)] pt-2 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Tutar aralığı</dt>
-                      <dd>{amountRange(m)}</dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Sıra</dt>
-                      <dd>{m.sortOrder}</dd>
-                    </div>
-                  </dl>
-
-                  <ConfigSummary method={m} />
-                  <MissingNotice method={m} />
-
-                  <div className="mt-3 flex flex-col gap-2">
-                    <Button variant="outline" size="sm" fullWidth
-                            onClick={() => setDialog({ kind: 'edit', method: m })}>
-                      Düzenle
-                    </Button>
-                    <ActiveButton m={m} pending={setActive.isPending}
-                                  onToggle={() => setActive.mutate({ id: m.id, isActive: !m.isActive })} />
-                    <Button variant="danger" size="sm" fullWidth
-                            onClick={() => setDialog({ kind: 'delete', method: m })}>
-                      Sil
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-
-            {/*
-              MASAÜSTÜ: gerçek tablo.
-
-              "Tip" ve "Bilgiler" sütunları `lg:` altında GİZLENİR; ikisi de
-              mobil kartta ve düzenleme formunda görünmeye devam eder. Altı
-              sütun + üç düğme 768 px'e sığmıyordu ve zorlamak tabloyu yatay
-              kaydırmaya iterdi (§2.5).
-            */}
-            <div className="mt-4 hidden md:block">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs
-                                 uppercase tracking-wide text-muted">
-                    <th scope="col" className="py-2 pr-3 font-medium">Yöntem</th>
-                    <th scope="col" className="hidden py-2 pr-3 font-medium lg:table-cell">Tip</th>
-                    <th scope="col" className="hidden py-2 pr-3 font-medium lg:table-cell">Bilgiler</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Tutar aralığı</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Durum</th>
-                    <th scope="col" className="py-2 text-right font-medium">
-                      <span className="sr-only">İşlemler</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((m) => (
-                    <tr key={m.id} className="border-b border-[var(--border)] align-top last:border-0">
-                      <td className="max-w-[9rem] py-3 pr-3 lg:max-w-[12rem]">
-                        <span className="block truncate font-medium">{m.name}</span>
-                        <code className="block truncate font-mono text-xs text-muted">{m.code}</code>
-                      </td>
-                      <td className="hidden py-3 pr-3 whitespace-nowrap lg:table-cell">
-                        {KIND_LABEL[m.kind]}
-                      </td>
-                      <td className="hidden max-w-[16rem] py-3 pr-3 lg:table-cell">
-                        <ConfigSummary method={m} dense />
-                      </td>
-                      <td className="py-3 pr-3">{amountRange(m)}</td>
-                      <td className="py-3 pr-3">
-                        <Badge tone={m.isActive ? 'ok' : 'neutral'}>
-                          {m.isActive ? 'Aktif' : 'Pasif'}
-                        </Badge>
-                        <MissingNotice method={m} dense />
-                      </td>
-                      <td className="py-3">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <Button variant="outline" size="sm"
-                                  onClick={() => setDialog({ kind: 'edit', method: m })}>
-                            Düzenle
-                          </Button>
-                          <ActiveButton m={m} pending={setActive.isPending}
-                                        onToggle={() => setActive.mutate({ id: m.id, isActive: !m.isActive })} />
-                          <Button variant="danger" size="sm"
-                                  onClick={() => setDialog({ kind: 'delete', method: m })}>
-                            Sil
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <VeriTablosu
+          className="mt-5"
+          baslik="Tanımlı ödeme yöntemleri"
+          sutunlar={sutunlar}
+          satirlar={items}
+          satirAnahtari={(m) => m.id}
+          yukleniyor={q.isLoading}
+          hata={listErr}
+          iskeletSatir={3}
+          bos={
+            /*
+              BOŞ DURUM ÖĞRETİR VE BİR EYLEM SUNAR (§6.3 · operate.md:35).
+              Burada süzgeç yoktur, yani "sonuç yok" değil GERÇEKTEN BOŞ
+              durumudur — doğru metin "ilk kaydı oluştur"dur.
+              🔴 `Empty` bileşeninin eylem (CTA) yuvası YOK; bu yüzden düğme
+              dışarıdan ekleniyor. Katman raporuna yazıldı.
+            */
+            <div className="flex flex-col items-center gap-4">
+              <Empty
+                title="Henüz yöntem yok"
+                hint="Kullanıcılar bakiye yükleyemez. En az bir yöntem ekleyip bilgilerini doldurun."
+              />
+              <Button onClick={() => setDialog({ kind: 'create' })}>İlk yöntemi ekle</Button>
             </div>
-          </>
-        )}
+          }
+        />
       </Card>
 
       {dialog?.kind === 'create' && (
@@ -332,68 +362,6 @@ export default function DepositMethodsPage() {
   );
 }
 
-/* ═══════════════════════ Liste parçaları ═══════════════════════ */
-
-/** `maxAmount.minor === 0` ÜST SINIR YOK demektir; 0,00 ₺ tavan DEĞİL. */
-function amountRange(m: DepositMethod): string {
-  const min = formatMoney(m.minAmount);
-  return m.maxAmount.minor === 0 ? `${min} ve üzeri` : `${min} – ${formatMoney(m.maxAmount)}`;
-}
-
-function ConfigSummary({ method, dense }: { method: DepositMethod; dense?: boolean }) {
-  const fields = CONFIG_FIELDS[method.kind];
-  const filled = fields.filter((f) => (method.config[f.key] ?? '').trim() !== '');
-  if (!filled.length) {
-    return <p className={dense ? 'text-xs text-muted' : 'mt-2 text-xs text-muted'}>Bilgi girilmemiş</p>;
-  }
-  return (
-    <dl className={dense ? 'flex flex-col gap-0.5 text-xs' : 'mt-2 flex flex-col gap-0.5 text-xs'}>
-      {filled.map((f) => (
-        <div key={f.key} className="flex gap-2">
-          <dt className="shrink-0 text-muted">{f.label}:</dt>
-          <dd className="min-w-0 break-anywhere">{method.config[f.key]}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function MissingNotice({ method, dense }: { method: DepositMethod; dense?: boolean }) {
-  const missing = method.missingFields ?? [];
-  if (!missing.length) return null;
-  return (
-    <p className={`text-xs text-[var(--color-warn)] ${dense ? 'mt-1.5' : 'mt-2'}`}>
-      Aktifleştirilemez — eksik: {missing.join(', ')}
-    </p>
-  );
-}
-
-/**
- * Aktifleştirme düğmesi.
- *
- * Eksik alan varsa düğme KİLİTLİDİR ve nedeni yanında yazar. Sunucu da
- * reddeder (422); buradaki kilit, yöneticiyi anlamsız bir hataya çarptırmamak
- * içindir. Pasifleştirme her zaman serbesttir — bir yöntemi hızla kapatmak
- * için hiçbir ön koşul aranmaz.
- */
-function ActiveButton({
-  m, pending, onToggle,
-}: { m: DepositMethod; pending: boolean; onToggle: () => void }) {
-  const blocked = !m.isActive && (m.missingFields?.length ?? 0) > 0;
-  return (
-    <Button
-      variant="outline" size="sm"
-      // Mobil kartta tam genişlik, masaüstü tablo hücresinde içerik kadar.
-      className="w-full md:w-auto"
-      disabled={pending || blocked}
-      title={blocked ? `Önce doldurun: ${m.missingFields?.join(', ')}` : undefined}
-      onClick={onToggle}
-    >
-      {m.isActive ? 'Pasifleştir' : 'Aktifleştir'}
-    </Button>
-  );
-}
-
 /* ═══════════════════════ Ekle / düzenle ═══════════════════════ */
 
 function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () => void }) {
@@ -405,10 +373,10 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
   const [name, setName] = React.useState(method?.name ?? '');
   const [instructions, setInstructions] = React.useState(method?.instructions ?? '');
   const [minAmount, setMinAmount] = React.useState(
-    method ? fromMinor(method.minAmount.minor) : '',
+    method ? minorToText(method.minAmount.minor) : '',
   );
   const [maxAmount, setMaxAmount] = React.useState(
-    method && method.maxAmount.minor > 0 ? fromMinor(method.maxAmount.minor) : '',
+    method && method.maxAmount.minor > 0 ? minorToText(method.maxAmount.minor) : '',
   );
   const [sortOrder, setSortOrder] = React.useState(String(method?.sortOrder ?? 0));
 
@@ -422,9 +390,6 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
    */
   const [config, setConfig] = React.useState<Record<string, string>>({ ...(method?.config ?? {}) });
   const [errors, setErrors] = React.useState<Record<string, string>>({});
-
-  const bodyRef = React.useRef<HTMLFormElement>(null);
-  useDialogFocus(bodyRef);
 
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -453,7 +418,9 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
     }
     if (!name.trim()) errs.name = 'Ad zorunludur.';
 
-    const min = toMinor(minAmount);
+    // TUTAR_ZORUNLU: boş = hata, negatif = ret. Bu ekranın özgün politikası
+    // budur ve `bakiye` ekranının `izinNegatif` ayarıyla KARIŞTIRILMAZ.
+    const min = toMinor(minAmount, TUTAR_ZORUNLU);
     if ('error' in min) errs.minAmount = min.error;
     else if (min.minor < HARD_MIN_MINOR) {
       errs.minAmount = 'En az tutar 10,00 ₺ altına inemez (sistem alt sınırı).';
@@ -463,7 +430,7 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
     const maxRaw = maxAmount.trim();
     let maxMinor = 0;
     if (maxRaw !== '') {
-      const max = toMinor(maxRaw);
+      const max = toMinor(maxRaw, TUTAR_ZORUNLU);
       if ('error' in max) errs.maxAmount = max.error;
       else {
         maxMinor = max.minor;
@@ -511,18 +478,29 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
     save.mutate(body);
   }
 
-  const err = save.error instanceof ApiError ? save.error : null;
+  const err = apiHatasi(save.error);
 
   return (
+    // Odak: `modal.tsx` açılışta `[data-autofocus]` öğesini bulup odaklar.
+    // Yerel `useDialogFocus` kopyası KALDIRILDI — `modal.tsx`'teki
+    // `(ilk ?? panel)?.focus()` zinciri artık doğru çalışıyor, ikinci bir
+    // setTimeout hilesi gerekmiyor.
     <Modal open onClose={onClose} title={isEdit ? 'Yöntemi düzenle' : 'Yeni ödeme yöntemi'}>
-      <form ref={bodyRef} onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+      <form onSubmit={onSubmit} className="flex flex-col gap-5" noValidate>
+        {/*
+          `duyur={false}` — bu kutular DİYALOĞUN İLK ÇİZİMİNDE vardır. Diyalog
+          açıldığında ekran okuyucu zaten diyaloğun adını ("Yöntemi düzenle"),
+          rolünü ve odaklanan alanı okur; `role="alert"` bu duyurunun ÜSTÜNE
+          bindirilen ikinci, kesintili bir duyurudur ve ilkini kırpar. Kutu
+          diyaloğun gövde metnidir, bir olayın sonucu değil (§7.4).
+        */}
         {isEdit ? (
-          <Alert tone="info">
+          <Alert tone="info" duyur={false}>
             Kod ve tip değiştirilemez. Bilgiler kaydedildiğinde eski değerlerin
             <strong> yerine geçer</strong>; boş bıraktığınız bir alan silinir.
           </Alert>
         ) : (
-          <Alert tone="info">
+          <Alert tone="info" duyur={false}>
             Yeni yöntem <strong>pasif</strong> olarak eklenir. Bilgilerini
             doldurup listeden aktifleştirene kadar kullanıcıya görünmez.
           </Alert>
@@ -539,23 +517,15 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
               maxLength={40} error={errors.code}
               hint="Benzersiz, değiştirilemez teknik ad."
             />
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">Tip</span>
-              <div className="relative">
-                <select
-                  className={selectClass}
-                  value={kind}
-                  onChange={(e) => setKind(e.target.value as Kind)}
-                >
-                  <option value="BANK_TRANSFER">{KIND_LABEL.BANK_TRANSFER}</option>
-                  <option value="CRYPTO">{KIND_LABEL.CRYPTO}</option>
-                </select>
-                <Chevron />
-              </div>
-              <span className="text-xs text-muted">
-                İstenen bilgiler tipe göre değişir ve sonradan değiştirilemez.
-              </span>
-            </label>
+            <Secim
+              etiket="Tip"
+              value={kind}
+              onChange={(e) => setKind(e.target.value as Kind)}
+              ipucu="İstenen bilgiler tipe göre değişir ve sonradan değiştirilemez."
+            >
+              <option value="BANK_TRANSFER">{KIND_LABEL.BANK_TRANSFER}</option>
+              <option value="CRYPTO">{KIND_LABEL.CRYPTO}</option>
+            </Secim>
           </>
         )}
 
@@ -567,8 +537,12 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
           maxLength={120} error={errors.name}
         />
 
-        <div className="flex flex-col gap-3 rounded-xl border border-[var(--border)] p-3">
-          <p className="text-sm font-medium">{KIND_LABEL[kind]} bilgileri</p>
+        <fieldset className="flex flex-col gap-4 rounded-xl border border-[var(--border)] p-4">
+          {/* `<legend>` — bu bir alan GRUBUDUR; ekran okuyucu grubun adını
+              her alanla birlikte okur, ayrı bir `<p>` bunu yapmaz. */}
+          {/* `p-0`: tarayıcı `legend`'e varsayılan yatay dolgu verir ve
+              etiket, altındaki alanlarla 2px kayar. */}
+          <legend className="p-0 text-sm font-medium">{KIND_LABEL[kind]} bilgileri</legend>
           {fields.map((f) => (
             <Field
               key={f.key}
@@ -580,17 +554,15 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
               error={errors[`config.${f.key}`]}
             />
           ))}
-        </div>
+        </fieldset>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">Kullanıcıya gösterilecek açıklama</span>
-          <textarea
-            className={textareaClass} rows={4}
-            value={instructions} onChange={(e) => setInstructions(e.target.value)}
-            placeholder="Örn. Açıklama alanına kullanıcı adınızı yazınız. Havale hafta içi 1 saat içinde onaylanır."
-          />
-          <span className="text-xs text-muted">Yükleme ekranında bu yöntemin altında görünür.</span>
-        </label>
+        <CokSatir
+          etiket="Kullanıcıya gösterilecek açıklama"
+          rows={4}
+          value={instructions} onChange={(e) => setInstructions(e.target.value)}
+          placeholder="Örn. Açıklama alanına kullanıcı adınızı yazınız. Havale hafta içi 1 saat içinde onaylanır."
+          ipucu="Yükleme ekranında bu yöntemin altında görünür."
+        />
 
         <Field
           label="En az tutar (TL)"
@@ -618,13 +590,18 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
           hint="Küçük sayı önce gösterilir."
         />
 
-        {err && <ErrorBox err={err} />}
+        {err && <HataDurumu hata={err} />}
 
-        <div className="flex flex-col gap-2">
-          <Button type="submit" fullWidth loading={save.isPending}>
+        {/* Buton düzeni `OnayDiyalogu` ile AYNI: mobilde alt alta (birincil
+            üstte, parmak menzilinde), `sm:` üstünde birincil sağda. */}
+        <div className="flex flex-col gap-2 sm:flex-row-reverse sm:justify-start">
+          <Button type="submit" fullWidth loading={save.isPending} className="sm:w-auto">
             {isEdit ? 'Değişiklikleri kaydet' : 'Yöntemi ekle'}
           </Button>
-          <Button type="button" variant="ghost" fullWidth disabled={save.isPending} onClick={onClose}>
+          <Button
+            type="button" variant="outline" fullWidth
+            disabled={save.isPending} onClick={onClose} className="sm:w-auto"
+          >
             Vazgeç
           </Button>
         </div>
@@ -637,8 +614,6 @@ function MethodForm({ method, onClose }: { method?: DepositMethod; onClose: () =
 
 function DeleteDialog({ method, onClose }: { method: DepositMethod; onClose: () => void }) {
   const qc = useQueryClient();
-  const bodyRef = React.useRef<HTMLDivElement>(null);
-  useDialogFocus(bodyRef);
 
   const del = useMutation({
     // 🔴 DELETE 204 döner: apiFetch `undefined` verir, dönüş değeri OKUNMAZ.
@@ -651,44 +626,49 @@ function DeleteDialog({ method, onClose }: { method: DepositMethod; onClose: () 
     },
   });
 
-  const err = del.error instanceof ApiError ? del.error : null;
-
   return (
-    <Modal open onClose={onClose} title="Yöntemi sil">
-      <div ref={bodyRef} className="flex flex-col gap-4">
-        <Alert tone="warn">
+    /*
+      🔴 İLK ODAK "VAZGEÇ"TEDİR — `OnayDiyalogu` bunu garanti eder
+      (`data-autofocus` iptal düğmesindedir). Özgün kod da böyleydi ve bu
+      davranış KORUNDU: yıkıcı bir işlemi basılı kalan tek bir tuş
+      tetikleyemez (§7.5).
+    */
+    <OnayDiyalogu
+      acik
+      baslik="Yöntemi sil"
+      yikici
+      uyari={
+        <>
           <p><strong>{method.name}</strong> kalıcı olarak silinecek.</p>
           <p className="mt-2">Bu işlem geri alınamaz.</p>
+        </>
+      }
+      onayMetni="Evet, sil"
+      bekliyor={del.isPending}
+      hata={apiHatasi(del.error)}
+      onOnayla={() => del.mutate()}
+      onIptal={onClose}
+    >
+      {method.isActive && (
+        // Ton `bad` → `warn`: bu bir HATA değil, bir DİKKAT uyarısıdır (§5.4).
+        // Özgün kod `Alert`'i tonsuz bırakmıştı ve varsayılan ton `bad`'dir.
+        //
+        // `duyur={false}`: kutu, onay diyaloğu AÇILIRKEN zaten oradadır —
+        // koşulu (`method.isActive`) bir eylem değil, kaydın hâli. Diyaloğun
+        // kendi açılış duyurusu ("Yöntemi sil", diyalog) bağlamı veriyor;
+        // `role="alert"` onu kesip yerine geçerdi (§7.4).
+        <Alert tone="warn" duyur={false}>
+          Bu yöntem şu anda <strong>aktif</strong>. Silindiği anda kullanıcılar
+          bu yolla yükleme yapamaz. Geçici olarak durdurmak istiyorsanız silmek
+          yerine <strong>pasifleştirin</strong>.
         </Alert>
+      )}
 
-        {method.isActive && (
-          <Alert>
-            Bu yöntem şu anda <strong>aktif</strong>. Silindiği anda kullanıcılar
-            bu yolla yükleme yapamaz. Geçici olarak durdurmak istiyorsanız silmek
-            yerine <strong>pasifleştirin</strong>.
-          </Alert>
-        )}
-
-        <p className="text-sm text-muted">
-          Geçmiş yükleme talepleri etkilenmez: her talep, oluşturulduğu andaki
-          yöntem adını kendi içinde saklar. Kullanıcı bir yıl sonra baktığında
-          hangi yolla yatırdığını görmeye devam eder.
-        </p>
-
-        {err && <ErrorBox err={err} />}
-
-        <div className="flex flex-col gap-2">
-          {/* Odak "Vazgeç"tedir: silme, bilinçli ve ayrı bir hareket olmalı. */}
-          <Button variant="danger" fullWidth loading={del.isPending}
-                  onClick={() => del.mutate()}>
-            Evet, sil
-          </Button>
-          <Button data-autofocus variant="ghost" fullWidth disabled={del.isPending}
-                  onClick={onClose}>
-            Vazgeç
-          </Button>
-        </div>
-      </div>
-    </Modal>
+      <p className="text-sm text-muted">
+        Geçmiş yükleme talepleri etkilenmez: her talep, oluşturulduğu andaki
+        yöntem adını kendi içinde saklar. Kullanıcı bir yıl sonra baktığında
+        hangi yolla yatırdığını görmeye devam eder.
+      </p>
+    </OnayDiyalogu>
   );
 }

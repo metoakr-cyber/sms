@@ -14,8 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -32,7 +30,10 @@ import (
 type webhookPayload struct {
 	ActivationID json.Number `json:"activationId"`
 	// ID spec'in `required` listesinde AMA `properties` içinde TANIMSIZ —
-	// tipi bilinmiyor. Ham JSON olarak alıp esnek çözeriz.
+	// tipi bilinmiyor. Ham JSON olarak alınır ve HİÇBİR KARARA girmez;
+	// alan burada yalnız tel üzerindeki biçimi belgeliyor. Bir zamanlar mesaj
+	// dedup anahtarına yedek olarak veriliyordu; gerekçesi ve kaldırılma
+	// sebebi HandleWebhook içinde yazılı.
 	ID         json.RawMessage `json:"id"`
 	PhoneFrom  string          `json:"phoneFrom"`
 	Service    string          `json:"service"`
@@ -40,22 +41,6 @@ type webhookPayload struct {
 	Code       *string         `json:"code"`
 	Country    json.Number     `json:"country"`
 	ReceivedAt string          `json:"receivedAt"`
-}
-
-// idString `id` alanını metne çevirir — string de sayı da olabilir.
-func (p webhookPayload) idString() string {
-	if len(p.ID) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(p.ID, &s); err == nil {
-		return s
-	}
-	var n json.Number
-	if err := json.Unmarshal(p.ID, &n); err == nil {
-		return n.String()
-	}
-	return ""
 }
 
 // HandleWebhook ham webhook gövdesini işler.
@@ -141,42 +126,37 @@ func (s *Service) HandleWebhook(ctx context.Context, providerID int64, raw []byt
 		return nil
 	}
 
-	// Kimliksiz mesajlara webhook'taki `id`yi yedek olarak veririz; o da
-	// yoksa DeliverMessages içerikten türetir.
-	fallbackID := p.idString()
-	msgs := make([]port.RemoteMessage, 0, len(status.Messages))
-	for i, m := range status.Messages {
-		if m.RemoteID == "" && fallbackID != "" {
-			m.RemoteID = fallbackID
-		}
-		if m.ReceivedAt.IsZero() {
-			m.ReceivedAt = parseWebhookTime(p.ReceivedAt, s.clock.Now())
-		}
-		_ = i
-		msgs = append(msgs, m)
-	}
+	// 🔴 GÖVDEDEKİ `id` DEDUP ANAHTARI OLARAK KULLANILMAZ.
+	//
+	// Eskiden kimliksiz mesajlara webhook gövdesindeki `id` yedek olarak
+	// veriliyordu. İki sorunu vardı: (a) gövde imzasızdır ve o alanın tipi
+	// spec'in `properties` bölümünde hiç tanımlı değil — güvenilmez bir
+	// kaynaktan gelen bir değeri kalıcı bir tekillik anahtarına çevirmek;
+	// (b) yoklama yolu AYNI mesaj için içerikten türetilmiş bir anahtar
+	// üretirdi, yani tek SMS iki satır olurdu. Dedup kararı TEK YERDE,
+	// `hashMessage` içinde verilir.
+	// test: rental_integration_test.go#TestSameMessageFromBothPathsIsStoredOnce
+	// 🔴 GÖVDEDEKİ ZAMAN DA DEDUP ANAHTARINA GİRMEZ — ve `now()` HİÇ girmez.
+	//
+	// Burada eskiden sıfır `ReceivedAt`, `parseWebhookTime(p.ReceivedAt, now)`
+	// ile doldurulurdu. `hashMessage` sıfır zamanı bilerek sabit boş dizeye
+	// düşürüyor (anahtar kararlı olsun diye); bu satır tam o kararlılığı geri
+	// alıyordu: iş AT-LEAST-ONCE çalışır ("aynı bildirim sekiz kez gelebilir")
+	// ve her yeniden denemede farklı bir `now()` farklı bir hash üretiyordu.
+	// Ölçüldü: TEK SMS 4 satır, dördü de "yeni" sayılıp SSE'den ayrı ayrı
+	// yayınlandı. Yoklama yolu ise aynı mesaj için `ts=""` üretiyordu, yani
+	// iki yol arasında dedup da çalışmıyordu.
+	//
+	// Gövdedeki `receivedAt`i kullanmak da çözüm DEĞİL: webhook imzasızdır
+	// (değişmez #23) ve URL'i bilen biri her istekte farklı bir `receivedAt`
+	// göndererek aynı SMS'i defalarca yeni satır ve yeni SSE olayı hâline
+	// getirebilirdi. Zaman sağlayıcının TEYİT yanıtından gelir; gelmiyorsa
+	// sıfır kalır ve `hashMessage` onu kararlı biçimde ele alır. Kolona
+	// yazılacak `received_at` ise `DeliverMessages` içinde `now` ile doldurulur
+	// — anahtar değil, gösterim.
+	//
+	// test: webhook_integration_test.go#TestWebhookRetriesDoNotDuplicateMessage
 
 	// ── (5) Yaz, güncelle, yayınla ──
-	return s.DeliverMessages(ctx, ord.ID, msgs)
-}
-
-// parseWebhookTime gövdedeki zamanı okur; olmazsa şimdiyi kullanır.
-//
-// YALNIZ RFC 3339 kabul edilir. Boşluklu bir biçim gelirse ayrıştırmaya
-// çalışmayız — yanlış saat dilimiyle kaydedilen bir mesaj, sıralamayı ve
-// "en son mesaj" seçimini sessizce bozar.
-func parseWebhookTime(s string, fallback time.Time) time.Time {
-	if s == "" {
-		return fallback
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t
-		}
-	}
-	// Unix saniye olarak da gelebilir.
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 1_000_000_000 {
-		return time.Unix(n, 0).UTC()
-	}
-	return fallback
+	return s.DeliverMessages(ctx, ord.ID, status.Messages)
 }

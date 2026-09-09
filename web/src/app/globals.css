@@ -65,6 +65,53 @@
  * durur; bu yüzden dolgular iki temada da aynıdır. Gradyanın EN AÇIK ucu bile
  * beyazla ≥ 4.5:1 verecek şekilde seçildi (ölçüm raporda).
  */
+/*
+ * HAREKET JETONLARI — süre ve eğri.
+ *
+ * NEDEN VARLAR: bu jetonlar eklenmeden önce depoda hiçbir süre/eğri jetonu
+ * yoktu. Ölçüm: 27 `transition-*` sınıfının HİÇBİRİ `duration-*` almıyordu,
+ * yani hepsi Tailwind'in 150ms varsayılanını ve `cubic-bezier(.4,0,.2,1)`
+ * eğrisini kullanıyordu; üstelik on yönetim ekranının tamamında yalnız TEK
+ * bir geçiş vardı. Tutarsızlığın kaynağı tercih değil, jetonsuzluktu.
+ *
+ * DEĞERLER UYDURULMADI — Emil Kowalski'nin yayımlanmış standartlarından:
+ *   ease-out    : giren/çıkan her şey. `ease-in` UI'da YASAK; yavaş başlar ve
+ *                 kullanıcının tam baktığı anı geciktirir.
+ *   ease-in-out : ekranda yer değiştiren/biçim değiştiren öğeler.
+ *   ease-drawer : iOS benzeri çekmece eğrisi (Ionic).
+ * Yerleşik CSS eğrileri bilerek kullanılmıyor: "too weak, they lack the punch".
+ *
+ * SÜRELER — yönetim paneli KISA uçtan seçilir. Emil'in sıklık tablosu günde
+ * yüzlerce kez görülen şeye animasyon vermemeyi söylüyor; Impeccable yönetim
+ * panelini "Operate" modu sayıp çoğu geçiş için 150–250ms tavanı koyuyor.
+ * Bir yönetici günde yüzlerce kez bakiye onaylar; 400ms'lik bir geçiş üçüncü
+ * günde işkenceye döner.
+ */
+:root {
+  --sure-basma:  160ms;  /* buton :active geri bildirimi (Emil: 100–160ms) */
+  --sure-hizli:  120ms;  /* renk/hover — fark edilmemeli */
+  --sure-menu:   200ms;  /* açılır liste, akordeon (Emil: 150–250ms) */
+  --sure-katman: 250ms;  /* modal, çekmece — panelde üst sınır */
+
+  --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/*
+ * DURUM DOLGUSU — temadan bağımsız.
+ *
+ * `Button variant="danger"` dolgu üstünde BEYAZ metin taşır, yani zemin iki
+ * temada da aynıdır ve tek bir değer yeter. `--color-bad` (#ea4d4d) üstünde
+ * beyaz metin ÖLÇÜLDÜ: 3,71 — gövde metni eşiği 4,5'in altında, üstelik
+ * panelin en yıkıcı düğmesinde. Aynı ailenin bir tık koyusu 5,10 veriyor.
+ * `--color-bad` DEĞİŞTİRİLMEDİ: rozet/uyarı zeminleri ve hata kenarlıkları
+ * onu kullanmaya devam ediyor; ayrılan tek şey DOLGU olarak kullanımıdır.
+ */
+:root {
+  --durum-bad-dolgu: #cf3030;   /* beyaz metinle 5,10:1 (ölçüldü) */
+}
+
 :root {
   --gradyan-marka:   linear-gradient(135deg, #1a75c4 0%, #3454d1 100%);
   --gradyan-mavi:    linear-gradient(135deg, #1a75c4 0%, #125f9f 100%);
@@ -87,6 +134,47 @@
   --border:  var(--color-ink-700);
   --text:    var(--color-ink-100);
   --muted:   var(--color-ink-400);
+
+  /*
+   * ═══════════════ DURUM METNİ ═══════════════
+   *
+   * 🔴 NEDEN AYRI JETON: `Badge` ve `Alert` zemini `--color-*`'ın %10–12
+   * saydamıyla, METNİ ise aynı rengin TAM opak haliyle çiziyordu. Yani metin
+   * kendi soluk zemininin üstünde duruyordu ve kontrast ölçülmemişti.
+   * GERÇEK RENDER'DAN ölçüm (canvas, Tailwind'in color-mix çıktısı dahil):
+   *
+   *   KOYU  Badge bad  4,22 (--surface) / 3,77 (--raised)   → eşik 4,5 ALTI
+   *   KOYU  Alert bad  4,26 / 3,81                          → eşik 4,5 ALTI
+   *   AÇIK  BÜTÜN tonlar 1,85 – 3,27                        → eşik 4,5 ALTI
+   *
+   * Açık temada tek bir ton bile geçmiyordu: beyaz kartın üstündeki %12'lik
+   * pastel zemin, tam doygun rengi neredeyse görünmez kılıyor. Panelin kritik
+   * durum etiketleri ("Reddedildi", "Askıda", "Başarısız") bunlar.
+   *
+   * `--color-ok/warn/bad/info` DEĞİŞTİRİLMEDİ — zemin, kenarlık ve dolgu hâlâ
+   * onlardan geliyor; ayrılan tek şey METİN rengidir. Aynı ayrım dosyada
+   * zaten var: `--v-*-zemin` / `--v-*-metin` çifti. Açık tema değerleri o
+   * ailenin kendi jetonlarından alındı, yeni renk uydurulmadı.
+   */
+  --durum-ok-metin:    var(--color-ok);     /* 5,63 (en kötü zemin) */
+  --durum-warn-metin:  var(--color-warn);   /* 6,22 */
+  --durum-info-metin:  var(--color-info);   /* 6,21 */
+  --durum-marka-metin: var(--color-brand-300); /* 6,05 */
+  --durum-bad-metin:   #ff8585;             /* #ea4d4d 3,77 idi → 5,96 */
+
+  /*
+   * KONTROL KENARLIĞI — girdi/seçim/çok satır kutusunun görsel sınırı.
+   *
+   * 🔴 `--border` bir AYIRAÇ rengidir (kart kenarı, tablo çizgisi) ve öyle
+   * kalmalı; bir kontrolün sınırı ise WCAG 1.4.11 · §7.1 gereği komşu
+   * renklerle ≥3:1 olmak zorundadır. Ölçüm: `--border` girdi dolgusuna karşı
+   * KOYU 1,37 · AÇIK 1,24 veriyordu — yani açık temada beyaz kartın üstünde
+   * beyaz kutu, sınırı fiilen yok.
+   *
+   * ⚠️ Denetim raporunun önerdiği değerler (açık #9aa4b5, koyu #4a5f78)
+   * ÖLÇÜLDÜ ve YETMİYOR: 2,51 ve 2,37. Buradaki değerler ölçülerek seçildi.
+   */
+  --kontrol-kenar: #5f7690;   /* dolguya karşı 3,31 · karta karşı 3,70 */
 
   /* Vurgu aileleri: yumuşak ZEMİN + üstünde okunan METİN/simge rengi.
      Her çift ölçüldü, hepsi ≥ 4.5:1 (raporda tablo). */
@@ -127,6 +215,18 @@
   /* #64748b idi: --bg üzerinde 4.44:1 — 4.5 sınırının ALTINDA. Ölçülünce çıktı. */
   --muted:   #5b6779;
 
+  /* Durum metni — açık temada TAM doygun renk pastel zeminde okunmuyordu
+     (1,85–3,27). Değerler `--v-*-metin` ailesinden alındı; `bad` aynı
+     ailenin kuralıyla türetildi. Hepsi ölçüldü, en kötü zemine göre. */
+  --durum-ok-metin:    #056f45;   /* 2,03 idi → 5,62 (= --v-yesil-metin)   */
+  --durum-warn-metin:  #8a4b06;   /* 1,85 idi → 6,25 (= --v-turuncu-metin) */
+  --durum-info-metin:  #0a6470;   /* 1,92 idi → 6,33 (= --v-deniz-metin)   */
+  --durum-marka-metin: #2b45b0;   /* 1,98 idi → 6,78 (= --color-brand-600) */
+  --durum-bad-metin:   #b02020;   /* 3,17 idi → 5,85                       */
+
+  /* #9aa4b5 (denetim raporunun önerisi) ölçüldü: 2,51 — YETMİYOR. */
+  --kontrol-kenar: #7d8899;   /* beyaza karşı 3,59 · sayfa zeminine 3,34 */
+
   --v-mavi-zemin:    #e3f0fc;  --v-mavi-metin:    #0e5690;
   --v-mor-zemin:     #eae6fd;  --v-mor-metin:     #4c1fae;
   --v-yesil-zemin:   #dcf5e8;  --v-yesil-metin:   #056f45;
@@ -155,6 +255,15 @@
     --border:  #e3e7ef;
     --text:    #1d1f1e;
     --muted:   #5b6779;
+
+    /* Yukarıdaki `[data-theme="light"]` bloğuyla BİREBİR aynı — birlikte
+       güncellenir. Gerekçe ve ölçümler orada yazılı. */
+    --durum-ok-metin:    #056f45;
+    --durum-warn-metin:  #8a4b06;
+    --durum-info-metin:  #0a6470;
+    --durum-marka-metin: #2b45b0;
+    --durum-bad-metin:   #b02020;
+    --kontrol-kenar:     #7d8899;
 
     --v-mavi-zemin:    #e3f0fc;  --v-mavi-metin:    #0e5690;
     --v-mor-zemin:     #eae6fd;  --v-mor-metin:     #4c1fae;
@@ -192,6 +301,25 @@
    */
   input, select, textarea { font-size: 16px; }
 
+  /*
+   * KONTROL SINIRI (WCAG 1.4.11 · §7.1).
+   *
+   * 🔴 NEDEN DEĞİŞKEN ÜZERİNDEN, DOĞRUDAN DEĞİL: `.raised` yardımcı sınıfı
+   * `border-color` YAZIYOR ve utilities katmanında; buradaki base kuralı onu
+   * geçemez. Kuralı `input.raised {…}` gibi seçici-özgüllüğüyle yazmak ise
+   * `border-[var(--color-bad)]` hata kenarlığını (0,1,0) EZERDİ — yani hatalı
+   * alan artık kırmızı görünmezdi. Bu yüzden `.raised` bir DEĞİŞKEN okur ve
+   * değişken burada kontroller için yeniden tanımlanır: özgüllük yarışı hiç
+   * doğmaz, Tailwind'in odak/hata kenarlıkları aynen çalışmaya devam eder.
+   *
+   * `border-color` ayrıca doğrudan da yazılır — `.raised` taşımayan bir
+   * kontrol de sınırını alsın diye.
+   */
+  input, select, textarea {
+    --kenar-oz: var(--kontrol-kenar);
+    border-color: var(--kontrol-kenar);
+  }
+
   /* Dokunmatikte `:hover` YAPIŞIR. Hover stilleri yalnız gerçek fare olan
      cihazlarda uygulanır (§2.3). */
   @media (hover: none) {
@@ -223,7 +351,40 @@
   @supports (height: 100dvh) { .min-h-screen-safe { min-height: 100dvh; } }
 
   .surface { background-color: var(--surface); border-color: var(--border); }
-  .raised  { background-color: var(--raised);  border-color: var(--border); }
+  /* `--kenar-oz` yalnız form kontrollerinde tanımlıdır (@layer base); başka
+     her yerde yedeğe, yani ayıraç rengine düşer. Bkz. base'teki gerekçe. */
+  .raised  { background-color: var(--raised);  border-color: var(--kenar-oz, var(--border)); }
+
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * 🔴 HATA KENARLIĞI — ÖLÜ BİR DURUM, BU KURAL OLMADAN HİÇ ÇİZİLMİYOR.
+   * ══════════════════════════════════════════════════════════════════════
+   * `Field`, `Secim` ve `CokSatir` hata halinde `border-[var(--color-bad)]`
+   * ekliyor. Ama derlenmiş CSS'te (`/_next/static/css/app/layout.css`)
+   *     .border-\[var\(--color-bad\)\]  satır 1087
+   *     .raised                         satır 2734
+   * ikisi de utilities katmanında ve ikisinin de özgüllüğü (0,1,0). Eşitlikte
+   * Tailwind sınıf sırasına değil ÜRETİLEN CSS SIRASINA bakar; `.raised` sonra
+   * geldiği için KAZANIYOR. Ölçüldü: `aria-invalid` bir girdinin kenarı
+   * kırmızı değil, olağan kenar rengi çıkıyor. Bu kural o kuralın öncesinden
+   * beri böyleydi — `--kenar-oz` değişikliği yalnız DEĞERİ değiştirdi, sıra
+   * ve özgüllük aynı kaldı. (Aynı tuzak `globals.css:334` `.cta-marka`
+   * yorumunda da yazılı: "çakışmayı sınıf sırası değil üretilen CSS sırası
+   * çözer" — orada fark edilmiş, burada gözden kaçmış.)
+   *
+   * Öznitelik seçicisi (0,3,1) ile kurala uyulur. `:not(:focus)` ZORUNLU:
+   * `Field` `outline-none` yazdığı için odak halkası yok, odağın TEK görünür
+   * işareti `focus:border-brand-400`. Hata rengi odakta da kazansaydı, hatalı
+   * bir alana giren klavye kullanıcısı odağın nerede olduğunu göremezdi.
+   * İkisi de ölçüldü, kontrol eşiğini (3:1) geçiyor:
+   *   hata  #ea4d4d → koyu 4,19 · açık 3,71
+   *   odak  #5f7ee6 → koyu 4,15 · açık 3,74
+   */
+  input[aria-invalid="true"]:not(:focus),
+  select[aria-invalid="true"]:not(:focus),
+  textarea[aria-invalid="true"]:not(:focus) {
+    border-color: var(--color-bad);
+  }
   .text-muted { color: var(--muted); }
 
   /* Kaydırma çubuğu — koyu temada beyaz çubuk göze batıyor */
@@ -246,15 +407,36 @@
    * yazmak, bir gün birinin unutmasıyla biter.
    *
    * data: URI CSP'de `img-src ... data:` ile zaten izinli.
+   *
+   * 🔴 OK RENGİ TEMA BAŞINA AYRI YAZILIR. Renk data: URI'nin İÇİNDE
+   * (`stroke='%23…'`) durur ve `url()` içine `var()` konamaz — yani tek bir
+   * kuralla temalanamaz. Sabit `#94a3b8` ölçüldü: koyu temada 6,06 ✓ ama
+   * AÇIK temada beyaz kutunun üstünde 2,56 — ikon eşiği 3,0'ın altında
+   * (§7.1). `Secim` her yönetim `<select>`'inde `.select-ok`'u zorunlu
+   * kıldığı için bu tek bir ekranın değil, panelin tamamının kusuruydu.
+   *
+   * `mask-image` + `background-color: currentColor` alternatifi burada
+   * KULLANILAMAZ: `background-color` kutunun DOLGUSUDUR (`.raised` onu
+   * yazıyor); maskeye verilseydi girdi zemini kaybolurdu.
    */
   .select-ok {
     appearance: none;
     -webkit-appearance: none;
     padding-right: 2.5rem;
+    /* KOYU tema (varsayılan) — #94a3b8, dolguya karşı 6,06 */
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.75rem center;
     background-size: 1.15rem;
+  }
+  /* AÇIK tema — #5b6779 (= --muted), beyaz dolguya karşı 5,74 */
+  :root[data-theme="light"] .select-ok {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b6779' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]):not([data-theme="light"]) .select-ok {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b6779' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    }
   }
 
   /* ───────── Pazarlama yüzeyi: renk, derinlik, hareket ───────── */
@@ -381,22 +563,73 @@
 }
 
 /*
- * Hareket azaltma tercihi olan kullanıcıda animasyon yok.
+ * ══════════════════════════════════════════════════════════════════════════
+ * HAREKET AZALTMA — "daha az ve daha yumuşak", SIFIR DEĞİL.
+ * ══════════════════════════════════════════════════════════════════════════
  *
- * `[data-belir]` KESİN olarak görünür kılınır: süreyi 0.01ms'e çekmek
- * yetmezdi, çünkü gizleme bir animasyon değil doğrudan bir `opacity: 0`
- * durumu. Bu satır olmadan hareket kapalı kullanıcı BOŞ SAYFA görürdü.
+ * 🔴 BURADA NE DEĞİŞTİ: eskiden joker seçici `transition-duration: 0.01ms`
+ * yazıyordu, yani hareket duyarlı kullanıcıda ARAYÜZÜN TAMAMI donuyordu —
+ * odak halkası, hover rengi, hata kenarlığının kırmızıya dönüşü ve buton
+ * basma geri bildirimi dahil. Ölçüldü: `ui.tsx`'te basma geri bildirimi için
+ * yapılan tüm iş (`transform` geçiş listesine alındı, 160ms, `--ease-out`)
+ * bu kullanıcı için FİİLEN YOKTU.
+ *
+ * İki referans da bunu bulgu sayıyor:
+ *   Emil (animate/SKILL.md:161) — "Reduced motion means fewer and gentler
+ *     animations, not zero — keep transitions that aid comprehension, remove
+ *     movement and position changes."
+ *   Impeccable (audit.md:15) — "flag a global 0.01ms kill that destroys
+ *     useful feedback."
+ *
+ * YENİ DESEN: süreyi değil, GEÇİŞ LİSTESİNİ daraltıyoruz.
+ *   · Renk / opaklık geçişleri kalır (bilgi taşırlar, hareket etmezler).
+ *   · `transform` listeden düşer → konum, ölçek ve dönüş ANINDA olur;
+ *     kayma/parallax/açılma hareketi ortadan kalkar ama sonuç durumu doğrudur.
+ * Süre elden geçmediği için jetonlar (`--sure-*`) burada da geçerlidir.
  */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
+    transition-property:
+      color, background-color, border-color, outline-color,
+      fill, stroke, opacity !important;
+  }
+
+  /*
+   * TEK İSTİSNA: basma geri bildirimi.
+   * §4.5 bunu adıyla koruyor — ":active ölçek geri bildirimi korunur".
+   * Gerekçe: %3'lük bir basma ölçeği bir yer değiştirme değil, "arayüz seni
+   * duydu" bilgisidir; bir para panelinde tıklamanın kaydedilip
+   * kaydedilmediğini söyleyen tek anlık kanaldır. Sınıf `ui.tsx`'teki
+   * `Button` tabanından gelir — burada kör bir `button` seçicisi kullanmak,
+   * ölçek geçişini basma geri bildirimi OLMAYAN düğmelere de açardı.
+   */
+  .basma-geri-bildirimi {
+    transition-property: color, background-color, border-color, transform !important;
+  }
+
+  /*
+   * Keyframe animasyonları durur — İKİ İSTİSNAYLA. `animate-spin` ve
+   * `animate-pulse` dekorasyon değil DURUM göstergesidir ("işlem sürüyor").
+   * Durdurulunca bilgi kaybolur: donmuş bir yükleniyor çarkı "takıldı" diye
+   * okunur. WCAG 2.2.2 zorunlu (essential) animasyonu bu yüzden ayrı tutar.
+   * `animate-ping` (code-waiter) LİSTEDE YOK: o bir ölçek dalgasıdır ve
+   * bilgiyi zaten yanındaki metin taşıyor — durur.
+   */
+  *:not(.animate-spin):not(.animate-pulse), *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
   }
+
+  /*
+   * `[data-belir]` KESİN olarak görünür kılınır: süreyi kısmak yetmezdi,
+   * çünkü gizleme bir animasyon değil doğrudan bir `opacity: 0` durumu.
+   * Bu satır olmadan hareket kapalı kullanıcı BOŞ SAYFA görürdü.
+   */
   [data-belir], [data-belir="gizli"], [data-belir="acik"] {
     opacity: 1 !important;
     transform: none !important;
   }
   .nabiz::after { display: none; }
-  .kart-hover:hover, .cta-marka:hover { transform: none !important; }
+  /* Konum hareketi: hover kalkması ve kart yükselmesi tamamen kaldırılır. */
+  .kart-hover:hover, .kart-hover:active, .cta-marka:hover { transform: none !important; }
 }

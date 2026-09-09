@@ -56,6 +56,9 @@ export interface Order {
   phoneNumber: string;
   serviceCode: string;
   serviceName: string;
+  /** Servis logosu — CANLI katalogdan gelir, sipariş kaydında saklanmaz.
+   *  Boşsa `ServiceIcon` harf rozetine düşer (dto/auth.go:334). */
+  iconUrl?: string;
   countryIso2: string;
   countryName: string;
   phoneCode?: string;

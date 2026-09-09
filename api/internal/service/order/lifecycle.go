@@ -52,8 +52,18 @@ func (s *Service) Get(ctx context.Context, userID int64, publicID uuid.UUID) (De
 	return Detail{Order: ord, Messages: msgs}, nil
 }
 
+// ListeSatiri sipariş kaydı + CANLI katalogdan gelen logo.
+//
+// Logo `db.Order` içinde DEĞİLDİR ve olmamalıdır: sipariş bir para kaydıdır ve
+// 10 yıl saklanır; logo ise sunum verisidir, katalogla birlikte değişir.
+// İkisini tek yapıda birleştirmek, satış kaydına sunum alanı sızdırırdı.
+type ListeSatiri struct {
+	Order   db.Order
+	IconURL string
+}
+
 // List kullanıcının sipariş geçmişi.
-func (s *Service) List(ctx context.Context, userID int64, limit, offset int32) ([]db.Order, int64, error) {
+func (s *Service) List(ctx context.Context, userID int64, limit, offset int32) ([]ListeSatiri, int64, error) {
 	q := s.tx.Queries()
 	rows, err := q.ListUserOrders(ctx, db.ListUserOrdersParams{UserID: userID, Lim: limit, Off: offset})
 	if err != nil {
@@ -63,7 +73,11 @@ func (s *Service) List(ctx context.Context, userID int64, limit, offset int32) (
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
-	return rows, total, nil
+	out := make([]ListeSatiri, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ListeSatiri{Order: r.Order, IconURL: r.IconUrl})
+	}
+	return out, total, nil
 }
 
 /* ═══════════════════════════ İptal ═══════════════════════════ */
@@ -94,8 +108,26 @@ func (s *Service) Cancel(ctx context.Context, userID int64, publicID uuid.UUID) 
 			return apperr.Internal(err)
 		}
 
+		// Mesaj sayısı KİLİDİN ALTINDA okunur: kilit alınmadan önce okunsaydı,
+		// tam o aralıkta teslim edilen bir kod hem kullanıcıya gösterilir hem
+		// de iade edilirdi.
+		msgCount, err := q.CountOrderMessages(ctx, locked.ID)
+		if err != nil {
+			return apperr.Internal(err)
+		}
+
 		now := s.clock.Now()
-		check := orderdom.CanUserCancel(orderdom.Status(locked.Status), locked.CancellableAt, now)
+		check := orderdom.CanUserCancel(orderdom.CancelInput{
+			Status: orderdom.Status(locked.Status),
+			// Ürün türü karara GİRER: `refundable_until` nil ise anlamı
+			// aktivasyonda "üst sınır yok", kiralıkta "sınır bilinmiyor →
+			// iptal yok". Türü söylemezsek domain fail-open tarafa düşer.
+			IsRental:        locked.ProductKind == db.ProductKindSMSRENTAL,
+			CancellableAt:   locked.CancellableAt,
+			RefundableUntil: locked.RefundableUntil,
+			HasMessage:      msgCount > 0,
+			Now:             now,
+		})
 		if !check.Allowed {
 			if check.RetryAfter > 0 {
 				return apperr.ErrCancelTooEarly
@@ -137,6 +169,17 @@ func (s *Service) Expire(ctx context.Context, orderID int64) error {
 		// Yarış: poller bu arada kodu getirmiş olabilir. Beklemede değilse
 		// dokunmayız — tamamlanmış siparişe iade yazmak gerçek para kaybıdır.
 		if orderdom.Status(locked.Status) != orderdom.StatusPending {
+			return nil
+		}
+		// 🔴 KİRALIK BU YOLA HİÇ GİRMEZ — İKİNCİ SAVUNMA HATTI.
+		//
+		// `ListExpiredPendingOrders` kiralıkları zaten dışlıyor; burası bir
+		// kez daha bakar çünkü bu fonksiyonun gövdesinin tamamı TAM İADEdir ve
+		// kiralıkta dönem sonu iade sebebi değildir (süre teslim edildi).
+		// Sorgu ile gövde arasında tek bir gözden kaçma, 30 günlük bir
+		// kiralığın tamamen iade edilmesi demektir.
+		// test: rental_integration_test.go#TestRentalNeverAutoRefundsAtEndOfPeriod
+		if locked.ProductKind == db.ProductKindSMSRENTAL {
 			return nil
 		}
 		now := s.clock.Now()
@@ -310,28 +353,59 @@ func (s *Service) DeliverMessages(ctx context.Context, orderID int64, msgs []por
 			})
 		}
 
-		// Durum yalnız BEKLEMEDEYKEN değişir. Zaten tamamlanmış bir siparişe
-		// ikinci mesaj gelirse mesaj kaydedilir ama durum aynı kalır (FR-415).
+		// Durum yalnız BEKLEMEDEYKEN değişir. Zaten tamamlanmış (ya da dönemi
+		// süren) bir siparişe ikinci mesaj gelirse mesaj kaydedilir ama durum
+		// aynı kalır (FR-415).
 		if orderdom.Status(locked.Status) == orderdom.StatusPending && len(fresh) > 0 {
-			if err := orderdom.Transition(orderdom.StatusPending, orderdom.StatusCompleted); err != nil {
+			// 🔴 ÜRÜN TÜRÜ BURADA SORULUR — bu satırın yokluğu asıl hataydı.
+			//
+			// AKTİVASYONDA ürün KODdur: ilk kod geldiğinde sipariş bitmiştir,
+			// COMPLETED terminaldir ve numara sağlayıcıda Finish ile kapatılır.
+			//
+			// KİRALIKTA ürün SÜREdir: ilk mesaj dönemin başıdır, sonu değil.
+			// Aynı dalı kiralığa uygulamak siparişi terminal yapar, hemen
+			// ardından Finish() gönderir ve kullanıcının 30 gün için ödediği
+			// numarayı ilk SMS'te öldürür — kalan sürenin tamamı yanar.
+			// test: rental_integration_test.go#TestRentalFirstMessageDoesNotCloseAtProvider
+			next := orderdom.StatusCompleted
+			if locked.ProductKind == db.ProductKindSMSRENTAL {
+				next = orderdom.StatusActive
+			}
+
+			if err := orderdom.Transition(orderdom.StatusPending, next); err != nil {
 				return apperr.ErrInvalidStateTransition.Wrap(err)
 			}
 			upd, err := q.SetOrderStatus(ctx, db.SetOrderStatusParams{
-				ID: orderID, Status: db.OrderStatusCOMPLETED, Now: &now, Reason: "",
+				ID: orderID, Status: db.OrderStatus(next), Now: &now, Reason: "",
 			})
 			if err != nil {
 				return apperr.Internal(err)
 			}
 			out = upd
-			changed = true
 
-			// Kod teslim edildi → sağlayıcıdan iade TALEP EDİLMEZ.
-			if err := q.SetProviderRefundStatus(ctx, db.SetProviderRefundStatusParams{
-				ID: orderID, ProviderRefundStatus: db.RefundStatusNOTAPPLICABLE,
-				ProviderRefundAmountMinor: 0, RefundNextAttemptAt: nil,
-			}); err != nil {
-				return apperr.Internal(err)
+			// Kapatma denemesi yalnız terminal olunca TETİKLENİR. ACTIVE bir
+			// kiralıkta bunu atlamak boş bir goroutine ve gereksiz bir
+			// sahiplenme turu tasarrufudur; asıl koruma değildir — ACTIVE bir
+			// siparişe kapatma çağrısı gelse bile `CloseAtProvider` sahiplenmeyi
+			// bırakıp sağlayıcıya hiç gitmez.
+			// test: rental_integration_test.go#TestActiveRentalIsNotClosedAtProvider
+			changed = next == orderdom.StatusCompleted
+
+			if changed {
+				// Kod teslim edildi → sağlayıcıdan iade TALEP EDİLMEZ.
+				if err := q.SetProviderRefundStatus(ctx, db.SetProviderRefundStatusParams{
+					ID: orderID, ProviderRefundStatus: db.RefundStatusNOTAPPLICABLE,
+					ProviderRefundAmountMinor: 0, RefundNextAttemptAt: nil,
+				}); err != nil {
+					return apperr.Internal(err)
+				}
 			}
+			// Kiralıkta iade ekseni HİÇ ELLENMEZ: satın almadan beri
+			// 'NOT_APPLICABLE' ve öyle kalır. 'PENDING' yazmak, dönemi süren
+			// canlı bir numaraya `provider-refund-retry` işinin iki dakikada
+			// bir Cancel() göndermesi demek olurdu — kullanıcının parası iade
+			// edilmemişken numara ölürdü.
+			// test: rental_integration_test.go#TestRentalNeverEntersProviderRefundRetryQueue
 		}
 		return nil
 	})
@@ -339,9 +413,28 @@ func (s *Service) DeliverMessages(ctx context.Context, orderID int64, msgs []por
 		return err
 	}
 
-	if len(fresh) > 0 {
+	// 🔴 İADE EDİLMİŞ SİPARİŞİN KODU YAYINLANMAZ.
+	//
+	// Süzgeç `handler.visibleMessages` ile AYNI kuraldır ve burada da olmak
+	// zorundadır: kodun kullanıcıya ulaşmasının İKİ kanalı var (GET yanıtı ve
+	// canlı akış) ve iki kanal iki ayrı yerde süzülüyorsa biri er geç
+	// unutulur — unutulan buydu. REST süzerken SSE yayınlamaya devam ediyordu,
+	// yani ekranı açık olan kullanıcı iadesini almışken kodu da görüyordu.
+	//
+	// Kiralıkta pencere 20 dakika değil 30 GÜN: iptal sağlayıcıda reddedilirse
+	// numara dönem boyunca canlı kalır ve her yeni SMS bu yoldan geçer.
+	//
+	// test: rental_integration_test.go#TestRefundedOrderCodeIsNotPublishedOverSSE
+	gizli := orderdom.Status(out.Status) == orderdom.StatusCancelled ||
+		orderdom.Status(out.Status) == orderdom.StatusRefunded
+	if len(fresh) > 0 && !gizli {
 		// SSE İLK KODDA KAPANMAZ (FR-415): ikinci mesaj da yayınlanır.
 		s.publish(ctx, out, "code", fresh)
+	}
+	if len(fresh) > 0 && gizli {
+		slog.Warn("iade edilmiş siparişe kod geldi — SSE'ye YAYINLANMADI",
+			"order", out.PublicID, "status", out.Status,
+			"metric", "otp_after_refund_total")
 	}
 	if changed {
 		s.scheduleProviderClose(ctx, out)
@@ -350,9 +443,94 @@ func (s *Service) DeliverMessages(ctx context.Context, orderID int64, msgs []por
 }
 
 // hashMessage kimliksiz mesajlar için deterministik dedup anahtarı üretir.
+//
+// DEDUP POLİTİKASI TEK YERDEDİR ve burasıdır. Sağlayıcı adaptörü mesaj kimliği
+// vermediğinde UYDURMA bir anahtar üretmez (`{id}:last`, `{id}:0`, `{id}:new:0`
+// gibi); `RemoteID`i boş bırakır ve karar buraya düşer. Üç ayrı yerde üç ayrı
+// kural, aynı SMS'in iki farklı anahtarla iki satır olarak yazılmasına yol
+// açıyordu: yoklama `{id}:0`, webhook teyidi `{id}:last`.
+//
+// ÜÇ AYRINTI, üçü de gerçek bir hatayı kapatıyor:
+//
+//   - `ReceivedAt` UTC'ye çevrilir. Aynı an `/otp/last` yolunda "+00:00",
+//     `ListActive` yolunda "Z" olarak gelir; ham biçimleme iki farklı anahtar
+//     üretir ve dedup iki yol arasında çalışmaz.
+//   - Sıfır `ReceivedAt` (parseTime RFC 3339 dışını sıfır döner) sabit boş
+//     dizeye düşer. Yerine `now` konsaydı her yoklama turu yeni bir anahtar
+//     üretir ve 30 günlük bir kiralıkta binlerce yinelenmiş satır yazardı.
+//   - Gönderen ve kod da girdiye dahildir: sıfır zaman durumunda ayrımı
+//     yapacak tek şey içeriktir.
+//
+// Aynı gövdeli iki GERÇEK mesajın tek satıra düşmesi kabul edilen risktir;
+// alternatifi (zamanı anahtara koymak) sınırsız satır üretmekti.
+// test: rental_integration_test.go#TestSameMessageFromBothPathsIsStoredOnce
 func hashMessage(orderID int64, m port.RemoteMessage) []byte {
-	h := sha256sum(fmt.Sprintf("%d|%s|%s", orderID, m.ReceivedAt.Format(time.RFC3339Nano), m.Body))
+	ts := ""
+	if !m.ReceivedAt.IsZero() {
+		ts = m.ReceivedAt.UTC().Format(time.RFC3339Nano)
+	}
+	h := sha256sum(fmt.Sprintf("%d|%s|%s|%s|%s", orderID, ts, m.Sender, m.Code, m.Body))
 	return h[:12]
+}
+
+/* ═══════════════════════ Kira dönemi sonu ═══════════════════════ */
+
+// EndRental kira dönemi biten siparişi kapatır (`rental-closer` işi).
+//
+// 🔴 DEFTERE KAYIT YAZILMAZ. Kiralıkta satılan şey koddur değil SÜREdir:
+// numara dönem boyunca kullanıcıya ayrıldı, sağlayıcıya bedeli ödendi ve
+// kullanıcı istediği an kullanabildi. Kod gelmemesi bizim kusurumuz değildir
+// ve iade sebebi değildir. Aktivasyondaki "kod gelmezse iade" sözü (KK-405)
+// ürünün tek işlevinin O TEK KOD olmasından doğuyordu; kiralıkta o eşitlik yok.
+//
+// Bu yüzden `Expire` KULLANILMAZ ve bu ayrı bir metottur: `Expire`in gövdesinin
+// tamamı `transitionAndRefund`dır, yani "süre doldu → iade et". Aynı gövdeye
+// "süre doldu → iade ETME" dalını koymak, birbirinin zıddı iki para sonucunu
+// tek fonksiyona sıkıştırmaktır — kaçınmaya çalıştığımız hata sınıfının kendisi.
+//
+// test: rental_integration_test.go#TestRentalNeverAutoRefundsAtEndOfPeriod
+// test: rental_integration_test.go#TestRentalEndOfPeriodFinishesAtProvider
+func (s *Service) EndRental(ctx context.Context, orderID int64) error {
+	var out db.Order
+	err := s.tx.InTx(ctx, func(q *db.Queries) error {
+		locked, err := q.GetOrderForUpdate(ctx, orderID)
+		if err != nil {
+			return apperr.Internal(err)
+		}
+		// Sorgu zaten kiralık süzüyor; burası çağrının başka bir yerden
+		// gelmesine karşı ikinci hattır. Bir aktivasyonu bu yoldan geçirmek,
+		// hak edilmiş iadeyi sessizce silmek olurdu.
+		if locked.ProductKind != db.ProductKindSMSRENTAL {
+			return nil
+		}
+		from := orderdom.Status(locked.Status)
+		if from != orderdom.StatusPending && from != orderdom.StatusActive {
+			return nil // başka bir işçi ya da kullanıcı iptali önce davrandı
+		}
+		now := s.clock.Now()
+		if !orderdom.IsExpired(locked.ExpiresAt, now) {
+			return nil
+		}
+		if err := orderdom.Transition(from, orderdom.StatusCompleted); err != nil {
+			return apperr.ErrInvalidStateTransition.Wrap(err)
+		}
+		upd, err := q.SetOrderStatus(ctx, db.SetOrderStatusParams{
+			ID: orderID, Status: db.OrderStatusCOMPLETED, Now: &now,
+			Reason: "kira dönemi tamamlandı",
+		})
+		if err != nil {
+			return apperr.Internal(err)
+		}
+		out = upd
+		return nil
+	})
+	if err != nil || out.ID == 0 {
+		return err
+	}
+	s.publish(ctx, out, "status", nil)
+	// Terminal sipariş sağlayıcıda KAPATILIR (FR-412 / değişmez #24).
+	s.scheduleProviderClose(ctx, out)
+	return nil
 }
 
 /* ═══════════════════════ Sağlayıcıda kapatma ═══════════════════════ */
@@ -416,8 +594,10 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Ya sipariş zaten kapatılmış ya da başka bir işçi şu anda
-			// kapatıyor. İkisinde de yapılacak bir şey yoktur.
+			// ÜÇ SEBEPTEN BİRİ: sipariş zaten kapatılmış · başka bir işçi şu
+			// anda kapatıyor · sipariş HENÜZ TERMİNAL DEĞİL. Üçünde de
+			// yapılacak bir şey yoktur ve hiçbirinde kira tutulmaz.
+			// test: rental_integration_test.go#TestNonTerminalOrderCannotBeClaimedForClose
 			return nil
 		}
 		return apperr.Internal(err)
@@ -425,8 +605,19 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 	if !orderdom.Status(ord.Status).IsTerminal() &&
 		orderdom.Status(ord.Status) != orderdom.StatusCancelled &&
 		orderdom.Status(ord.Status) != orderdom.StatusFailed {
-		// Hâlâ beklemede — kapatılmaz. Kira boşuna tutulmaz: sipariş terminal
-		// olduğu anda kapatma denemesi beklemeden yapılabilmelidir.
+		// 🔴 ULAŞILAMAZ OLMASI BEKLENEN İKİNCİ HAT.
+		//
+		// Durum süzgeci artık `ClaimOrderClose`un KENDİSİNDE: terminal olmayan
+		// satır hiç sahiplenilmez. Bu blok, süzgeç sorgudan düşerse (ya da bir
+		// sonraki migration'da unutulursa) davranışın hâlâ doğru kalması için
+		// duruyor — ama asıl koruma yukarıdadır.
+		//
+		// Sahiplen-sonra-bırak deseni BİLEREK BIRAKILDI: iki adımın arasındaki
+		// aralık, eşzamanlı bir terminal geçişin kapatma çağrısını yutuyordu
+		// (o goroutine sahiplenmeyi kaybedip sessizce nil dönüyor, ardından
+		// gelen `release` kirayı siliyordu; sonuç terminal + kapatılmamış +
+		// sağlayıcıya sıfır çağrı).
+		// test: rental_integration_test.go#TestRentalEndRaceWithProviderCloseHasSingleEffect
 		if err := q.ReleaseOrderClose(ctx, orderID); err != nil {
 			return apperr.Internal(err)
 		}
@@ -437,12 +628,33 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 	if err != nil {
 		return apperr.Internal(err)
 	}
-	action := orderdom.DecideClose(count > 0)
+
+	// KARAR ÜRÜN TÜRÜNE GÖRE AYRIŞIR.
+	//
+	// Aktivasyonda ölçüt "mesaj var mı"dır. Kiralıkta o ölçüt tek başına
+	// yanlıştır: dönem sonunda mesaj gelmemiş olsa bile süre teslim
+	// edilmiştir ve sağlayıcının ücretsiz iptal penceresi (≈20 dk) çoktan
+	// kapanmıştır — Cancel() göndermek garantili bir redde koşmaktır.
+	var action orderdom.CloseAction
+	if ord.ProductKind == db.ProductKindSMSRENTAL {
+		action = orderdom.DecideRentalClose(count > 0, s.withinFreeCancelWindow(ord))
+	} else {
+		action = orderdom.DecideClose(count > 0)
+	}
 
 	adapter, creds, err := s.providerFor(ctx, ord.ProviderID)
 	if err != nil {
 		return err
 	}
+
+	// effective SAĞLAYICIDA GERÇEKTEN BAŞARILI OLAN çağrı.
+	//
+	// `action` niyettir; iptal reddedilip yerine `Finish` gönderildiğinde
+	// niyet gerçekleşmemiştir. Aşağıdaki iade ekseni yazımı NİYETE değil
+	// GERÇEKLEŞENE bakmalıdır — yoksa reddedilmiş bir iptal
+	// `provider_refund_status = REFUNDED` olarak, yani "sağlayıcı paramızı
+	// geri verdi" diye kaydedilir ve gider hiç görünmez.
+	effective := action
 
 	switch action {
 	case orderdom.CloseFinish:
@@ -485,11 +697,16 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 			} else if derr := s.DeliverMessages(ctx, orderID, oe.Messages); derr != nil {
 				return derr
 			}
+			// İptal REDDEDİLDİ; sağlayıcıdan iade gelmeyecek. Gerçekleşen
+			// çağrı `Finish`tir ve eksen ona göre yazılır.
+			effective = orderdom.CloseFinish
 			if ferr := adapter.Finish(ctx, creds, ord.RemoteOrderID); ferr != nil {
-				return s.recordCloseFailure(ctx, orderID, ferr)
+				// Denenen çağrı ARTIK `Finish`tir: iptal reddedildi ve
+				// yerine Finish gönderildi. İade eksenine yazılmaz.
+				return s.recordCloseFailure(ctx, orderID, orderdom.CloseFinish, ferr)
 			}
 		} else {
-			return s.recordCloseFailure(ctx, orderID, err)
+			return s.recordCloseFailure(ctx, orderID, action, err)
 		}
 	}
 
@@ -501,7 +718,8 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 	}
 
 	// Cancel edildiyse sağlayıcıdan iade bekleriz; Finish'te iade yoktur.
-	if action == orderdom.CloseCancel {
+	// test: rental_integration_test.go#TestDeniedCancelIsNotRecordedAsProviderRefund
+	if effective == orderdom.CloseCancel {
 		if err := q.SetProviderRefundStatus(ctx, db.SetProviderRefundStatusParams{
 			ID: orderID, ProviderRefundStatus: db.RefundStatusREFUNDED,
 			ProviderRefundAmountMinor: ord.CostMicro, RefundNextAttemptAt: nil,
@@ -525,11 +743,78 @@ func (s *Service) CloseAtProvider(ctx context.Context, orderID int64) error {
 	return nil
 }
 
-func (s *Service) recordCloseFailure(ctx context.Context, orderID int64, cause error) error {
+// withinFreeCancelWindow kiralıkta sağlayıcının ÜCRETSİZ İPTAL penceresi
+// hâlâ açık mıydı.
+//
+// 🔴 ÇIPA "ŞU AN" DEĞİL, İPTALİN İSTENDİĞİ ANDIR.
+//
+// Karar `s.clock.Now()` ile verilirken her yeniden denemede yeniden
+// hesaplanıyordu ve pencere (15 dk) `provider-refund-retry` aralığının (2 dk ×
+// 8 deneme ≈ 14 dk) tam ortasında bittiği için AYNI SİPARİŞE 1. denemede
+// `Cancel`, 7. denemede `Finish` gidiyordu. Sonucu ölçüldü:
+//
+//	ilk deneme:     cancel=1 finish=0  RETRY_SCHEDULED
+//	yeniden deneme: cancel=1 finish=1  NOT_APPLICABLE
+//
+// Yani kullanıcıya para verildikten sonra sağlayıcıdan iade istemekten
+// VAZGEÇİLİYOR (sağlayıcının kendi penceresi 20 dakikayken 15. dakikada) ve
+// eksene "hiç iade talep etmedik" yazılıyordu: `provider_refund_denied_total`
+// bu gideri hiç görmezdi. Sessiz gider, sıfır alarm.
+//
+// `cancelled_at` bir kez yazılır (`SetOrderStatus` içinde `coalesce`), yani
+// çıpa sabittir ve karar sekiz denemenin sekizinde de aynıdır. Dönem sonu
+// kapanışında (`EndRental` → COMPLETED) `cancelled_at` NİL'dir → pencere
+// kapalı → `Finish`, ki doğru olan da odur.
+//
+// test: rental_integration_test.go#TestRentalRefundRetryKeepsCancelDecision
+func (s *Service) withinFreeCancelWindow(ord db.Order) bool {
+	if ord.RefundableUntil == nil {
+		return false
+	}
+	anchor := ord.CancelledAt
+	if anchor == nil {
+		// Henüz iptal edilmemiş: karar şu ana göre verilir (satın almadan
+		// hemen sonraki bir kapatma denemesi bu daldan geçer).
+		now := s.clock.Now()
+		anchor = &now
+	}
+	return anchor.Before(*ord.RefundableUntil)
+}
+
+// recordCloseFailure başarısız kapatmayı kaydeder.
+//
+// 🔴 `action` PARAMETRESİ ZORUNLUDUR: `Cancel` ile `Finish`in başarısızlığı
+// AYNI ŞEY DEĞİLDİR (değişmez #24) ve fonksiyon hangisinin denendiğini
+// bilmeden iade eksenine yazamaz.
+func (s *Service) recordCloseFailure(
+	ctx context.Context, orderID int64, action orderdom.CloseAction, cause error,
+) error {
 	q := s.tx.Queries()
 	_ = q.RecordCloseFailure(ctx, db.RecordCloseFailureParams{
 		ID: orderID, CloseLastError: cause.Error(),
 	})
+
+	// İADE EKSENİ YALNIZ `Cancel` YOLUNDA YAZILIR.
+	//
+	// `Finish` iade TALEP ETMEZ; başarısızlığı bir "iade reddi" değildir.
+	// Eskiden ayrım yoktu ve başarısız bir `Finish` şunları yazıyordu:
+	//   · provider_refund_status = DENIED → gider metriği (KK-406b) kirlenir,
+	//   · MarkProviderClosed        → sipariş KAPANMADIĞI hâlde kapalı
+	//     işaretlenir ve reaper bir daha hiç denemez, yani "her terminal
+	//     sipariş sağlayıcıda kapatılır" güvencesi tam bu dalda geçersizleşir.
+	//
+	// Kiralıkta bu istisna değil KURALDI: `DecideRentalClose` dönem sonunda
+	// HER kiralığa `Finish` gönderir ve sağlayıcı aktivasyonu `expiredAt`te
+	// kendisi kapattıysa yanıt `ACTIVATION_NOT_ACTIVE` → `ErrCancelDenied`
+	// olur. Yani normal işleyen her kiralık gider metriğine düşerdi.
+	//
+	// Başarısız `Finish` yeniden deneme yolunda KALIR: satır
+	// `provider_closed_at IS NULL` olduğu için `ListUnclosedTerminalOrders`
+	// onu görmeye devam eder (FR-412: kapatmadan asla vazgeçilmez).
+	// test: rental_integration_test.go#TestFailedFinishDoesNotTouchRefundAxis
+	if action != orderdom.CloseCancel {
+		return cause
+	}
 
 	// Kalıcı red mi, geçici mi? Ayrımı yapmazsak ya sonsuz yeniden deneme
 	// ya da kaybedilmiş iade olur.

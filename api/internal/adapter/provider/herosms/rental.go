@@ -170,7 +170,7 @@ func (p *Provider) Extend(ctx context.Context, c port.Creds, remoteOrderID strin
 	}
 	// 425 TOO_EARLY: uzatma için henüz erken; sağlayıcı ne zaman
 	// denenebileceğini söylüyor.
-	return mapLifecycleError(status, body, remoteOrderID)
+	return mapLifecycleError(status, body)
 }
 
 // legacyGetRaw legacy uca istek atar ve HAM gövdeyi döner — hata ayrıştırmadan.

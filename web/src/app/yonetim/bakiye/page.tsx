@@ -1,34 +1,34 @@
 'use client';
 
+/**
+ * Bakiye düzeltme.
+ *
+ * Bu ekran GERÇEK PARA yazar ve yazdığı satır SİLİNEMEZ: kayıt defterine
+ * değiştirilemez bir `ADJUSTMENT` girer (CLAUDE.md değişmez #4). Bu yüzden
+ * form üç şeyi birden yapar — kimi, ne kadar, neden.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * 🔴 NEGATİF TUTAR BURADA MEŞRUDUR — ve YALNIZ burada
+ * ══════════════════════════════════════════════════════════════════════════
+ * `lib/para.ts` içindeki `TUTAR_BAKIYE_DUZELTME` ayarı `izinNegatif: true`
+ * taşır. Diğer dört çağrı yeri (`talepler`, `odeme-yontemleri`, `fiyatlar`,
+ * `panel/bakiye-yukle`) eksiyi REDDEDER. Bu fark kaza değil: yanlış yazılmış
+ * bir bakiyeyi geri almanın tek yolu ters yönde bir düzeltmedir; eksiyi
+ * reddetmek o yolu kapatır. Ayarı burada elle kurmayın — sabiti kullanın.
+ */
+
 import * as React from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { ApiError, apiFetch } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
-import { Card, Button, Field, Alert, Badge } from '@/components/ui';
+import { toMinor, TUTAR_BAKIYE_DUZELTME } from '@/lib/para';
+import { Alert, Button, Card, Field } from '@/components/ui';
+import { HataDurumu, SayfaBasligi, apiHatasi } from '@/components/yonetim';
 import type { Money } from '@/lib/types';
 
 interface AdjustResult { balance: Money; alreadyApplied?: boolean }
 
-/**
- * Kuruş girişi.
- *
- * Kullanıcı "12,50" ya da "12.50" yazar; sunucu int64 KURUŞ bekler ve çıplak
- * ondalık sayıyı REDDEDER (trd.md §9). Çevrimi burada, tek bir yerde ve
- * KAYAN NOKTA KULLANMADAN yaparız: `12.50 * 100` JavaScript'te 1249.9999...
- * verebilir ve bir kuruş kaybolur.
- */
-function toMinor(input: string): { minor: number } | { error: string } {
-  const s = input.trim().replace(/\s/g, '').replace(',', '.');
-  if (s === '' || s === '-') return { error: 'Tutar giriniz.' };
-  if (!/^-?\d+(\.\d{1,2})?$/.test(s)) {
-    return { error: 'Geçerli bir tutar giriniz (en fazla 2 ondalık).' };
-  }
-  const neg = s.startsWith('-');
-  const [whole = '0', frac = ''] = s.replace('-', '').split('.');
-  const minor = Number(whole) * 100 + Number(frac.padEnd(2, '0'));
-  if (!Number.isSafeInteger(minor)) return { error: 'Tutar çok büyük.' };
-  return { minor: neg ? -minor : minor };
-}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function AdminBalancePage() {
   const [userId, setUserId] = React.useState('');
@@ -38,11 +38,9 @@ export default function AdminBalancePage() {
 
   /*
    * İdempotency anahtarı FORM DOLDURULURKEN üretilir, gönderim anında değil.
-   *
-   * Gönderim anında üretilseydi: kullanıcı "Uygula"ya basar, ağ kopar, tekrar
-   * basar → yeni anahtar → aynı düzeltme İKİ KEZ uygulanır. Anahtar mantıksal
-   * işlemi tanımlar; işlem değişmediği sürece anahtar da değişmez.
-   * Başarılı yazımdan sonra yeni bir anahtar üretilir.
+   * Gönderim anında üretilseydi: "Uygula" → ağ kopar → tekrar bas → yeni
+   * anahtar → aynı düzeltme İKİ KEZ uygulanır. Anahtar mantıksal işlemi
+   * tanımlar; işlem değişmedikçe değişmez.
    */
   const [idemKey, setIdemKey] = React.useState(() => crypto.randomUUID());
 
@@ -52,6 +50,8 @@ export default function AdminBalancePage() {
         method: 'POST',
         body: { amountMinor: v.amountMinor, note: v.note, idempotencyKey: v.key },
       }),
+    // Para yazan bir çağrı ASLA otomatik tekrarlanmaz (CLAUDE.md #16).
+    retry: false,
     onSuccess: () => {
       setIdemKey(crypto.randomUUID()); // sıradaki düzeltme AYRI bir işlemdir
       setAmount(''); setNote('');
@@ -62,10 +62,10 @@ export default function AdminBalancePage() {
     e.preventDefault();
     const errs: Record<string, string> = {};
 
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId.trim())) {
+    if (!UUID.test(userId.trim())) {
       errs.userId = 'Kullanıcı kimliği bir UUID olmalıdır.';
     }
-    const parsed = toMinor(amount);
+    const parsed = toMinor(amount, TUTAR_BAKIYE_DUZELTME);
     if ('error' in parsed) errs.amount = parsed.error;
     else if (parsed.minor === 0) errs.amount = 'Tutar sıfır olamaz.';
     if (!note.trim()) errs.note = 'Gerekçe zorunludur — kayıt defterine yazılır.';
@@ -81,31 +81,41 @@ export default function AdminBalancePage() {
     });
   }
 
-  const preview = React.useMemo(() => {
-    const p = toMinor(amount);
+  // Önizleme: yazılacak tutarı kullanıcının yazdığı biçimle DEĞİL, sunucunun
+  // göstereceği biçimle yazar — "-25,5" yazan yönetici "-25,50 ₺" görür.
+  const onizleme = React.useMemo(() => {
+    const p = toMinor(amount, TUTAR_BAKIYE_DUZELTME);
     if ('error' in p) return null;
     return formatMoney({ minor: p.minor, currency: 'TRY', formatted: '' });
   }, [amount]);
 
-  const err = adjust.error instanceof ApiError ? adjust.error : null;
+  const hata = apiHatasi(adjust.error);
+  const sonuc = adjust.isSuccess ? adjust.data : null;
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Bakiye düzeltme</h1>
-        <p className="mt-1 text-sm text-muted">
-          Pozitif tutar bakiyeyi artırır, negatif tutar azaltır.
-        </p>
-      </div>
+    <div className="mx-auto flex max-w-2xl flex-col gap-6">
+      <SayfaBasligi
+        baslik="Bakiye düzeltme"
+        aciklama="Pozitif tutar bakiyeyi artırır, negatif tutar azaltır."
+      />
 
-      <Alert tone="warn">
+      {/*
+        `duyur={false}` — bu kutu SAYFA AÇILIŞINDA koşulsuz çizilir; kullanıcı
+        henüz hiçbir şey yapmadı. `role="alert"` ekran okuyucuya "o an yapılan
+        işi BÖL" der ve bu kutu bölecek bir iş bulamaz: ekrana girer girmez
+        statik bir açıklamayı kesintili uyarı olarak okutur (§7.4).
+        Metin kaybolmaz — sayfa başlığından sonra sırası gelince okunur.
+        Bu ekranın GERÇEK duyurusu aşağıdaki sonuç kutusudur (`role="alert"`
+        orada kalıyor): para YAZILDIKTAN sonra beliren tek geri bildirim odur.
+      */}
+      <Alert tone="warn" duyur={false}>
         Her düzeltme kayıt defterine <strong>değiştirilemez</strong> bir satır olarak
         yazılır ve sizin adınıza kaydedilir. Silinemez, düzeltilemez — yalnız
         ters yönde yeni bir düzeltme ile dengelenebilir.
       </Alert>
 
       <Card>
-        <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+        <form onSubmit={onSubmit} className="flex flex-col gap-5" noValidate>
           <Field
             label="Kullanıcı kimliği (UUID)"
             value={userId} onChange={(e) => setUserId(e.target.value)}
@@ -121,7 +131,7 @@ export default function AdminBalancePage() {
             placeholder="Örn. 150,00 veya -25,50"
             inputMode="decimal" autoComplete="off"
             error={errors.amount}
-            hint={preview ? `Uygulanacak: ${preview}` : 'Virgül veya nokta kullanabilirsiniz.'}
+            hint={onizleme ? `Uygulanacak: ${onizleme}` : 'Virgül veya nokta kullanabilirsiniz.'}
           />
 
           <Field
@@ -131,8 +141,11 @@ export default function AdminBalancePage() {
             maxLength={200} error={errors.note}
           />
 
-          <div className="flex items-center justify-between gap-2 text-xs text-muted">
-            <span>İşlem anahtarı</span>
+          {/* 14px ve tam opaklık (§3.2): bu dize destek ekibine OKUNARAK
+              aktarılır — özgün kod `text-xs` yazıyordu. Monospace meşru
+              (§9.2): karakter karakter okunabilsin diye. */}
+          <div className="flex flex-col gap-1 border-t border-[var(--border)] pt-4 text-sm">
+            <span className="text-muted">İşlem anahtarı</span>
             <code className="break-anywhere font-mono">{idemKey}</code>
           </div>
 
@@ -141,26 +154,24 @@ export default function AdminBalancePage() {
           </Button>
         </form>
 
-        {err && (
-          <Alert className="mt-4">
-            <p>{err.message}</p>
-            {err.fields?.length ? (
-              <ul className="mt-1 list-inside list-disc">
-                {err.fields.map((f) => <li key={f.field}>{f.message}</li>)}
-              </ul>
-            ) : null}
-            {err.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {err.requestId}</p>}
-          </Alert>
-        )}
+        {hata && <HataDurumu hata={hata} className="mt-5" />}
 
-        {adjust.isSuccess && adjust.data && (
-          <Alert tone="ok" className="mt-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span>Yeni bakiye: <strong>{formatMoney(adjust.data.balance)}</strong></span>
-              {adjust.data.alreadyApplied && (
-                <Badge tone="warn">Bu işlem zaten uygulanmıştı — tekrar yazılmadı</Badge>
-              )}
-            </div>
+        {sonuc && (
+          /*
+            TEKRARLANAN DÜZELTME HATA DEĞİLDİR: sunucu 200 + alreadyApplied
+            döner; `talepler` sonuç adımı da aynı ayrımı aynı renkle yapar.
+
+            🔴 ROZET İÇİNE CÜMLE YAZILMAZ (§5.2, ölçülmüş ihlal): özgün kod bu
+            cümleyi bir `Badge`e koymuştu ve `whitespace-nowrap` yüzünden
+            320px'te yatay taşma üretiyordu. Rozet etikettir, cümle değil.
+          */
+          <Alert tone={sonuc.alreadyApplied ? 'info' : 'ok'} className="mt-5">
+            {sonuc.alreadyApplied && (
+              <p className="mb-2">Bu işlem zaten uygulanmıştı; hiçbir şey yeniden yazılmadı.</p>
+            )}
+            <p>
+              Kullanıcının yeni bakiyesi: <strong>{formatMoney(sonuc.balance)}</strong>
+            </p>
           </Alert>
         )}
       </Card>

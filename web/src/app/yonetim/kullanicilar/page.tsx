@@ -1,16 +1,38 @@
 'use client';
 
+/**
+ * Kullanıcılar — hesap arama, durum görüntüleme, erişim kapatma.
+ *
+ * SUNUM KATMANI: `components/yonetim`. Bu dosya artık tablo/kart ikizi,
+ * `ErrorBox`, `PAGE` sabiti, sayfalama şeridi ve `statusTone` haritası
+ * TAŞIMAZ — hepsi katmandan gelir (`docs/tasarim-sistemi.md` §5.3).
+ *
+ * DAVRANIŞ DEĞİŞMEDİ: aynı uç noktalar, aynı sorgu anahtarları, aynı 350 ms
+ * arama gecikmesi, aynı `retry: false` mutasyonu, aynı "kendi hesabını
+ * askıya alamazsın" kısıtı. Değişenler dosya sonundaki rapora yazıldı.
+ */
+
 import * as React from 'react';
 import Link from 'next/link';
-import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { ApiError, apiFetch } from '@/lib/api';
-import { formatMoney, formatDateTime } from '@/lib/format';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
+import { formatDateTime, formatMoney } from '@/lib/format';
 import { useSession } from '@/hooks/useSession';
-import { Card, Button, Field, Alert, Badge, Skeleton, Empty } from '@/components/ui';
-import { Modal } from '@/components/modal';
+import { Badge, Button, Card, Empty, Field } from '@/components/ui';
+import {
+  apiHatasi,
+  DurumRozeti,
+  KayitSayaci,
+  OnayDiyalogu,
+  Sayfalama,
+  SAYFA_BOYUTU,
+  SayfaBasligi,
+  Secim,
+  SuzgecCubugu,
+  VeriTablosu,
+} from '@/components/yonetim';
+import type { DurumTonu, Sunum, Sutun } from '@/components/yonetim';
 import type { AdminUser } from '@/lib/types';
-
-const PAGE = 25;
 
 type UserStatus = AdminUser['status'];
 
@@ -28,33 +50,27 @@ interface SetStatusResult {
   status: UserStatus;
 }
 
-const STATUS_META: Record<UserStatus, { label: string; tone: 'ok' | 'bad' | 'warn' }> = {
-  ACTIVE: { label: 'Aktif', tone: 'ok' },
-  SUSPENDED: { label: 'Askıda', tone: 'bad' },
-  PENDING_VERIFICATION: { label: 'Doğrulama bekliyor', tone: 'warn' },
+/**
+ * Hesap durumu → Türkçe etiket + ton.
+ *
+ * TON AÇIKÇA VERİLİR, `durumTonu()`'ndan türetilmez: katmandaki tablo
+ * `SUSPENDED` ve `PENDING_VERIFICATION` kodlarını tanımıyor ve ikisi de
+ * `neutral` düşüyor. Bugünkü ekran onları `bad`/`warn` gösteriyor; bir hesap
+ * kısıtının nötr renge düşmesi sessiz bir gerilemedir. `DurumRozeti` bu
+ * durum için `ton` ezmesini kabul ediyor.
+ */
+const DURUM_BILGISI: Record<UserStatus, { etiket: string; ton: DurumTonu }> = {
+  ACTIVE: { etiket: 'Aktif', ton: 'ok' },
+  SUSPENDED: { etiket: 'Askıda', ton: 'bad' },
+  PENDING_VERIFICATION: { etiket: 'Doğrulama bekliyor', ton: 'warn' },
 };
 
-const STATUS_FILTERS: Array<{ value: '' | UserStatus; label: string }> = [
+const DURUM_SUZGECLERI: ReadonlyArray<{ value: '' | UserStatus; label: string }> = [
   { value: '', label: 'Tüm durumlar' },
   { value: 'ACTIVE', label: 'Aktif' },
   { value: 'PENDING_VERIFICATION', label: 'Doğrulama bekliyor' },
   { value: 'SUSPENDED', label: 'Askıda' },
 ];
-
-/** Hata gösterimi: mesaj + alan hataları + destek için istek numarası. */
-function ErrorBox({ err, className }: { err: ApiError; className?: string }) {
-  return (
-    <Alert className={className}>
-      <p>{err.message}</p>
-      {err.fields?.length ? (
-        <ul className="mt-1 list-inside list-disc">
-          {err.fields.map((f) => <li key={f.field}>{f.message}</li>)}
-        </ul>
-      ) : null}
-      {err.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {err.requestId}</p>}
-    </Alert>
-  );
-}
 
 /**
  * Kullanıcı kimliğini panoya kopyalar.
@@ -62,15 +78,18 @@ function ErrorBox({ err, className }: { err: ApiError; className?: string }) {
  * Bakiye düzeltme ekranı kullanıcıyı UUID ile ister ve sorgu parametresi
  * KABUL ETMEZ; yönetici kimliği elle yazmak zorunda kalıyordu. 36 karakterlik
  * bir UUID'yi elle yazmak, yanlış hesaba para yazmanın en kısa yoludur.
+ *
+ * Katmanda `CopyButton` YOK (§5.3 P1-12, henüz yazılmadı) — bu yüzden yerel
+ * kaldı; raporda bildirildi.
  */
-function CopyIdButton({ id }: { id: string }) {
-  const [copied, setCopied] = React.useState(false);
+function KimlikKopyala({ id }: { id: string }) {
+  const [kopyalandi, setKopyalandi] = React.useState(false);
 
   React.useEffect(() => {
-    if (!copied) return;
-    const t = setTimeout(() => setCopied(false), 2000);
+    if (!kopyalandi) return;
+    const t = setTimeout(() => setKopyalandi(false), 2000);
     return () => clearTimeout(t);
-  }, [copied]);
+  }, [kopyalandi]);
 
   return (
     <Button
@@ -81,95 +100,277 @@ function CopyIdButton({ id }: { id: string }) {
           // Pano API'si güvensiz bağlamda ve izin verilmediğinde reddeder;
           // kopyalanamaması ekranı bozmamalı.
           await navigator.clipboard.writeText(id);
-          setCopied(true);
+          setKopyalandi(true);
         } catch {
-          setCopied(false);
+          setKopyalandi(false);
         }
       }}
     >
-      {copied ? 'Kopyalandı' : 'Kimliği kopyala'}
+      {kopyalandi ? 'Kopyalandı' : 'Kimliği kopyala'}
     </Button>
+  );
+}
+
+/**
+ * Satır eylemleri — her iki sunumda AYNI metinler.
+ *
+ * Yönetici KENDİ hesabını askıya alamaz (sunucu 422 ile reddeder). Düğmeyi
+ * baştan kapatmak, kullanıcıyı yapamayacağı bir işlemin hatasıyla
+ * karşılaştırmaktan iyidir — ama devre dışı bir düğmenin `title`'ı
+ * dokunmatikte ve klavyede OKUNMAZ, bu yüzden gerekçe metin olarak da yazılır.
+ *
+ * 🔴 "Bakiye düzelt" BURADAN ÇIKTI, sayfa başlığına taşındı. Gerekçe ölçülmüş:
+ * `/yonetim/bakiye` hiçbir sorgu parametresi okumuyor (`bakiye/page.tsx`'te
+ * `useSearchParams` yok; kimlik elle yazılıyor) — yani satırdaki bağlantı
+ * satırın kullanıcısını HİÇ TAŞIMIYORDU, 25 satırda birbirinin aynı 25
+ * bağlantı üretiyordu. Üstelik üçüncü düğme, 1440px'te bile eylem sütununu
+ * ikinci satıra sarıyordu: ölçüm 129px satır ↔ iki düğmeyle 76px.
+ * Akış aynı kaldı: kimliği kopyala → başlıktaki "Bakiye düzelt" → yapıştır.
+ */
+function SatirEylemleri({
+  kullanici,
+  benMi,
+  sunum,
+  onSor,
+}: {
+  kullanici: AdminUser;
+  benMi: boolean;
+  sunum: Sunum;
+  onSor: (kullanici: AdminUser, sonraki: UserStatus) => void;
+}) {
+  const askida = kullanici.status === 'SUSPENDED';
+
+  return (
+    <div className={sunum === 'tablo' ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2'}>
+      <div className={sunum === 'tablo' ? 'flex flex-wrap justify-end gap-2' : 'flex flex-wrap gap-2'}>
+        {askida ? (
+          <Button size="sm" onClick={() => onSor(kullanici, 'ACTIVE')}>
+            Aktifleştir
+          </Button>
+        ) : (
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={benMi}
+            onClick={() => onSor(kullanici, 'SUSPENDED')}
+          >
+            Askıya al
+          </Button>
+        )}
+
+        <KimlikKopyala id={kullanici.id} />
+      </div>
+
+      {benMi && (
+        <p className="text-sm text-muted">
+          Bu sizin hesabınız — kendi durumunuzu değiştiremezsiniz.
+        </p>
+      )}
+    </div>
   );
 }
 
 export default function AdminUsersPage() {
   const qc = useQueryClient();
-  const { user: me } = useSession();
+  const { user: ben } = useSession();
 
-  const [searchInput, setSearchInput] = React.useState('');
-  const [search, setSearch] = React.useState('');
-  const [status, setStatus] = React.useState<'' | UserStatus>('');
+  const [aramaGirdisi, setAramaGirdisi] = React.useState('');
+  const [arama, setArama] = React.useState('');
+  const [durum, setDurum] = React.useState<'' | UserStatus>('');
   const [offset, setOffset] = React.useState(0);
 
   // Her tuşa basışta istek atmak yönetim uçlarının dakikalık sınırını
   // (60 istek) tek bir aramada tüketir; arama 350 ms sonra sabitlenir.
   React.useEffect(() => {
     const t = setTimeout(() => {
-      setSearch(searchInput.trim());
+      setArama(aramaGirdisi.trim());
       setOffset(0);
     }, 350);
     return () => clearTimeout(t);
-  }, [searchInput]);
+  }, [aramaGirdisi]);
 
   const q = useQuery({
-    queryKey: ['admin-users', { search, status, offset }],
+    queryKey: ['admin-users', { search: arama, status: durum, offset }],
     queryFn: () => {
-      const p = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
-      if (search) p.set('q', search);
-      if (status) p.set('status', status);
+      const p = new URLSearchParams({ limit: String(SAYFA_BOYUTU), offset: String(offset) });
+      if (arama) p.set('q', arama);
+      if (durum) p.set('status', durum);
       return apiFetch<AdminUserList>(`/admin/users?${p.toString()}`);
     },
     // Sayfa/arama değişince liste boşalıp zıplamasın.
     placeholderData: keepPreviousData,
   });
 
-  const [confirm, setConfirm] = React.useState<{ user: AdminUser; next: UserStatus } | null>(null);
+  const [onay, setOnay] = React.useState<{ kullanici: AdminUser; sonraki: UserStatus } | null>(null);
 
-  const setUserStatus = useMutation({
-    mutationFn: (v: { id: string; next: UserStatus }) =>
+  const durumYaz = useMutation({
+    mutationFn: (v: { id: string; sonraki: UserStatus }) =>
       apiFetch<SetStatusResult>(`/admin/users/${encodeURIComponent(v.id)}/status`, {
         method: 'PATCH',
-        body: { status: v.next },
+        body: { status: v.sonraki },
       }),
     // Yönetsel bir durum değişikliği asla kendiliğinden tekrarlanmaz.
     retry: false,
     onSuccess: () => {
       // Yanıt yalnız {id,status} taşır; satırı yamalamak yerine listeyi tazele.
       qc.invalidateQueries({ queryKey: ['admin-users'] });
-      setConfirm(null);
+      setOnay(null);
     },
   });
 
-  function askChange(user: AdminUser, next: UserStatus) {
-    setUserStatus.reset();
-    setConfirm({ user, next });
+  // `reset` React Query'de kararlıdır; `durumYaz` nesnesi her render'da yeniden
+  // kurulur. Bağımlılığa nesneyi koymak `sutunlar` memo'sunu işlevsiz bırakırdı.
+  const mutasyonuSifirla = durumYaz.reset;
+
+  const sor = React.useCallback(
+    (kullanici: AdminUser, sonraki: UserStatus) => {
+      mutasyonuSifirla();
+      setOnay({ kullanici, sonraki });
+    },
+    [mutasyonuSifirla],
+  );
+
+  const kapat = React.useCallback(() => {
+    mutasyonuSifirla();
+    setOnay(null);
+  }, [mutasyonuSifirla]);
+
+  function temizle() {
+    setAramaGirdisi('');
+    setArama('');
+    setDurum('');
+    setOffset(0);
   }
 
-  const listErr = q.error instanceof ApiError ? q.error : null;
-  const mutErr = setUserStatus.error instanceof ApiError ? setUserStatus.error : null;
+  const toplam = q.data?.total ?? 0;
+  const satirlar = q.data?.items;
+  const etkinSuzgec = (arama ? 1 : 0) + (durum ? 1 : 0);
+  const sayfali = toplam > SAYFA_BOYUTU;
 
-  const total = q.data?.total ?? 0;
-  const hasPrev = offset > 0;
-  const hasNext = offset + PAGE < total;
-  const items = q.data?.items ?? [];
+  /*
+   * SÜTUNLAR — tek veri tanımı.
+   *
+   * Ölçüm: özgün dosyada aynı yedi alan İKİ KEZ yazılmıştı (mobil kart + tablo)
+   * ve ikizler zaten ayrışmıştı: roller boşken kart "Rol atanmamış", tablo "—"
+   * yazıyordu; "E-posta doğrulanmamış" uyarısı yalnız tabloda, "kendi hesabınız"
+   * açıklaması yalnız kartta vardı. `baslik` ve `hucre` tek kaynak olduğu için
+   * bu ayrışma bir daha doğamaz.
+   *
+   * ÖNCELİK (§6.1 kural 3): yedi sütun 768px'e sığmaz. "Sipariş" ve "Kayıt"
+   * `oncelik: 3` ile `lg:` üstüne alındı; `md:`'de beş sütun kalır.
+   */
+  const sutunlar = React.useMemo<ReadonlyArray<Sutun<AdminUser>>>(
+    () => [
+      {
+        anahtar: 'kullanici',
+        baslik: 'Kullanıcı',
+        mobilRol: 'baslik',
+        hucre: (u) => (
+          <>
+            <p className="font-medium">{u.username}</p>
+            <p className="mt-1 break-anywhere text-sm text-muted">{u.email}</p>
+            {!u.emailVerified && (
+              // Renk tek kanal değil: metin de "doğrulanmamış" diyor (§7.1).
+              <p className="mt-1 text-sm text-[var(--color-warn)]">E-posta doğrulanmamış</p>
+            )}
+          </>
+        ),
+      },
+      {
+        anahtar: 'durum',
+        baslik: 'Durum',
+        mobilRol: 'rozet',
+        hucre: (u) => (
+          <DurumRozeti
+            durum={u.status}
+            etiket={DURUM_BILGISI[u.status].etiket}
+            ton={DURUM_BILGISI[u.status].ton}
+          />
+        ),
+      },
+      {
+        anahtar: 'bakiye',
+        baslik: 'Bakiye',
+        hizala: 'sag',
+        sayisal: true,
+        hucre: (u) => <span className="font-medium">{formatMoney(u.balance)}</span>,
+      },
+      {
+        anahtar: 'siparis',
+        baslik: 'Sipariş',
+        hizala: 'sag',
+        sayisal: true,
+        oncelik: 3,
+        hucre: (u) => u.orderCount,
+      },
+      {
+        anahtar: 'roller',
+        baslik: 'Roller',
+        hucre: (u, sunum) =>
+          u.roles.length ? (
+            <div className={`flex flex-wrap gap-2 ${sunum === 'kart' ? 'justify-end' : ''}`}>
+              {u.roles.map((r) => (
+                <Badge key={r} tone="brand">
+                  {r}
+                </Badge>
+              ))}
+            </div>
+          ) : (
+            // Tek metin: kart da tablo da "Rol atanmamış" der (özgün ikizde "—" idi).
+            <span className="font-normal text-muted">Rol atanmamış</span>
+          ),
+      },
+      {
+        anahtar: 'kayit',
+        baslik: 'Kayıt',
+        hizala: 'sag',
+        sayisal: true,
+        oncelik: 3,
+        hucre: (u) => <span className="text-muted">{formatDateTime(u.createdAt)}</span>,
+      },
+      {
+        anahtar: 'islem',
+        baslik: 'İşlem',
+        hizala: 'sag',
+        mobilRol: 'eylem',
+        hucre: (u, sunum) => (
+          <SatirEylemleri kullanici={u} benMi={ben?.id === u.id} sunum={sunum} onSor={sor} />
+        ),
+      },
+    ],
+    [ben?.id, sor],
+  );
+
+  const askiyaAliniyor = onay?.sonraki === 'SUSPENDED';
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Kullanıcılar</h1>
-        <p className="mt-1 text-sm text-muted">
-          Hesapları arayın, durumlarını görün ve gerektiğinde erişimi kapatın.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <SayfaBasligi
+        baslik="Kullanıcılar"
+        aciklama="Hesapları arayın, durumlarını görün ve gerektiğinde erişimi kapatın."
+      >
+        {/* Satır değil SAYFA eylemi: hedef ekran kullanıcı kimliğini elle ister. */}
+        <Link href="/yonetim/bakiye">
+          <Button variant="outline">Bakiye düzelt</Button>
+        </Link>
+      </SayfaBasligi>
 
       <Card>
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:gap-3">
-          <div className="md:flex-1">
+        <SuzgecCubugu etkinSayisi={etkinSuzgec} onTemizle={temizle}>
+          {/*
+            `sm:self-start`: `SuzgecCubugu` varsayılan olarak tabana hizalar
+            (`items-end`). `Field` ipucu metnini kutunun ALTINA koyduğu için
+            tabana hizalama arama kutusunu seçim kutusundan ~18px yukarı
+            kaydırır. Tepeden hizalamak farkı 2px'e indirir (iki bileşenin
+            etiket–kutu aralığı farklı: `Field` 6px, `Secim` 8px) — kalan fark
+            katman raporunda bildirildi.
+          */}
+          <div className="w-full sm:w-72 sm:self-start">
             <Field
               label="Ara"
               type="search"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
+              value={aramaGirdisi}
+              onChange={(e) => setAramaGirdisi(e.target.value)}
               placeholder="E-posta veya kullanıcı adı"
               autoCapitalize="none"
               autoCorrect="off"
@@ -179,270 +380,103 @@ export default function AdminUsersPage() {
             />
           </div>
 
-          <label className="flex flex-col gap-1.5 md:w-56">
-            <span className="text-sm font-medium">Durum</span>
-            <select
-              value={status}
+          <div className="w-full sm:w-56 sm:self-start">
+            <Secim
+              etiket="Durum"
+              value={durum}
               onChange={(e) => {
-                setStatus(e.target.value as '' | UserStatus);
+                setDurum(e.target.value as '' | UserStatus);
                 setOffset(0);
               }}
-              className="raised select-ok min-h-12 w-full rounded-xl border px-3 text-base outline-none
-                         focus:border-brand-400 disabled:opacity-60"
             >
-              {STATUS_FILTERS.map((s) => (
-                <option key={s.value || 'all'} value={s.value}>{s.label}</option>
+              {DURUM_SUZGECLERI.map((s) => (
+                <option key={s.value || 'tumu'} value={s.value}>
+                  {s.label}
+                </option>
               ))}
-            </select>
-          </label>
-        </div>
+            </Secim>
+          </div>
+        </SuzgecCubugu>
       </Card>
 
       <Card>
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <h2 className="text-lg font-semibold">Hesap listesi</h2>
-          {total > 0 && <Badge tone="neutral">{total} kayıt</Badge>}
+          <KayitSayaci toplam={toplam} />
         </div>
 
-        {q.isLoading ? (
-          <div className="mt-4 flex flex-col gap-2">
-            {[0, 1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-20" />)}
-          </div>
-        ) : listErr ? (
-          <ErrorBox err={listErr} className="mt-4" />
-        ) : !items.length ? (
-          <Empty
-            title="Kullanıcı bulunamadı"
-            hint={search || status
-              ? 'Arama veya durum süzgecini değiştirip tekrar deneyin.'
-              : 'Henüz kayıtlı kullanıcı yok.'}
-          />
-        ) : (
-          <>
-            {/* MOBİL: kart listesi. Yatay kaydırılan tablo kabul edilmez (§2.5). */}
-            <ul className="mt-4 flex flex-col gap-2 md:hidden">
-              {items.map((u) => {
-                const meta = STATUS_META[u.status];
-                const isSelf = me?.id === u.id;
-                return (
-                  <li key={u.id} className="raised rounded-xl border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{u.username}</p>
-                        <p className="mt-0.5 text-xs text-muted break-anywhere">{u.email}</p>
-                      </div>
-                      <span className="shrink-0"><Badge tone={meta.tone}>{meta.label}</Badge></span>
-                    </div>
+        <VeriTablosu
+          className="mt-4"
+          baslik="Kayıtlı hesaplar"
+          sutunlar={sutunlar}
+          satirlar={satirlar}
+          satirAnahtari={(u) => u.id}
+          yukleniyor={q.isLoading}
+          hata={apiHatasi(q.error)}
+          // Sayfalama kendi aralığını duyuruyor; iki canlı bölge aynı anda
+          // konuşmasın (veri-tablosu.tsx `duyuru` notu).
+          duyuru={!sayfali}
+          bos={
+            <Empty
+              title="Kullanıcı bulunamadı"
+              // §6.3: süzgeçten dolayı boş ≠ gerçekten boş.
+              hint={
+                etkinSuzgec > 0
+                  ? 'Arama veya durum süzgecini değiştirip tekrar deneyin.'
+                  : 'Henüz kayıtlı kullanıcı yok.'
+              }
+            />
+          }
+        />
 
-                    <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t
-                                   border-[var(--border)] pt-2 text-xs">
-                      <div>
-                        <dt className="text-muted">Bakiye</dt>
-                        <dd className="mt-0.5 font-semibold">{formatMoney(u.balance)}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-muted">Sipariş</dt>
-                        <dd className="mt-0.5 font-semibold">{u.orderCount}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-muted">Kayıt</dt>
-                        <dd className="mt-0.5">{formatDateTime(u.createdAt)}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-muted">E-posta doğrulama</dt>
-                        <dd className="mt-0.5">{u.emailVerified ? 'Yapıldı' : 'Yapılmadı'}</dd>
-                      </div>
-                    </dl>
-
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {u.roles.length
-                        ? u.roles.map((r) => <Badge key={r} tone="brand">{r}</Badge>)
-                        : <span className="text-xs text-muted">Rol atanmamış</span>}
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <StatusActions user={u} isSelf={isSelf} onAsk={askChange} />
-                      <CopyIdButton id={u.id} />
-                      <Link href="/yonetim/bakiye">
-                        <Button variant="outline" size="sm">Bakiye düzelt</Button>
-                      </Link>
-                    </div>
-                    {isSelf && (
-                      <p className="mt-2 text-xs text-muted">
-                        Bu sizin hesabınız — kendi durumunuzu değiştiremezsiniz.
-                      </p>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-
-            {/* MASAÜSTÜ: gerçek tablo */}
-            <div className="mt-4 hidden md:block">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs
-                                 uppercase tracking-wide text-muted">
-                    <th scope="col" className="py-2 pr-3 font-medium">Kullanıcı</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Durum</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Bakiye</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Sipariş</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Roller</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Kayıt</th>
-                    <th scope="col" className="py-2 text-right font-medium">İşlem</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((u) => {
-                    const meta = STATUS_META[u.status];
-                    const isSelf = me?.id === u.id;
-                    return (
-                      <tr key={u.id} className="border-b border-[var(--border)] last:border-0 align-top">
-                        <td className="py-3 pr-3">
-                          <p className="font-medium">{u.username}</p>
-                          <p className="text-xs text-muted break-anywhere">{u.email}</p>
-                          {!u.emailVerified && (
-                            <p className="mt-0.5 text-xs text-[var(--color-warn)]">E-posta doğrulanmamış</p>
-                          )}
-                        </td>
-                        <td className="py-3 pr-3"><Badge tone={meta.tone}>{meta.label}</Badge></td>
-                        <td className="py-3 pr-3 text-right font-semibold whitespace-nowrap">
-                          {formatMoney(u.balance)}
-                        </td>
-                        <td className="py-3 pr-3 text-right whitespace-nowrap">{u.orderCount}</td>
-                        <td className="py-3 pr-3">
-                          <div className="flex flex-wrap gap-1">
-                            {u.roles.length
-                              ? u.roles.map((r) => <Badge key={r} tone="brand">{r}</Badge>)
-                              : <span className="text-xs text-muted">—</span>}
-                          </div>
-                        </td>
-                        <td className="py-3 pr-3 whitespace-nowrap text-muted">
-                          {formatDateTime(u.createdAt)}
-                        </td>
-                        <td className="py-3">
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <StatusActions user={u} isSelf={isSelf} onAsk={askChange} />
-                            <CopyIdButton id={u.id} />
-                            <Link href="/yonetim/bakiye">
-                              <Button variant="outline" size="sm">Bakiye düzelt</Button>
-                            </Link>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {(hasPrev || hasNext) && (
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <Button variant="outline" size="sm" disabled={!hasPrev}
-                        onClick={() => setOffset((o) => Math.max(0, o - PAGE))}>
-                  Önceki
-                </Button>
-                <span className="text-xs text-muted">
-                  {offset + 1}–{Math.min(offset + PAGE, total)} / {total}
-                </span>
-                <Button variant="outline" size="sm" disabled={!hasNext}
-                        onClick={() => setOffset((o) => o + PAGE)}>
-                  Sonraki
-                </Button>
-              </div>
-            )}
-          </>
-        )}
+        <Sayfalama
+          className="mt-6"
+          offset={offset}
+          limit={SAYFA_BOYUTU}
+          toplam={toplam}
+          onDegis={setOffset}
+        />
       </Card>
 
       {/*
         ONAY DİYALOĞU — tek tıkla durum değiştirilmez.
         Askıya alma kullanıcının açık TÜM oturumlarını anında düşürür ve
-        sipariş akışını keser; geri alınabilir ama kullanıcı tarafında
-        anında görünür bir kesintidir.
+        sipariş akışını keser; geri alınabilir ama kullanıcı tarafında anında
+        görünür bir kesintidir.
+
+        🔴 İLK ODAK ARTIK "VAZGEÇ"TE (§7.5): özgün dosya `data-autofocus`'u
+        yıkıcı düğmeye koyuyordu. Bir önceki adımdan Enter basılı gelirse
+        keydown tekrarı `click` üretir ve tek tuş hesabı askıya alırdı.
       */}
-      <Modal
-        open={confirm !== null}
-        onClose={() => { setUserStatus.reset(); setConfirm(null); }}
-        title={confirm?.next === 'SUSPENDED' ? 'Hesabı askıya al' : 'Hesabı aktifleştir'}
+      <OnayDiyalogu
+        acik={onay !== null}
+        baslik={askiyaAliniyor ? 'Hesabı askıya al' : 'Hesabı aktifleştir'}
+        yikici={askiyaAliniyor}
+        onayMetni={askiyaAliniyor ? 'Evet, askıya al' : 'Evet, aktifleştir'}
+        bekliyor={durumYaz.isPending}
+        hata={apiHatasi(durumYaz.error)}
+        onOnayla={() => onay && durumYaz.mutate({ id: onay.kullanici.id, sonraki: onay.sonraki })}
+        onIptal={kapat}
+        uyari={
+          askiyaAliniyor ? (
+            <>
+              Askıya alınan hesabın <strong>tüm oturumları anında düşer</strong>. Kullanıcı giriş
+              yapamaz, numara alamaz. Bakiyesi silinmez; hesabı yeniden aktifleştirdiğinizde kaldığı
+              yerden devam eder.
+            </>
+          ) : (
+            'Hesap yeniden aktifleştirilecek; kullanıcı giriş yapıp numara alabilecek.'
+          )
+        }
       >
-        {confirm && (
-          <div className="flex flex-col gap-4">
-            <div className="raised rounded-xl border p-3">
-              <p className="text-sm font-medium">{confirm.user.username}</p>
-              <p className="mt-0.5 text-xs text-muted break-anywhere">{confirm.user.email}</p>
-            </div>
-
-            {confirm.next === 'SUSPENDED' ? (
-              <Alert tone="warn">
-                Askıya alınan hesabın <strong>tüm oturumları anında düşer</strong>. Kullanıcı
-                giriş yapamaz, numara alamaz. Bakiyesi silinmez; hesabı yeniden
-                aktifleştirdiğinizde kaldığı yerden devam eder.
-              </Alert>
-            ) : (
-              <Alert tone="info">
-                Hesap yeniden aktifleştirilecek; kullanıcı giriş yapıp numara alabilecek.
-              </Alert>
-            )}
-
-            {mutErr && <ErrorBox err={mutErr} />}
-
-            <div className="flex flex-col gap-2 sm:flex-row-reverse">
-              <Button
-                data-autofocus
-                variant={confirm.next === 'SUSPENDED' ? 'danger' : 'primary'}
-                loading={setUserStatus.isPending}
-                fullWidth
-                onClick={() => setUserStatus.mutate({ id: confirm.user.id, next: confirm.next })}
-              >
-                {confirm.next === 'SUSPENDED' ? 'Evet, askıya al' : 'Evet, aktifleştir'}
-              </Button>
-              <Button
-                variant="outline"
-                fullWidth
-                disabled={setUserStatus.isPending}
-                onClick={() => { setUserStatus.reset(); setConfirm(null); }}
-              >
-                Vazgeç
-              </Button>
-            </div>
+        {onay && (
+          // İÇ İÇE KART YOK (§9.2): bu blok `Modal` içindedir, `Card` içinde değil.
+          <div className="raised rounded-xl border p-4">
+            <p className="font-medium">{onay.kullanici.username}</p>
+            <p className="mt-1 break-anywhere text-sm text-muted">{onay.kullanici.email}</p>
           </div>
         )}
-      </Modal>
+      </OnayDiyalogu>
     </div>
-  );
-}
-
-/**
- * Satır eylemleri.
- *
- * Yönetici KENDİ hesabını askıya alamaz (sunucu 422 ile reddeder). Düğmeyi
- * baştan kapatmak, kullanıcıyı yapamayacağı bir işlemin hatasıyla
- * karşılaştırmaktan iyidir.
- */
-function StatusActions({
-  user, isSelf, onAsk,
-}: {
-  user: AdminUser;
-  isSelf: boolean;
-  onAsk: (user: AdminUser, next: UserStatus) => void;
-}) {
-  if (user.status === 'SUSPENDED') {
-    return (
-      <Button size="sm" onClick={() => onAsk(user, 'ACTIVE')}>
-        Aktifleştir
-      </Button>
-    );
-  }
-  return (
-    <Button
-      variant="danger"
-      size="sm"
-      disabled={isSelf}
-      title={isSelf ? 'Kendi hesabınızın durumunu değiştiremezsiniz.' : undefined}
-      onClick={() => onAsk(user, 'SUSPENDED')}
-    >
-      Askıya al
-    </Button>
   );
 }

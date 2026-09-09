@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiFetch } from '@/lib/api';
 import { formatMoney, formatDuration } from '@/lib/format';
+import { aramaAnahtari } from '@/lib/arama';
 import { useCountdown } from '@/hooks/useCountdown';
 import { useSession } from '@/hooks/useSession';
 import { Button, Badge, Alert, Skeleton, Empty, cx } from '@/components/ui';
@@ -55,13 +56,36 @@ export default function BuyPage() {
   const failed = catalog.isError;
 
   const filtered = React.useMemo(() => {
-    // localeCompare/toLocaleLowerCase'de 'tr' ZORUNLU: varsayılan yerelde
-    // "İSTANBUL".toLowerCase() → "i̇stanbul" olur ve arama tutmaz.
-    const q = search.trim().toLocaleLowerCase('tr');
+    // 🔴 Eskiden burada yalnız `toLocaleLowerCase('tr')` vardı ve EN POPÜLER
+    // SERVİS aramada bulunamıyordu: Türkçe yerelde "Instagram" → "ınstagram"
+    // (noktasız ı) olur, kullanıcının yazdığı "instagram" ise noktalı kalır.
+    // `aramaAnahtari` iki tarafı da aynı biçime katlar.
+    const q = aramaAnahtari(search.trim());
     if (!q) return services;
     return services.filter((s) =>
-      s.name.toLocaleLowerCase('tr').includes(q) || s.code.toLowerCase().includes(q));
+      aramaAnahtari(s.name).includes(q) || aramaAnahtari(s.code).includes(q));
   }, [services, search]);
+
+  // Tek seferde çizilecek kart sayısı.
+  //
+  // 🔴 ÖLÇÜLDÜ: 712 stoklu servisin tamamı çizildiğinde ızgara iPhone 14'te
+  // 32.740 px — yaklaşık 39 ekran boyu — ve tek başına 4.985 DOM düğümü
+  // (Lighthouse hata eşiği 3.000). Kullanıcının "site çok aşağıya iniyor"
+  // şikâyeti buydu.
+  //
+  // İÇ KAYDIRMA KUTUSU DEĞİL: iPhone 14'te yapışkan başlık, sabit alt gezinme
+  // ve arama kutusundan sonra kutuya kalan yer ~574 px = 6 kart satırı. Bir
+  // gözetleme deliği olurdu; üstelik iç içe kaydırma mobilde parmağı yanlış
+  // eksende yakalar ve `overflow` atası odak halkasını kırpar.
+  //
+  // Bu desen depoda ZATEN var: /servisler sayfası aynısını kullanıyor.
+  const ADIM = 24;
+  const [limit, setLimit] = React.useState(ADIM);
+  // Arama değişince limit başa döner; yoksa kullanıcı "daha fazla"ya üç kez
+  // bastıktan sonra arama yaptığında ilk 96 sonucu görüp gerisini kaçırır.
+  React.useEffect(() => { setLimit(ADIM); }, [search]);
+  const gorunen = filtered.slice(0, limit);
+  const kalan = filtered.length - gorunen.length;
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-5">
@@ -110,7 +134,7 @@ export default function BuyPage() {
       ) : (
         /* Mobilde 2 sütun — gerçek sistemdeki düzen (docs/frontend-contract.md §2.5) */
         <ul className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-          {filtered.map((s) => (
+          {gorunen.map((s) => (
             <li key={s.code}>
               <button
                 type="button" onClick={() => setOpenService(s)}
@@ -134,6 +158,22 @@ export default function BuyPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {kalan > 0 && (
+        <div className="flex flex-col items-center gap-2">
+          {/* aria-live: ekran okuyucu "daha fazla"ya bastıktan sonra kaç kartın
+              eklendiğini duymalı; yoksa düğme sessizce çalışmış gibi görünür. */}
+          <p className="text-sm text-muted" aria-live="polite">
+            {filtered.length} servisin ilk {gorunen.length} tanesi gösteriliyor.
+          </p>
+          <Button variant="outline" fullWidth onClick={() => setLimit((n) => n + ADIM)}>
+            Daha fazla göster ({kalan})
+          </Button>
+          <p className="text-xs text-muted">
+            Aradığınız servisi yukarıdaki kutuya yazarak da bulabilirsiniz.
+          </p>
+        </div>
       )}
 
       <BuyModal

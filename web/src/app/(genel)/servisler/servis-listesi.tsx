@@ -38,6 +38,7 @@
  */
 
 import * as React from 'react';
+import { aramaAnahtari } from '@/lib/arama';
 import { ServiceIcon } from '@/components/service-icon';
 import { Badge, Button, Empty, cx } from '@/components/ui';
 
@@ -62,24 +63,9 @@ const RENKLER = ['mavi', 'mor', 'deniz', 'yesil', 'turuncu', 'pembe'] as const;
  */
 const ADIM = 60;
 
-/**
- * Türkçe duyarsız arama anahtarı.
- *
- * `toLowerCase()` TEK BAŞINA YETMEZ: "İ" harfi İngilizce kurallarla "i̇"
- * (birleşik nokta) olur ve "instagram" araması "İnstagram"ı bulamaz. Türkçe
- * yerel ayarı + açık harf eşlemesi ikisini de kapatır.
- */
-function anahtar(s: string): string {
-  return s
-    .toLocaleLowerCase('tr')
-    .replace(/ı/g, 'i')
-    .replace(/İ/g, 'i')
-    .replace(/ş/g, 's')
-    .replace(/ğ/g, 'g')
-    .replace(/ü/g, 'u')
-    .replace(/ö/g, 'o')
-    .replace(/ç/g, 'c');
-}
+// Türkçe duyarsız arama anahtarı ortak dosyada: iki sayfa da AYNI
+// katlamayı kullanmazsa aynı sorgu iki sayfada farklı sonuç verir.
+const anahtar = aramaAnahtari;
 
 export function ServisListesi({ servisler }: { servisler: ServisSatiri[] }) {
   const [sorgu, setSorgu] = React.useState('');

@@ -31,7 +31,8 @@ type Provider struct {
 	// test: fake_test.go#TestRemoteOrderIDIsUniquePerProcess
 	nonce string
 
-	catalog map[key]*entry        // fiyat/stok
+	catalog map[key]*entry        // fiyat/stok (aktivasyon)
+	rents   map[rentKey]*entry    // fiyat/stok (kiralık)
 	orders  map[string]*fakeOrder // remoteID -> sipariş
 	faults  Faults                // hata enjeksiyonu
 
@@ -41,12 +42,31 @@ type Provider struct {
 	OrderTTL time.Duration
 	// BalanceMicro sağlayıcıdaki bakiyemiz (mikro-USD).
 	BalanceMicro int64
+
+	// RentMessageInterval kiralık numaraya ne sıklıkla mesaj düşeceği.
+	//
+	// 🔴 KİRALIKTA ÇOKLU MESAJ ŞARTTIR. Taklit tek mesaj üretirken "ilk SMS'te
+	// kiralık kapanıyor" hatası hiçbir testte görünmezdi: ikinci mesaj hiç
+	// oluşmadığı için kaybı ölçecek bir gözlem yoktu.
+	RentMessageInterval time.Duration
+	// RentMessageCount bir kiralık numaranın dönem boyunca alacağı azami mesaj.
+	RentMessageCount int
+	// RentDurations kabul edilen kiralama süreleri (saat).
+	RentDurations []int
 }
 
 type key struct {
 	service string
 	country string
 	verify  port.VerificationType
+}
+
+// rentKey kiralık kataloğun anahtarı. Süre AYRI BİR EKSENDİR: aynı servis ×
+// ülke için 24 saat ile 720 saatin fiyatı ve stoku farklıdır.
+type rentKey struct {
+	service string
+	country string
+	hours   int
 }
 
 type entry struct {
@@ -68,6 +88,12 @@ type fakeOrder struct {
 	smsAt time.Time
 	// closed Cancel veya Finish çağrıldı mı — sipariş kapandıysa mesaj okunamaz.
 	closed bool
+
+	// kind ürün türü. Kiralıkta davranış üç yerde ayrışır: mesaj SAYISI (bir
+	// değil, N), ilk mesajın durumu (tamamlamaz) ve iptal penceresi (20 dk).
+	kind port.ProductKind
+	// rentalHours kiralama süresi (saat). Yalnız kiralıkta anlamlı.
+	rentalHours int
 }
 
 // Faults hata enjeksiyonu. Testler belirli senaryoları zorlamak için kullanır.
@@ -81,6 +107,19 @@ type Faults struct {
 	// PriceDrift satın alma anında maliyeti bu oranda değiştirir (örn. 1.5 = %50 artış).
 	// MaxCost aşılırsa ErrPriceChanged döner — fiyat garantisinin sınavı.
 	PriceDrift float64
+	// RentalDurationIgnored sağlayıcı `duration`ı YOK SAYAR.
+	//
+	// 🔴 BU KİP OLMADAN HATA GÖRÜNMEZDİ. Taklit sağlayıcıların ikisi de
+	// `DurationHours`u HER ZAMAN onurlandırıyordu, yani "sağlayıcı ödenen
+	// süreyi vermezse ne olur" sorusunun testte bir karşılığı yoktu — ve
+	// cevabı "kullanıcı parasını kaybeder"di.
+	//
+	// Gerçek karşılığı: HeroSMS `duration`ı yok sayar ya da desteklemediği
+	// kademeyi düşürür ve normal bir ~20 dakikalık aktivasyon döndürür.
+	// Kip bunu birebir taklit eder: TTL `OrderTTL`e düşer ve `subtype`
+	// aktivasyon olur.
+	// test: rental_test.go#TestFakeCanIgnoreRentalDuration
+	RentalDurationIgnored bool
 	// Latency her çağrıya gecikme ekler (zaman aşımı testleri).
 	Latency time.Duration
 }
@@ -100,10 +139,20 @@ func New(clock port.Clock) *Provider {
 		nonce:        hex.EncodeToString(b),
 		clock:        clock,
 		catalog:      make(map[key]*entry),
+		rents:        make(map[rentKey]*entry),
 		orders:       make(map[string]*fakeOrder),
 		SMSDelay:     0,
 		OrderTTL:     20 * time.Minute,
 		BalanceMicro: 100_000_000, // 100 USD
+
+		// Kiralık numaraya dönem boyunca birden çok mesaj gelir; taklit de
+		// öyle davranmalı ki "ilk mesajda kapanıyor" hatası testte görünsün.
+		RentMessageInterval: time.Hour,
+		RentMessageCount:    5,
+		// HeroSMS'in canlıdan okunmuş listesiyle AYNI: taklidin daha cömert
+		// olması, kabul edilmeyen bir süreyle satın almanın testte görünmemesi
+		// demektir.
+		RentDurations: []int{24, 72, 168, 336, 720, 1440, 2160, 4320},
 	}
 	p.seedCatalog()
 	return p
@@ -148,6 +197,30 @@ func (p *Provider) SetCost(service, country string, costMicro int64) {
 	p.catalog[k] = &entry{costMicro: costMicro, stock: 100}
 }
 
+// SetRentStock bir kiralık kombinasyonun stokunu ayarlar (test için).
+func (p *Provider) SetRentStock(service, country string, hours, stock int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	k := rentKey{service, country, hours}
+	if e, ok := p.rents[k]; ok {
+		e.stock = stock
+		return
+	}
+	p.rents[k] = &entry{costMicro: 3_000_000, stock: stock}
+}
+
+// SetRentCost bir kiralık kombinasyonun maliyetini ayarlar (mikro-USD).
+func (p *Provider) SetRentCost(service, country string, hours int, costMicro int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	k := rentKey{service, country, hours}
+	if e, ok := p.rents[k]; ok {
+		e.costMicro = costMicro
+		return
+	}
+	p.rents[k] = &entry{costMicro: costMicro, stock: 10}
+}
+
 // DeliverSMS bir siparişe elle mesaj düşürür (test için).
 func (p *Provider) DeliverSMS(remoteID, code string) error {
 	p.mu.Lock()
@@ -166,7 +239,13 @@ func (p *Provider) DeliverSMS(remoteID, code string) error {
 		Sender:     "SERVIS",
 		ReceivedAt: p.clock.Now(),
 	})
-	o.state = port.StateCompleted
+	// KİRALIKTA MESAJ SİPARİŞİ TAMAMLAMAZ: numara dönem boyunca canlı kalır ve
+	// yeni mesaj almaya devam eder. Aktivasyonda ürün o tek koddur; kiralıkta
+	// ürün süredir.
+	// test: rental_test.go#TestFakeRentalStaysOpenAfterFirstMessage
+	if o.kind != port.KindSMSRental {
+		o.state = port.StateCompleted
+	}
 	return nil
 }
 

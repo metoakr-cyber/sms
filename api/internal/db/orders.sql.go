@@ -17,8 +17,9 @@ const claimOrderClose = `-- name: ClaimOrderClose :one
 UPDATE orders SET close_claimed_at = $1
 WHERE id = $2
   AND provider_closed_at IS NULL
+  AND status IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REFUNDED')
   AND (close_claimed_at IS NULL OR close_claimed_at <= $3)
-RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at
+RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at
 `
 
 type ClaimOrderCloseParams struct {
@@ -41,7 +42,20 @@ type ClaimOrderCloseParams struct {
 //
 // `provider_closed_at IS NULL` koşulu da buradadır: zaten kapatılmış siparişe
 // ikinci kez Cancel/Finish gönderilmez.
-// test: refund_retry_integration_test.go#TestConcurrentCloseSendsSingleProviderCall
+//
+// 🔴 DURUM SÜZGECİ SAHİPLENMENİN PARÇASIDIR, ayrı bir `if` değil.
+//
+// Süzgeç Go tarafında dururken kapatılabilir olmayan bir satır (PENDING /
+// ACTIVE) de sahiplenilebiliyordu: işçi satırı alıyor, durumu görüp
+// `ReleaseOrderClose` ile bırakıyordu. O iki adımın ARASINDA sipariş terminal
+// olursa, terminal geçişin doğurduğu kapatma goroutine'i sahiplenmeyi
+// KAYBEDİYOR ve sessizce nil dönüyordu; hemen ardından gelen `release` de
+// kirayı siliyordu. Sonuç: terminal sipariş, `provider_closed_at IS NULL` ve
+// sağlayıcıya SIFIR çağrı — numara `activation-reaper`ın bir sonraki turuna
+// kadar (≤60 sn) açıkta.
+//
+// Deterministik olarak üretilebiliyordu: `-count=10` → 10/10.
+// test: rental_integration_test.go#TestRentalEndRaceWithProviderCloseHasSingleEffect
 func (q *Queries) ClaimOrderClose(ctx context.Context, arg ClaimOrderCloseParams) (Order, error) {
 	row := q.db.QueryRow(ctx, claimOrderClose, arg.Now, arg.ID, arg.ClaimStaleBefore)
 	var i Order
@@ -81,6 +95,9 @@ func (q *Queries) ClaimOrderClose(ctx context.Context, arg ClaimOrderCloseParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CloseClaimedAt,
+		&i.ProductKind,
+		&i.RefundableUntil,
+		&i.LastPolledAt,
 	)
 	return i, err
 }
@@ -182,17 +199,17 @@ const createOrder = `-- name: CreateOrder :one
 INSERT INTO orders (
     user_id, provider_id, remote_order_id, provider_activation_id,
     phone_number, verification_type,
-    product_id, service_code, service_name, country_iso2, country_name, phone_code,
+    product_id, product_kind, service_code, service_name, country_iso2, country_name, phone_code,
     quote_id, price_paid_minor, cost_micro, fx_rate,
-    expires_at, cancellable_at
+    expires_at, cancellable_at, refundable_until
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6,
-    $7, $8, $9, $10, $11, $12,
-    $13, $14, $15, $16,
-    $17, $18
+    $7, $8, $9, $10, $11, $12, $13,
+    $14, $15, $16, $17,
+    $18, $19, $20
 )
-RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at
+RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at
 `
 
 type CreateOrderParams struct {
@@ -203,6 +220,7 @@ type CreateOrderParams struct {
 	PhoneNumber          string
 	VerificationType     VerificationType
 	ProductID            *int64
+	ProductKind          ProductKind
 	ServiceCode          string
 	ServiceName          string
 	CountryIso2          string
@@ -214,12 +232,16 @@ type CreateOrderParams struct {
 	FxRate               pgtype.Numeric
 	ExpiresAt            time.Time
 	CancellableAt        time.Time
+	RefundableUntil      *time.Time
 }
 
 // Sipariş kaydı — T2 içinde, sağlayıcı çağrısı BAŞARILI olduktan sonra.
 //
 // Katalog alanları ANLIK GÖRÜNTÜ olarak yazılır: servis/ülke satırları katalog
 // senkronunda silinebilir, sipariş geçmişi buna dayanamaz.
+// `product_kind` de bir ANLIK GÖRÜNTÜDÜR: "iade mi Finish mi" kararı katalog
+// satırına JOIN ile verilemez, çünkü o satır silinebilir (product_id ON DELETE
+// SET NULL). `refundable_until` NULL ise ek bir iptal tavanı yoktur (aktivasyon).
 func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error) {
 	row := q.db.QueryRow(ctx, createOrder,
 		arg.UserID,
@@ -229,6 +251,7 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		arg.PhoneNumber,
 		arg.VerificationType,
 		arg.ProductID,
+		arg.ProductKind,
 		arg.ServiceCode,
 		arg.ServiceName,
 		arg.CountryIso2,
@@ -240,6 +263,7 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		arg.FxRate,
 		arg.ExpiresAt,
 		arg.CancellableAt,
+		arg.RefundableUntil,
 	)
 	var i Order
 	err := row.Scan(
@@ -278,6 +302,47 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CloseClaimedAt,
+		&i.ProductKind,
+		&i.RefundableUntil,
+		&i.LastPolledAt,
+	)
+	return i, err
+}
+
+const createRentalDetail = `-- name: CreateRentalDetail :one
+INSERT INTO rental_details (order_id, duration_hours, rental_ends_at)
+VALUES ($1, $2, $3)
+ON CONFLICT (order_id) DO UPDATE
+    SET duration_hours = EXCLUDED.duration_hours,
+        rental_ends_at = EXCLUDED.rental_ends_at
+RETURNING order_id, duration_hours, renewed_count, rental_ends_at, created_at
+`
+
+type CreateRentalDetailParams struct {
+	OrderID       int64
+	DurationHours int32
+	RentalEndsAt  time.Time
+}
+
+// Kira dönemi kaydı — sipariş satırıyla AYNI transaction'da (T2) yazılır.
+//
+// Tablo 00008'de açıldı ama hiçbir kod ona yazmıyordu: `duration_hours`
+// sağlayıcı çağrısından sonra çöpe gidiyordu ve `rental_ends_at` diye bir
+// gerçek yoktu. Kira dönemi üzerine kurulacak her rapor "hiç kiralık yok"
+// derdi — para akarken.
+//
+// YETKİLİ KAYNAK `orders.expires_at`TİR; bu satır dönemin KAYDIDIR. İkisini
+// bağımsız iki doğruluk kaynağı yapmak, uzatmadan sonra birinin
+// güncellenmemesiyle biter.
+func (q *Queries) CreateRentalDetail(ctx context.Context, arg CreateRentalDetailParams) (RentalDetail, error) {
+	row := q.db.QueryRow(ctx, createRentalDetail, arg.OrderID, arg.DurationHours, arg.RentalEndsAt)
+	var i RentalDetail
+	err := row.Scan(
+		&i.OrderID,
+		&i.DurationHours,
+		&i.RenewedCount,
+		&i.RentalEndsAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -319,7 +384,7 @@ func (q *Queries) GetDepositMethod(ctx context.Context, publicID uuid.UUID) (Dep
 }
 
 const getOrderByRemote = `-- name: GetOrderByRemote :one
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders
 WHERE provider_id = $1 AND remote_order_id = $2
 `
 
@@ -368,12 +433,15 @@ func (q *Queries) GetOrderByRemote(ctx context.Context, arg GetOrderByRemotePara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CloseClaimedAt,
+		&i.ProductKind,
+		&i.RefundableUntil,
+		&i.LastPolledAt,
 	)
 	return i, err
 }
 
 const getOrderForUpdate = `-- name: GetOrderForUpdate :one
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders WHERE id = $1 FOR UPDATE
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders WHERE id = $1 FOR UPDATE
 `
 
 // Durum değiştirmeden ÖNCE kilitle. Kilitsiz okuma + yazma, iki işçinin aynı
@@ -417,12 +485,15 @@ func (q *Queries) GetOrderForUpdate(ctx context.Context, id int64) (Order, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CloseClaimedAt,
+		&i.ProductKind,
+		&i.RefundableUntil,
+		&i.LastPolledAt,
 	)
 	return i, err
 }
 
 const getOrderForUser = `-- name: GetOrderForUser :one
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders WHERE public_id = $1 AND user_id = $2
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders WHERE public_id = $1 AND user_id = $2
 `
 
 type GetOrderForUserParams struct {
@@ -471,6 +542,9 @@ func (q *Queries) GetOrderForUser(ctx context.Context, arg GetOrderForUserParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CloseClaimedAt,
+		&i.ProductKind,
+		&i.RefundableUntil,
+		&i.LastPolledAt,
 	)
 	return i, err
 }
@@ -512,6 +586,23 @@ func (q *Queries) GetQuoteContext(ctx context.Context, quoteID int64) (GetQuoteC
 		&i.CountryName,
 		&i.CountryNameTr,
 		&i.PhoneCode,
+	)
+	return i, err
+}
+
+const getRentalDetail = `-- name: GetRentalDetail :one
+SELECT order_id, duration_hours, renewed_count, rental_ends_at, created_at FROM rental_details WHERE order_id = $1
+`
+
+func (q *Queries) GetRentalDetail(ctx context.Context, orderID int64) (RentalDetail, error) {
+	row := q.db.QueryRow(ctx, getRentalDetail, orderID)
+	var i RentalDetail
+	err := row.Scan(
+		&i.OrderID,
+		&i.DurationHours,
+		&i.RenewedCount,
+		&i.RentalEndsAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -599,9 +690,100 @@ func (q *Queries) ListActiveDepositMethods(ctx context.Context) ([]DepositMethod
 	return items, nil
 }
 
+const listActiveRentalsForPoll = `-- name: ListActiveRentalsForPoll :many
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders
+WHERE product_kind = 'SMS_RENTAL'
+  AND status IN ('PENDING', 'ACTIVE')
+  AND expires_at > $1
+ORDER BY last_polled_at ASC NULLS FIRST, id
+LIMIT $2
+`
+
+type ListActiveRentalsForPollParams struct {
+	Now time.Time
+	Lim int32
+}
+
+// `rental-poller` için: dönemi süren kiralıklar.
+//
+// İKİ DURUM BİRDEN: 'PENDING' (henüz mesaj gelmedi) ve 'ACTIVE' (en az bir
+// mesaj geldi, dönem sürüyor). Kiralıkta mesaj gelmesi yoklamayı bitirmez —
+// ürünün tamamı "30 gün boyunca gelen HER mesajı gör"dür.
+//
+// 🔴 SIRALAMA `created_at` DEĞİL — ve bu bir hata düzeltmesidir.
+//
+// `created_at ASC` + `LIMIT` deseni aktivasyonda güvenlidir çünkü satırlar ~20
+// dakikada kümeden çıkar; kiralıkta küme dönem boyunca (24–4320 saat) SABİT
+// kalır. 101. kiralık, ilk 100'ün hiçbiri bitmeden hiçbir turda görünmezdi:
+// webhook kaybolduğunda o kullanıcı 30 gün boyunca tek mesaj görmez.
+//
+// `last_polled_at` turu dönüşümlü yapar. `NULLS FIRST` yeni satırın ilk turda
+// görülmesini garanti eder; `id` eşitlik hâlinde belirlenimli sıra verir
+// (aynı damgayı taşıyan bir toplu güncellemeden sonra tur ilerlemeye devam
+// etsin).
+// test: ../internal/service/order/rental_integration_test.go#TestRentalPollNeverStarvesNewestRental
+func (q *Queries) ListActiveRentalsForPoll(ctx context.Context, arg ListActiveRentalsForPollParams) ([]Order, error) {
+	rows, err := q.db.Query(ctx, listActiveRentalsForPoll, arg.Now, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Order{}
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.UserID,
+			&i.ProviderID,
+			&i.RemoteOrderID,
+			&i.ProviderActivationID,
+			&i.PhoneNumber,
+			&i.VerificationType,
+			&i.ProductID,
+			&i.ServiceCode,
+			&i.ServiceName,
+			&i.CountryIso2,
+			&i.CountryName,
+			&i.PhoneCode,
+			&i.QuoteID,
+			&i.PricePaidMinor,
+			&i.CostMicro,
+			&i.FxRate,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.CancellableAt,
+			&i.CompletedAt,
+			&i.CancelledAt,
+			&i.RefundedAt,
+			&i.ProviderClosedAt,
+			&i.CloseAttempts,
+			&i.CloseLastError,
+			&i.ProviderRefundStatus,
+			&i.ProviderRefundAmountMinor,
+			&i.RefundAttempts,
+			&i.RefundNextAttemptAt,
+			&i.CancelReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CloseClaimedAt,
+			&i.ProductKind,
+			&i.RefundableUntil,
+			&i.LastPolledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllOrders = `-- name: ListAllOrders :many
 
-SELECT o.id, o.public_id, o.user_id, o.provider_id, o.remote_order_id, o.provider_activation_id, o.phone_number, o.verification_type, o.product_id, o.service_code, o.service_name, o.country_iso2, o.country_name, o.phone_code, o.quote_id, o.price_paid_minor, o.cost_micro, o.fx_rate, o.status, o.expires_at, o.cancellable_at, o.completed_at, o.cancelled_at, o.refunded_at, o.provider_closed_at, o.close_attempts, o.close_last_error, o.provider_refund_status, o.provider_refund_amount_minor, o.refund_attempts, o.refund_next_attempt_at, o.cancel_reason, o.created_at, o.updated_at, o.close_claimed_at, u.username, u.email
+SELECT o.id, o.public_id, o.user_id, o.provider_id, o.remote_order_id, o.provider_activation_id, o.phone_number, o.verification_type, o.product_id, o.service_code, o.service_name, o.country_iso2, o.country_name, o.phone_code, o.quote_id, o.price_paid_minor, o.cost_micro, o.fx_rate, o.status, o.expires_at, o.cancellable_at, o.completed_at, o.cancelled_at, o.refunded_at, o.provider_closed_at, o.close_attempts, o.close_last_error, o.provider_refund_status, o.provider_refund_amount_minor, o.refund_attempts, o.refund_next_attempt_at, o.cancel_reason, o.created_at, o.updated_at, o.close_claimed_at, o.product_kind, o.refundable_until, o.last_polled_at, u.username, u.email
 FROM orders o
 JOIN users u ON u.id = o.user_id
 WHERE ($1::order_status IS NULL OR o.status = $1)
@@ -656,6 +838,9 @@ type ListAllOrdersRow struct {
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 	CloseClaimedAt            *time.Time
+	ProductKind               ProductKind
+	RefundableUntil           *time.Time
+	LastPolledAt              *time.Time
 	Username                  string
 	Email                     string
 }
@@ -712,6 +897,9 @@ func (q *Queries) ListAllOrders(ctx context.Context, arg ListAllOrdersParams) ([
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CloseClaimedAt,
+			&i.ProductKind,
+			&i.RefundableUntil,
+			&i.LastPolledAt,
 			&i.Username,
 			&i.Email,
 		); err != nil {
@@ -766,9 +954,86 @@ func (q *Queries) ListDepositMethods(ctx context.Context) ([]DepositMethod, erro
 	return items, nil
 }
 
+const listEndedRentals = `-- name: ListEndedRentals :many
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders
+WHERE product_kind = 'SMS_RENTAL'
+  AND status IN ('PENDING', 'ACTIVE')
+  AND expires_at <= $1
+ORDER BY expires_at
+LIMIT $2
+`
+
+type ListEndedRentalsParams struct {
+	Now time.Time
+	Lim int32
+}
+
+// `rental-closer` için: kira dönemi bitmiş ama hâlâ kapatılmamış kiralıklar.
+//
+// 'PENDING' de dahildir: hiç mesaj almamış bir kiralık 'ACTIVE'e hiç geçmez ve
+// dönem sonunda yine kapatılmalıdır (FR-412: her sipariş sağlayıcıda kapanır).
+func (q *Queries) ListEndedRentals(ctx context.Context, arg ListEndedRentalsParams) ([]Order, error) {
+	rows, err := q.db.Query(ctx, listEndedRentals, arg.Now, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Order{}
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicID,
+			&i.UserID,
+			&i.ProviderID,
+			&i.RemoteOrderID,
+			&i.ProviderActivationID,
+			&i.PhoneNumber,
+			&i.VerificationType,
+			&i.ProductID,
+			&i.ServiceCode,
+			&i.ServiceName,
+			&i.CountryIso2,
+			&i.CountryName,
+			&i.PhoneCode,
+			&i.QuoteID,
+			&i.PricePaidMinor,
+			&i.CostMicro,
+			&i.FxRate,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.CancellableAt,
+			&i.CompletedAt,
+			&i.CancelledAt,
+			&i.RefundedAt,
+			&i.ProviderClosedAt,
+			&i.CloseAttempts,
+			&i.CloseLastError,
+			&i.ProviderRefundStatus,
+			&i.ProviderRefundAmountMinor,
+			&i.RefundAttempts,
+			&i.RefundNextAttemptAt,
+			&i.CancelReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CloseClaimedAt,
+			&i.ProductKind,
+			&i.RefundableUntil,
+			&i.LastPolledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpiredPendingOrders = `-- name: ListExpiredPendingOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
-WHERE status = 'PENDING' AND expires_at <= $1
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders
+WHERE status = 'PENDING' AND product_kind = 'SMS_ACTIVATION' AND expires_at <= $1
 ORDER BY expires_at
 LIMIT $2
 `
@@ -778,7 +1043,18 @@ type ListExpiredPendingOrdersParams struct {
 	Lim int32
 }
 
-// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan siparişler.
+// `order-expirer` için: süresi dolmuş ama hâlâ beklemede olan AKTİVASYONLAR.
+//
+// 🔴 KİRALIKLAR DIŞARIDA — bu sorgunun sonucu TAM İADE demektir.
+//
+// Kiralıkta satılan şey süredir: numara 30 gün ayrıldı, sağlayıcıya ödendi,
+// kullanıcı istediği an kullanabildi. Kod gelmemesi iade sebebi değildir ve
+// sağlayıcının ücretsiz iptal penceresi (≈20 dk) 1. günde kapandığı için o
+// parayı geri almanın yolu da yoktur: buradan yazılacak iadenin %100'ü bizim
+// cebimizden çıkar ve "kiralık al, 30. günde paranı al" tekrarlanabilir bir
+// sızıntı olur. Dönem sonu `ListEndedRentals` → EndRental ile işlenir; orada
+// deftere kayıt yazılmaz.
+// test: ../internal/service/order/rental_integration_test.go#TestRentalNeverAutoRefundsAtEndOfPeriod
 func (q *Queries) ListExpiredPendingOrders(ctx context.Context, arg ListExpiredPendingOrdersParams) ([]Order, error) {
 	rows, err := q.db.Query(ctx, listExpiredPendingOrders, arg.Now, arg.Lim)
 	if err != nil {
@@ -824,6 +1100,9 @@ func (q *Queries) ListExpiredPendingOrders(ctx context.Context, arg ListExpiredP
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CloseClaimedAt,
+			&i.ProductKind,
+			&i.RefundableUntil,
+			&i.LastPolledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -948,8 +1227,8 @@ func (q *Queries) ListOrphanHolds(ctx context.Context, arg ListOrphanHoldsParams
 
 const listPendingOrdersForPoll = `-- name: ListPendingOrdersForPoll :many
 
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
-WHERE status = 'PENDING' AND expires_at > $1
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders
+WHERE status = 'PENDING' AND product_kind = 'SMS_ACTIVATION' AND expires_at > $1
 ORDER BY created_at
 LIMIT $2
 `
@@ -960,7 +1239,15 @@ type ListPendingOrdersForPollParams struct {
 }
 
 // ─────────────────────────── İşçi sorguları ───────────────────────────
-// `order-poller` için: kod bekleyen, süresi dolmamış siparişler.
+// `order-poller` için: kod bekleyen, süresi dolmamış AKTİVASYON siparişleri.
+//
+// 🔴 KİRALIKLAR DIŞARIDA — sıklık farkı yüzünden, tercih olduğu için değil.
+// Aktivasyon ~20 dakika yaşar; kiralık 24–4320 SAAT. Sıralama `created_at`
+// olduğu için 100 canlı kiralık bu LIMIT'in başını günlerce işgal eder ve
+// aktivasyon siparişleri hiç yoklanmaz: webhook kaybolduğunda kod hiç gelmez,
+// order-expirer tam iade yazar — hem sağlayıcı maliyeti hem satış kaybı.
+// Kiralıkların kendi turu vardır (ListActiveRentalsForPoll, 5 dakika).
+// test: ../internal/service/order/rental_integration_test.go#TestRentalsDoNotStarveActivationPoll
 func (q *Queries) ListPendingOrdersForPoll(ctx context.Context, arg ListPendingOrdersForPollParams) ([]Order, error) {
 	rows, err := q.db.Query(ctx, listPendingOrdersForPoll, arg.Now, arg.Lim)
 	if err != nil {
@@ -1006,6 +1293,9 @@ func (q *Queries) ListPendingOrdersForPoll(ctx context.Context, arg ListPendingO
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CloseClaimedAt,
+			&i.ProductKind,
+			&i.RefundableUntil,
+			&i.LastPolledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1018,7 +1308,7 @@ func (q *Queries) ListPendingOrdersForPoll(ctx context.Context, arg ListPendingO
 }
 
 const listRefundRetryOrders = `-- name: ListRefundRetryOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders
 WHERE provider_refund_status IN ('PENDING', 'RETRY_SCHEDULED')
   AND (refund_next_attempt_at IS NULL OR refund_next_attempt_at <= $1)
 ORDER BY coalesce(refund_next_attempt_at, created_at)
@@ -1076,6 +1366,9 @@ func (q *Queries) ListRefundRetryOrders(ctx context.Context, arg ListRefundRetry
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CloseClaimedAt,
+			&i.ProductKind,
+			&i.RefundableUntil,
+			&i.LastPolledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1088,7 +1381,7 @@ func (q *Queries) ListRefundRetryOrders(ctx context.Context, arg ListRefundRetry
 }
 
 const listUnclosedTerminalOrders = `-- name: ListUnclosedTerminalOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
+SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at FROM orders
 WHERE provider_closed_at IS NULL
   AND status IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REFUNDED')
   AND provider_refund_status NOT IN ('PENDING', 'RETRY_SCHEDULED')
@@ -1153,6 +1446,9 @@ func (q *Queries) ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CloseClaimedAt,
+			&i.ProductKind,
+			&i.RefundableUntil,
+			&i.LastPolledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1165,9 +1461,11 @@ func (q *Queries) ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]
 }
 
 const listUserOrders = `-- name: ListUserOrders :many
-SELECT id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at FROM orders
-WHERE user_id = $1
-ORDER BY created_at DESC
+SELECT o.id, o.public_id, o.user_id, o.provider_id, o.remote_order_id, o.provider_activation_id, o.phone_number, o.verification_type, o.product_id, o.service_code, o.service_name, o.country_iso2, o.country_name, o.phone_code, o.quote_id, o.price_paid_minor, o.cost_micro, o.fx_rate, o.status, o.expires_at, o.cancellable_at, o.completed_at, o.cancelled_at, o.refunded_at, o.provider_closed_at, o.close_attempts, o.close_last_error, o.provider_refund_status, o.provider_refund_amount_minor, o.refund_attempts, o.refund_next_attempt_at, o.cancel_reason, o.created_at, o.updated_at, o.close_claimed_at, o.product_kind, o.refundable_until, o.last_polled_at, coalesce(s.icon_url, '')::text AS icon_url
+FROM orders o
+LEFT JOIN services s ON s.code = o.service_code
+WHERE o.user_id = $1
+ORDER BY o.created_at DESC
 LIMIT $3 OFFSET $2
 `
 
@@ -1177,51 +1475,80 @@ type ListUserOrdersParams struct {
 	Lim    int32
 }
 
-func (q *Queries) ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]Order, error) {
+type ListUserOrdersRow struct {
+	Order   Order
+	IconUrl string
+}
+
+// 🔴 `icon_url` CANLI KATALOGDAN gelir, sipariş kaydından DEĞİL.
+//
+// `orders.service_name` bilerek anlık görüntüdür: satış kaydı, katalog sonradan
+// değişse bile ne satıldığını korumalıdır (para kaydı, 10 yıl saklanıyor).
+// Logo ise sunum verisidir; markanın logosu güncellendiğinde eski siparişlerde
+// de yeni logonun görünmesi İSTENİR. Bu yüzden sipariş satırına kopyalanmaz,
+// her okumada katalogdan çekilir.
+//
+// LEFT JOIN gerekçesi: `service_code` satın alma anındaki metin anlık
+// görüntüsüdür; katalog senkronu sağlayıcının kodunu değiştirirse eşleşme
+// kaybolur. INNER JOIN, o kullanıcının geçmiş siparişini listeden sessizce
+// düşürürdü. (Servis satırının SİLİNMESİ mümkün değil — orders → price_quotes
+// → products → services yabancı anahtar zinciri buna izin vermiyor.)
+// test: order_integration_test.go#TestListUserOrdersCarriesServiceIcon
+//
+// `sqlc.embed(o)` kullanılır, sütunlar tek tek sayılmaz: `SELECT o.*` ya da elle
+// sütun listesi, sqlc'ye `db.Order` yerine YENİ bir satır tipi ürettirir ve aynı
+// tipi bekleyen tüm çağrı yerleri kırılır. `embed` `db.Order`'ı olduğu gibi
+// korur, `icon_url`'i yanına ekler — ve şemaya sütun eklendiğinde bu sorgu
+// kendiliğinden güncel kalır.
+func (q *Queries) ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]ListUserOrdersRow, error) {
 	rows, err := q.db.Query(ctx, listUserOrders, arg.UserID, arg.Off, arg.Lim)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Order{}
+	items := []ListUserOrdersRow{}
 	for rows.Next() {
-		var i Order
+		var i ListUserOrdersRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.PublicID,
-			&i.UserID,
-			&i.ProviderID,
-			&i.RemoteOrderID,
-			&i.ProviderActivationID,
-			&i.PhoneNumber,
-			&i.VerificationType,
-			&i.ProductID,
-			&i.ServiceCode,
-			&i.ServiceName,
-			&i.CountryIso2,
-			&i.CountryName,
-			&i.PhoneCode,
-			&i.QuoteID,
-			&i.PricePaidMinor,
-			&i.CostMicro,
-			&i.FxRate,
-			&i.Status,
-			&i.ExpiresAt,
-			&i.CancellableAt,
-			&i.CompletedAt,
-			&i.CancelledAt,
-			&i.RefundedAt,
-			&i.ProviderClosedAt,
-			&i.CloseAttempts,
-			&i.CloseLastError,
-			&i.ProviderRefundStatus,
-			&i.ProviderRefundAmountMinor,
-			&i.RefundAttempts,
-			&i.RefundNextAttemptAt,
-			&i.CancelReason,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.CloseClaimedAt,
+			&i.Order.ID,
+			&i.Order.PublicID,
+			&i.Order.UserID,
+			&i.Order.ProviderID,
+			&i.Order.RemoteOrderID,
+			&i.Order.ProviderActivationID,
+			&i.Order.PhoneNumber,
+			&i.Order.VerificationType,
+			&i.Order.ProductID,
+			&i.Order.ServiceCode,
+			&i.Order.ServiceName,
+			&i.Order.CountryIso2,
+			&i.Order.CountryName,
+			&i.Order.PhoneCode,
+			&i.Order.QuoteID,
+			&i.Order.PricePaidMinor,
+			&i.Order.CostMicro,
+			&i.Order.FxRate,
+			&i.Order.Status,
+			&i.Order.ExpiresAt,
+			&i.Order.CancellableAt,
+			&i.Order.CompletedAt,
+			&i.Order.CancelledAt,
+			&i.Order.RefundedAt,
+			&i.Order.ProviderClosedAt,
+			&i.Order.CloseAttempts,
+			&i.Order.CloseLastError,
+			&i.Order.ProviderRefundStatus,
+			&i.Order.ProviderRefundAmountMinor,
+			&i.Order.RefundAttempts,
+			&i.Order.RefundNextAttemptAt,
+			&i.Order.CancelReason,
+			&i.Order.CreatedAt,
+			&i.Order.UpdatedAt,
+			&i.Order.CloseClaimedAt,
+			&i.Order.ProductKind,
+			&i.Order.RefundableUntil,
+			&i.Order.LastPolledAt,
+			&i.IconUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -1231,6 +1558,23 @@ func (q *Queries) ListUserOrders(ctx context.Context, arg ListUserOrdersParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const markOrdersPolled = `-- name: MarkOrdersPolled :exec
+UPDATE orders SET last_polled_at = $1 WHERE id = ANY($2::bigint[])
+`
+
+type MarkOrdersPolledParams struct {
+	Now *time.Time
+	Ids []int64
+}
+
+// Yoklama turunun damgası. Sıradaki tur en uzun süredir yoklanmamış satırla
+// başlasın diye, sağlayıcı çağrısından ÖNCE yazılır: sağlayıcı erişilemezse
+// bile tur ilerler ve tek bir arızalı grup kümenin geri kalanını aç bırakmaz.
+func (q *Queries) MarkOrdersPolled(ctx context.Context, arg MarkOrdersPolledParams) error {
+	_, err := q.db.Exec(ctx, markOrdersPolled, arg.Now, arg.Ids)
+	return err
 }
 
 const markProviderClosed = `-- name: MarkProviderClosed :exec
@@ -1254,11 +1598,27 @@ const orderStatsSummary = `-- name: OrderStatsSummary :one
 SELECT
     count(*)                                                   AS total,
     count(*) FILTER (WHERE status = 'PENDING')                 AS pending,
+    -- Dönemi süren kiralık: ödendi, teslim edildi, henüz bitmedi.
+    count(*) FILTER (WHERE status = 'ACTIVE')                  AS active,
     count(*) FILTER (WHERE status = 'COMPLETED')               AS completed,
     count(*) FILTER (WHERE status IN ('CANCELLED','REFUNDED')) AS cancelled,
+    count(*) FILTER (WHERE status = 'FAILED')                  AS failed,
+    -- KK-412 ölçüsü: TERMİNAL olduğu hâlde sağlayıcıda kapatılmamış siparişler.
+    -- 'ACTIVE' de 'PENDING' gibi hariçtir — dönemi süren bir kiralık numara
+    -- sağlayıcıda AÇIK OLMALIDIR; onu "kapatılmamış" saymak, sıfıra gitmesi
+    -- beklenen bir göstergeyi normal işleyişle doldururdu.
     count(*) FILTER (WHERE provider_closed_at IS NULL
-                       AND status <> 'PENDING')                AS unclosed,
-    coalesce(sum(price_paid_minor) FILTER (WHERE status = 'COMPLETED'), 0)::bigint AS revenue_minor
+                       AND status NOT IN ('PENDING', 'ACTIVE'))AS unclosed,
+    -- 🔴 'ACTIVE' DE GELİRDİR.
+    --
+    -- Yalnız 'COMPLETED' toplamak kiralıkta geliri dönem boyunca (24–4320
+    -- saat) SIFIR gösterir: para akarken panel boş kalır — eski prototipin
+    -- tam olarak bu hatası vardı. 'ACTIVE' bir kiralık ödenmiştir ve geri
+    -- alınamaz: durum makinesinde ACTIVE→CANCELLED oku YOKTUR, yani o tutar
+    -- iade edilemez. 'PENDING' bilerek dışarıda — o para hâlâ iade edilebilir
+    -- ve gerçekleşmiş sayılamaz.
+    coalesce(sum(price_paid_minor)
+             FILTER (WHERE status IN ('COMPLETED', 'ACTIVE')), 0)::bigint AS revenue_minor
 FROM orders
 WHERE created_at >= $1
 `
@@ -1266,22 +1626,30 @@ WHERE created_at >= $1
 type OrderStatsSummaryRow struct {
 	Total        int64
 	Pending      int64
+	Active       int64
 	Completed    int64
 	Cancelled    int64
+	Failed       int64
 	Unclosed     int64
 	RevenueMinor int64
 }
 
 // Yönetim özeti. Tek sorguda: N ayrı COUNT sorgusu atmak, tablo büyüdükçe
 // panelin açılışını yavaşlatır.
+//
+// KOVALAR TOPLAMI `total`A EŞİTTİR. Eskiden değildi: 'ACTIVE' ve 'FAILED'
+// hiçbir kovaya girmiyordu, yani panel "toplam 100, dağılım 78" gösterirdi.
+// Bir sayının nereye gittiği görünmüyorsa gösterge okunamaz.
 func (q *Queries) OrderStatsSummary(ctx context.Context, since time.Time) (OrderStatsSummaryRow, error) {
 	row := q.db.QueryRow(ctx, orderStatsSummary, since)
 	var i OrderStatsSummaryRow
 	err := row.Scan(
 		&i.Total,
 		&i.Pending,
+		&i.Active,
 		&i.Completed,
 		&i.Cancelled,
+		&i.Failed,
 		&i.Unclosed,
 		&i.RevenueMinor,
 	)
@@ -1360,7 +1728,7 @@ UPDATE orders SET
     refunded_at  = CASE WHEN $1::order_status = 'REFUNDED' THEN coalesce(refunded_at, $2) ELSE refunded_at END,
     cancel_reason = CASE WHEN $3::text <> '' THEN $3 ELSE cancel_reason END
 WHERE id = $4
-RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at
+RETURNING id, public_id, user_id, provider_id, remote_order_id, provider_activation_id, phone_number, verification_type, product_id, service_code, service_name, country_iso2, country_name, phone_code, quote_id, price_paid_minor, cost_micro, fx_rate, status, expires_at, cancellable_at, completed_at, cancelled_at, refunded_at, provider_closed_at, close_attempts, close_last_error, provider_refund_status, provider_refund_amount_minor, refund_attempts, refund_next_attempt_at, cancel_reason, created_at, updated_at, close_claimed_at, product_kind, refundable_until, last_polled_at
 `
 
 type SetOrderStatusParams struct {
@@ -1416,6 +1784,9 @@ func (q *Queries) SetOrderStatus(ctx context.Context, arg SetOrderStatusParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CloseClaimedAt,
+		&i.ProductKind,
+		&i.RefundableUntil,
+		&i.LastPolledAt,
 	)
 	return i, err
 }

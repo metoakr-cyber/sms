@@ -1,138 +1,231 @@
 'use client';
 
+/**
+ * Cüzdan — bakiye ve hesap ekstresi.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * NE DEĞİŞTİ: ORTAK KATMANA TAŞINDI — DAVRANIŞ AYNI
+ * ══════════════════════════════════════════════════════════════════════════
+ * Ekran mobil kart listesi ve masaüstü tabloyu İKİ KEZ elle yazıyordu (~50
+ * satır ikiz kod) ve etiketleri şimdiden AYRIŞMIŞTI: aynı sütun kartta
+ * "Sonraki bakiye", tabloda "Bakiye". `VeriTablosu` bunu yapısal olarak
+ * imkânsız kılar — `baslik` tek bir dizedir, hem `<th>` hem kart `<dt>` onu
+ * okur. Seçilen tek metin "Sonraki bakiye"dir: alan `balanceAfter`'dır,
+ * yani satırdan SONRAKİ bakiyedir; çıplak "Bakiye" hangi an olduğunu söylemez
+ * ve bir para ekranında bu belirsizlik pahalıdır.
+ *
+ * Sayfalama, hata kutusu ve sayfa başlığı da ortak katmandan gelir. Kazanç
+ * yalnız satır sayısı değil: hata durumu artık `requestId` GÖSTERİYOR (eski
+ * kod düz bir `Alert` yazıyordu ve istek numarası yoktu — destek ekibinin
+ * elinde hiçbir iz kalmıyordu).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * SAYFA BOYUTU: 20 → `SAYFA_BOYUTU` (25)
+ * ══════════════════════════════════════════════════════════════════════════
+ * Sunucu sınırı: `StatementFilter.Normalize` limiti 1–100 arasında kabul eder
+ * (api/internal/service/wallet/filter.go:20), varsayılanı 20'dir. 25 sınır
+ * içindedir. Panelde tek bir sayfa boyutu olması, "kaç kayıt kaldı" sorusunun
+ * ekrandan ekrana aynı cevaplanması demektir (§6.3).
+ *
+ * HAREKET YOK: bu ekranda tek geçiş `VeriTablosu`nun satır hover RENGİdir
+ * (120ms) ve `Button`ın basma geri bildirimidir. İkisi de jetondan gelir.
+ */
+
 import * as React from 'react';
 import Link from 'next/link';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { formatMoney, formatDateTime } from '@/lib/format';
+import { formatDateTime, formatMoney } from '@/lib/format';
 import { useSession } from '@/hooks/useSession';
-import { Card, Button, Skeleton, Empty, Alert, Badge } from '@/components/ui';
-import type { Statement } from '@/lib/types';
+import { Button, Card, Empty, cx } from '@/components/ui';
+import {
+  KayitSayaci,
+  SAYFA_BOYUTU,
+  SayfaBasligi,
+  Sayfalama,
+  VeriTablosu,
+  apiHatasi,
+  type Sutun,
+} from '@/components/yonetim';
+import type { LedgerEntry, Statement } from '@/lib/types';
 
-const PAGE = 20;
+/**
+ * Sütun tanımı — bileşen DIŞINDA, modül düzeyinde.
+ *
+ * Satırlar bu ekranın hiçbir state'ine bakmaz (eylem yok, seçim yok), bu
+ * yüzden dizi her render'da yeniden kurulmaz. `VeriTablosu` sütunları
+ * `map`'lediği için değişmeyen bir referans gereksiz yeniden çizimi de önler.
+ */
+const SUTUNLAR: ReadonlyArray<Sutun<LedgerEntry>> = [
+  {
+    anahtar: 'tarih',
+    baslik: 'Tarih',
+    // `sayisal`: tarih sütunu da `tabular-nums` taşır (§3.5) — orantılı
+    // rakamlarda "1" dar olduğu için alt alta gelen tarihler hizasız kayar.
+    sayisal: true,
+    hucre: (e) => <span className="text-muted">{formatDateTime(e.createdAt)}</span>,
+  },
+  {
+    anahtar: 'islem',
+    baslik: 'İşlem',
+    // Kartın üst satırı, solda: satırın kimliği "ne oldu" sorusudur.
+    mobilRol: 'baslik',
+    // Etiket SUNUCUDAN gelir (`typeLabel`). İstemcide ikinci bir Türkçe
+    // sözlük kurulmaz — kurulursa iki yerde iki farklı ad doğar.
+    hucre: (e) => <span className="font-medium">{e.typeLabel}</span>,
+  },
+  {
+    anahtar: 'aciklama',
+    baslik: 'Açıklama',
+    hucre: (e) =>
+      e.note ? (
+        <span className="break-anywhere">{e.note}</span>
+      ) : (
+        <span className="text-muted">—</span>
+      ),
+  },
+  {
+    anahtar: 'tutar',
+    baslik: 'Tutar',
+    hizala: 'sag',
+    sayisal: true,
+    // Kartın üst satırı, sağda — eski kartın da tam olarak yaptığı yerleşim.
+    mobilRol: 'rozet',
+    /*
+      ANLAM YALNIZ RENKLE TAŞINMAZ (§7.1): işaret METNİN parçasıdır.
+      `formatMoney` eksi tutarı "-123,45 ₺" olarak yazar; artıya "+" biz
+      ekleriz. Renk yalnız pekiştirir. Kırmızı-yeşil ayırt edemeyen kullanıcı
+      işareti okur.
+    */
+    hucre: (e) => (
+      <span
+        className={cx(
+          'font-semibold',
+          e.amount.minor < 0 ? 'text-[var(--color-bad)]' : 'text-[var(--color-ok)]',
+        )}
+      >
+        {e.amount.minor > 0 ? '+' : ''}
+        {formatMoney(e.amount)}
+      </span>
+    ),
+  },
+  {
+    anahtar: 'bakiye',
+    // 🔴 TEK METİN. Eski kod kartta "Sonraki bakiye", tabloda "Bakiye"
+    // yazıyordu — ölçülmüş etiket ayrışması (§6).
+    baslik: 'Sonraki bakiye',
+    hizala: 'sag',
+    sayisal: true,
+    hucre: (e) => formatMoney(e.balanceAfter),
+  },
+];
 
-export default function WalletPage() {
+export default function CuzdanSayfasi() {
   const { user } = useSession();
   const [offset, setOffset] = React.useState(0);
 
   const q = useQuery({
-    queryKey: ['statement', { limit: PAGE, offset }],
-    queryFn: () => apiFetch<Statement>(`/wallet/entries?limit=${PAGE}&offset=${offset}`),
+    queryKey: ['statement', { limit: SAYFA_BOYUTU, offset }],
+    queryFn: () =>
+      apiFetch<Statement>(`/wallet/entries?limit=${SAYFA_BOYUTU}&offset=${offset}`),
     // Sayfa değişince liste boşalıp zıplamasın; eski veri yenisi gelene dek kalır.
     placeholderData: keepPreviousData,
   });
 
-  const total = q.data?.total ?? 0;
-  const hasPrev = offset > 0;
-  const hasNext = offset + PAGE < total;
+  const toplam = q.data?.total ?? 0;
+  // Sayfalı listede `VeriTablosu`nun "N kayıt listelendi" duyurusu YANILTICIDIR:
+  // N sayfadaki satır sayısıdır, toplam değil. O durumda duyuruyu `Sayfalama`
+  // yapar ve ekran okuyucu tek bir doğru cümle duyar.
+  const sayfali = toplam > SAYFA_BOYUTU;
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
-      <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Cüzdan</h1>
+    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+      <SayfaBasligi
+        baslik="Cüzdan"
+        aciklama="Kullanılabilir bakiyeniz ve hesabınızdaki tüm para hareketleri."
+      />
 
-      {/* Bakiye ve yükleme TEK KARTTA: "param ne kadar" ile "nasıl artırırım"
-          arasına başka içerik girmesi, en sık yapılan işi aşağı iter.
-          Alt menüye yedinci bir sekme eklemek yerine yükleme buradan açılır —
-          320 px'te altı sekme zaten 44 px dokunma hedefinin sınırında. */}
+      {/*
+        BAKİYE VE YÜKLEME TEK KARTTA. "Param ne kadar" ile "nasıl artırırım"
+        arasına başka içerik girmesi, en sık yapılan işi aşağı iter. Düğme
+        açıklamanın ÜSTÜNDEDİR: açıklama okunmadan da yükleme başlatılabilmeli.
+      */}
       <Card>
-        <p className="text-xs font-medium uppercase tracking-wide text-muted">Kullanılabilir bakiye</p>
-        <p className="mt-1.5 text-3xl font-bold md:text-4xl">{formatMoney(user?.balance)}</p>
+        {/*
+          `text-sm`, `text-xs` DEĞİL (§3.2) ve `uppercase` YOK.
+          🔴 CSS `text-transform: uppercase` Türkçede `i → I` üretir, `İ` değil:
+          "Kullanılabilir bakiye" → "KULLANILABILIR BAKIYE". Etiketi değerden
+          ayıran şey ağırlık ve renktir (§3.3), harf biçimi değil.
+        */}
+        <p className="text-sm font-medium text-muted">Kullanılabilir bakiye</p>
+
+        {/*
+          `text-3xl` tavandır — `text-4xl` ve üstü YALNIZ pazarlamadır (§3.1).
+          `tabular-nums`: bakiye her istekte yeniden çizilir; orantılı
+          rakamlarda sayı genişliği değişir ve değer ZIPLAR (§3.5).
+        */}
+        <p className="mt-2 text-3xl font-bold tabular-nums">{formatMoney(user?.balance)}</p>
+
         <Link href="/panel/bakiye-yukle" className="mt-4 block sm:inline-block">
-          <Button fullWidth className="sm:w-auto">Bakiye yükle</Button>
+          <Button fullWidth className="sm:w-auto">
+            Bakiye yükle
+          </Button>
         </Link>
-        <p className="mt-3 text-sm leading-relaxed text-muted">
+
+        {/* 70ch: düz metin satır uzunluğu 65–75ch bandında kalır (§3.4). */}
+        <p className="mt-4 max-w-[70ch] text-sm leading-relaxed text-muted">
           Banka havalesi/EFT veya USDT ile yükleme yapabilirsiniz. Ödemeniz
           kontrol edildikten sonra bakiyeniz hesabınıza tanımlanır.
         </p>
       </Card>
 
       <Card>
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          {/* `text-lg font-semibold`: h2 her ekranda aynı boyuttadır (§3.3). */}
           <h2 className="text-lg font-semibold">Hesap ekstresi</h2>
-          {total > 0 && <Badge tone="neutral">{total} kayıt</Badge>}
+          {/* Sayaç `toplam <= 0` iken kendini çizmez; koşul burada tekrarlanmaz. */}
+          <KayitSayaci toplam={toplam} />
         </div>
 
-        {q.isLoading ? (
-          <div className="mt-4 flex flex-col gap-2">
-            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}
-          </div>
-        ) : q.isError ? (
-          <Alert className="mt-4">Ekstre yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.</Alert>
-        ) : !q.data?.items.length ? (
-          <Empty title="Ekstre boş" hint="İlk işleminizden sonra burada görünecek." />
-        ) : (
-          <>
-            {/* MOBİL: kart listesi. Yatay kaydırılan tablo kabul edilmez (§2.5). */}
-            <ul className="mt-4 flex flex-col gap-2 md:hidden">
-              {q.data.items.map((e) => (
-                <li key={e.id} className="raised rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium">{e.typeLabel}</p>
-                      <p className="mt-0.5 text-xs text-muted">{formatDateTime(e.createdAt)}</p>
-                    </div>
-                    <span className={`shrink-0 text-sm font-semibold ${
-                      e.amount.minor < 0 ? 'text-[var(--color-bad)]' : 'text-[var(--color-ok)]'}`}>
-                      {e.amount.minor > 0 ? '+' : ''}{formatMoney(e.amount)}
-                    </span>
-                  </div>
-                  <div className="mt-2 flex items-center justify-between gap-3 border-t
-                                  border-[var(--border)] pt-2 text-xs text-muted">
-                    <span>Sonraki bakiye</span>
-                    <span className="font-medium text-[var(--text)]">{formatMoney(e.balanceAfter)}</span>
-                  </div>
-                  {e.note && <p className="mt-2 text-xs text-muted break-anywhere">{e.note}</p>}
-                </li>
-              ))}
-            </ul>
-
-            {/* MASAÜSTÜ: gerçek tablo */}
-            <div className="mt-4 hidden md:block">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs
-                                 uppercase tracking-wide text-muted">
-                    <th scope="col" className="py-2 pr-3 font-medium">Tarih</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">İşlem</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Açıklama</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Tutar</th>
-                    <th scope="col" className="py-2 text-right font-medium">Bakiye</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {q.data.items.map((e) => (
-                    <tr key={e.id} className="border-b border-[var(--border)] last:border-0">
-                      <td className="py-3 pr-3 whitespace-nowrap text-muted">{formatDateTime(e.createdAt)}</td>
-                      <td className="py-3 pr-3 font-medium">{e.typeLabel}</td>
-                      <td className="py-3 pr-3 text-muted break-anywhere">{e.note ?? '—'}</td>
-                      <td className={`py-3 pr-3 text-right font-semibold whitespace-nowrap ${
-                        e.amount.minor < 0 ? 'text-[var(--color-bad)]' : 'text-[var(--color-ok)]'}`}>
-                        {e.amount.minor > 0 ? '+' : ''}{formatMoney(e.amount)}
-                      </td>
-                      <td className="py-3 text-right whitespace-nowrap">{formatMoney(e.balanceAfter)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <VeriTablosu
+          className="mt-6"
+          baslik="Hesap ekstresi"
+          sutunlar={SUTUNLAR}
+          satirlar={q.data?.items}
+          // Kararlı kimlik: `public_id`. Dizin KULLANILMAZ — sayfa değişince
+          // React aynı dizindeki farklı kaydı "aynı satır" sanar.
+          satirAnahtari={(e) => e.id}
+          yukleniyor={q.isLoading}
+          // `HataDurumu` içeride çizilir ve `requestId`'yi GÖSTERİR.
+          hata={apiHatasi(q.error)}
+          duyuru={!sayfali}
+          bos={
+            /*
+              §6.3 · `operate.md:35`: boş durum ARAYÜZÜ ÖĞRETİR, "burada bir şey
+              yok" demez. Bu listede süzgeç olmadığı için tek bir boş hâl vardır
+              ve doğru eylem bellidir: ilk hareketi kullanıcı bakiye yükleyerek
+              üretir. `Empty`'nin eylem yuvası olmadığı için düğme dışarıda
+              durur (ui.tsx bu dalgada değiştirilmez).
+            */
+            <div className="flex flex-col items-center gap-4">
+              <Empty
+                title="Ekstre boş"
+                hint="Bakiye yüklediğinizde ya da numara satın aldığınızda her hareket tarihi ve tutarıyla buraya yazılır."
+              />
+              <Link href="/panel/bakiye-yukle">
+                <Button variant="outline">Bakiye yükle</Button>
+              </Link>
             </div>
+          }
+        />
 
-            {(hasPrev || hasNext) && (
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <Button variant="outline" size="sm" disabled={!hasPrev}
-                        onClick={() => setOffset((o) => Math.max(0, o - PAGE))}>
-                  Önceki
-                </Button>
-                <span className="text-xs text-muted">
-                  {offset + 1}–{Math.min(offset + PAGE, total)} / {total}
-                </span>
-                <Button variant="outline" size="sm" disabled={!hasNext}
-                        onClick={() => setOffset((o) => o + PAGE)}>
-                  Sonraki
-                </Button>
-              </div>
-            )}
-          </>
-        )}
+        <Sayfalama
+          className="mt-6"
+          offset={offset}
+          limit={SAYFA_BOYUTU}
+          toplam={toplam}
+          onDegis={setOffset}
+        />
       </Card>
     </div>
   );

@@ -1,11 +1,47 @@
 'use client';
 
+/**
+ * /yonetim/saglayicilar — üst sağlayıcılar, ayarları ve sağlayıcıdaki bakiyemiz.
+ *
+ * DAVRANIŞ DEĞİŞMEDİ. Bu dosyada değişen şey sunum ve yapıdır: çift render
+ * (mobil kart + masaüstü tablo) tek bir sütun tanımına indirildi, yerel
+ * `ErrorBox`/`SELECT_CLASS` kopyaları katman bileşenleriyle değiştirildi.
+ * İki istisna aşağıda 🔴 ile işaretli ve raporda gerekçelendirildi.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ETİKET AYRIŞMASI KAPANDI (tasarim-sistemi.md §6)
+ * ══════════════════════════════════════════════════════════════════════════
+ * Ölçülen iki ayrışma bu ekrandaydı:
+ *   kart "Anahtar kurulu değil" ↔ tablo "Kurulu değil"
+ *   kart "Katalogu senkronla"   ↔ tablo "Senkronla"
+ * `Sutun.baslik` tek dize olduğu için artık yapısal olarak imkânsız. Hangi
+ * dizenin kaldığı keyfi değil, bir kurala bağlandı:
+ *   · Bir sütun başlığı (tabloda `<th>`, kartta `<dt>`) ismi zaten taşıyorsa
+ *     hücrede KISA değer kalır: "Anahtar" başlığı + "Kurulu değil" değeri;
+ *     "Senkron" başlığı + "Başarısız" rozeti.
+ *   · Aynı gerekçe "Senkronla" düğmesi için de geçerli: hemen üstünde/yanında
+ *     "Senkron" sütunu duruyor, yani neyin senkronlandığı iki sunumda da
+ *     görünür. Ölçüldü: uzun etiket ("Katalogu senkronla") İşlem sütununu üç
+ *     satıra bölüp masaüstü satırını 181px'e çıkarıyordu.
+ */
+
 import * as React from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ApiError, apiFetch } from '@/lib/api';
-import { formatMoney, formatDateTime } from '@/lib/format';
-import { Card, Button, Field, Alert, Badge, Skeleton, Empty } from '@/components/ui';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
+import { formatDateTime, formatMoney } from '@/lib/format';
+import { Alert, Badge, Button, Card, Empty, Field, cx } from '@/components/ui';
 import { Modal } from '@/components/modal';
+import {
+  DurumRozeti,
+  HataDurumu,
+  KayitSayaci,
+  SayfaBasligi,
+  Secim,
+  VeriTablosu,
+  apiHatasi,
+  ikiliTon,
+  type Sutun,
+} from '@/components/yonetim';
 import type { AdminProvider } from '@/lib/types';
 
 /** GET /admin/providers — sayfalama YOK, yalnız {items}. */
@@ -20,7 +56,15 @@ interface ProviderSyncResult {
   sync: { running: boolean; startedAt?: string; finishedAt?: string; failed?: boolean };
 }
 
-/** PUT /admin/providers/:id/api-key — anahtarın KENDİSİ değil, maskeli önizleme. */
+/**
+ * PUT /admin/providers/:id/api-key yanıtı.
+ *
+ * 🔴 `masked` alanı GÖSTERİLMEZ. Sunucu maskeli bir önizleme döndürüyor ama
+ * onu ekrana yazmak anahtarın bir parçasını ekran görüntüsüne, ekran
+ * paylaşımına ve tarayıcı geçmişine taşır. Başarı bilgisi için maskeye gerek
+ * yok: liste rozetinin "Kurulu"ya dönmesi ve açık başarı mesajı yeter.
+ * Tip burada duruyor ki alanın var olduğu ve BİLEREK okunmadığı belli olsun.
+ */
 interface SetApiKeyResult {
   masked: string;
 }
@@ -40,21 +84,20 @@ const CAP_LABELS: Record<string, string> = {
 
 const QUERY_KEY = ['admin-providers'] as const;
 
-const SELECT_CLASS =
-  'raised select-ok min-h-12 w-full rounded-xl border px-3 text-base outline-none ' +
-  'focus:border-brand-400 disabled:opacity-60';
-
-function ErrorBox({ err, className }: { err: ApiError; className?: string }) {
+/** Onay kutusu satırı — dokunma hedefi 44px (§7.3). Üç yerde tekrar ediyordu. */
+function OnayKutusu({
+  isaretli, onDegis, children,
+}: { isaretli: boolean; onDegis: (v: boolean) => void; children: React.ReactNode }) {
   return (
-    <Alert className={className}>
-      <p>{err.message}</p>
-      {err.fields?.length ? (
-        <ul className="mt-1 list-inside list-disc">
-          {err.fields.map((f) => <li key={f.field}>{f.message}</li>)}
-        </ul>
-      ) : null}
-      {err.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {err.requestId}</p>}
-    </Alert>
+    <label className="flex min-h-11 items-start gap-3 py-2">
+      <input
+        type="checkbox"
+        checked={isaretli}
+        onChange={(e) => onDegis(e.target.checked)}
+        className="size-5 shrink-0 rounded accent-[var(--color-brand-500)]"
+      />
+      <span className="text-sm">{children}</span>
+    </label>
   );
 }
 
@@ -88,193 +131,191 @@ export default function AdminProvidersPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: QUERY_KEY }),
   });
 
-  const listErr = q.error instanceof ApiError ? q.error : null;
-  const syncErr = sync.error instanceof ApiError ? sync.error : null;
+  const syncErr = apiHatasi(sync.error);
   const items = q.data?.items ?? [];
 
-  return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-5">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Sağlayıcılar</h1>
-          <p className="mt-1 text-sm text-muted">
-            Numara aldığımız üst sağlayıcılar, ayarları ve sağlayıcıdaki bakiyemiz.
-          </p>
+  /* ── Sütunlar: TEK veri tanımı; mobil kart bundan türer (§6.1 kural 2) ── */
+  const sutunlar: Array<Sutun<AdminProvider>> = [
+    {
+      anahtar: 'saglayici',
+      baslik: 'Sağlayıcı',
+      mobilRol: 'baslik',
+      hucre: (p) => (
+        <div className="min-w-0">
+          <p className="font-medium">{p.name}</p>
+          {/* `text-sm`, `text-xs` değil: protokol ve adres VERİDİR (§3.2). */}
+          <p className="text-sm text-muted">{p.protocol}</p>
+          <p className="break-anywhere text-sm text-muted">{p.baseUrl || '—'}</p>
         </div>
-        <Button onClick={() => setCreating(true)}>Sağlayıcı ekle</Button>
-      </div>
+      ),
+    },
+    {
+      anahtar: 'durum',
+      baslik: 'Durum',
+      /*
+        🔴 `rozet` YUVASINA YALNIZ ROZET KONUR — ölçüldü. `VeriTablosu` bu
+        yuvayı `shrink-0` ile sarar; içine "Son senkron: 09.09.2026 11:20"
+        gibi uzun bir metin koymak yuvayı ~200px'te sabitler, 320px'lik kartta
+        başlık sütununa ~8px bırakır ve `break-anywhere` taşıyan baseUrl
+        KARAKTER KARAKTER kırılır: kart 435px'ten 945px'e çıkıyordu.
+        Senkron bilgisi bu yüzden kendi sütununda ve kartın `<dl>` gövdesinde.
+      */
+      mobilRol: 'rozet',
+      hucre: (p) => (
+        <DurumRozeti
+          durum={p.isActive ? 'ACTIVE' : 'INACTIVE'}
+          etiket={p.isActive ? 'Aktif' : 'Pasif'}
+          ton={ikiliTon(p.isActive)}
+        />
+      ),
+    },
+    {
+      anahtar: 'senkron',
+      baslik: 'Senkron',
+      oncelik: 3,
+      hucre: (p) => <SenkronDurumu sync={p.sync} />,
+    },
+    {
+      anahtar: 'anahtar',
+      baslik: 'Anahtar',
+      hucre: (p) => (
+        // §5.4: anahtar eksikse `bad` — sağlayıcı aktif olsa bile çağrı patlar.
+        <DurumRozeti
+          durum={p.hasApiKey ? 'ACTIVE' : 'FAILED'}
+          etiket={p.hasApiKey ? 'Kurulu' : 'Kurulu değil'}
+          ton={p.hasApiKey ? 'ok' : 'bad'}
+        />
+      ),
+    },
+    {
+      anahtar: 'bakiye',
+      baslik: 'Bakiyemiz',
+      hizala: 'sag',
+      sayisal: true,
+      hucre: (p) => <span className="font-medium">{formatMoney(p.balance)}</span>,
+    },
+    {
+      anahtar: 'oncelik',
+      baslik: 'Öncelik',
+      oncelik: 3,
+      hizala: 'sag',
+      sayisal: true,
+      hucre: (p) => p.priority,
+    },
+    {
+      anahtar: 'carpan',
+      baslik: 'Çarpan',
+      oncelik: 3,
+      hizala: 'sag',
+      sayisal: true,
+      // Sunucudan STRING gelir ve string kalır: Number() ile çevirmek çarpanı
+      // yuvarlar ve çarpan doğrudan satış fiyatına girer.
+      hucre: (p) => p.costMultiplier,
+    },
+    {
+      anahtar: 'yetenekler',
+      baslik: 'Yetenekler',
+      oncelik: 3,
+      hucre: (p) =>
+        p.capabilities.length ? (
+          <div className="flex flex-wrap justify-end gap-2 md:justify-start">
+            {p.capabilities.map((c) => (
+              <Badge key={c} tone="brand">
+                {CAP_LABELS[c] ?? c}
+              </Badge>
+            ))}
+          </div>
+        ) : (
+          <span className="text-muted">Tanımsız</span>
+        ),
+    },
+    {
+      anahtar: 'islem',
+      baslik: 'İşlem',
+      basligiGizle: true,
+      hizala: 'sag',
+      mobilRol: 'eylem',
+      hucre: (p, sunum) => {
+        const senkronBekliyor = sync.isPending && sync.variables === p.id;
+        return (
+          /*
+            ÜÇÜ DE EŞİT AĞIRLIKTA ikincil eylem: `fullWidth` ile alt alta
+            dizmek birini birincil gibi gösterir ve ÖLÇÜLDÜ — 390px'te kartı
+            52px uzatıyordu (487px → 435px). Sarmalayan satır her iki sunumda
+            da aynı; `Button` min-h-11 taşıdığı için dokunma hedefi 44px kalır.
+          */
+          <div className={cx('flex flex-wrap gap-2', sunum === 'tablo' && 'justify-end')}>
+            <Button variant="outline" size="sm" onClick={() => setEditing(p)}>
+              Ayarlar
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setKeying(p)}>
+              API anahtarı
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={p.sync?.running || senkronBekliyor}
+              loading={senkronBekliyor}
+              onClick={() => sync.mutate(p.id)}
+            >
+              Senkronla
+            </Button>
+          </div>
+        );
+      },
+    },
+  ];
 
-      <Alert tone="info">
+  return (
+    <div className="mx-auto flex max-w-6xl flex-col gap-6">
+      <SayfaBasligi
+        baslik="Sağlayıcılar"
+        aciklama="Numara aldığımız üst sağlayıcılar, ayarları ve sağlayıcıdaki bakiyemiz."
+      >
+        <Button onClick={() => setCreating(true)}>Sağlayıcı ekle</Button>
+      </SayfaBasligi>
+
+      {/* `duyur={false}`: sayfa açılışında koşulsuz çizilen statik açıklama;
+          kesecek bir eylem yok (§7.4). */}
+      <Alert tone="info" duyur={false}>
         Bir sağlayıcının ayarlarını kaydetmek API anahtarını değiştirmez; anahtar
         ayrı bir formdan yazılır ve hiçbir ekranda geri gösterilmez.
       </Alert>
 
-      {syncErr && <ErrorBox err={syncErr} />}
+      {syncErr && <HataDurumu hata={syncErr} />}
 
       <Card>
-        <h2 className="text-lg font-semibold">Tanımlı sağlayıcılar</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold">Tanımlı sağlayıcılar</h2>
+          <KayitSayaci toplam={items.length} />
+        </div>
 
-        {q.isLoading ? (
-          <div className="mt-4 flex flex-col gap-2">
-            {[0, 1, 2].map((i) => <Skeleton key={i} className="h-24" />)}
-          </div>
-        ) : listErr ? (
-          <ErrorBox err={listErr} className="mt-4" />
-        ) : !items.length ? (
-          <Empty
-            title="Henüz sağlayıcı yok"
-            hint="Sağlayıcı ekleyip API anahtarını tanımladıktan sonra etkinleştirebilirsiniz."
-          />
-        ) : (
-          <>
-            {/* MOBİL: kart listesi. Yatay kaydırılan tablo kabul edilmez (§2.5). */}
-            <ul className="mt-4 flex flex-col gap-2 md:hidden">
-              {items.map((p) => (
-                <li key={p.id} className="raised rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{p.name}</p>
-                      <p className="mt-0.5 text-xs text-muted">{p.protocol}</p>
-                    </div>
-                    <span className="shrink-0">
-                      <Badge tone={p.isActive ? 'ok' : 'neutral'}>
-                        {p.isActive ? 'Aktif' : 'Pasif'}
-                      </Badge>
-                    </span>
-                  </div>
-
-                  <p className="mt-2 text-xs text-muted break-anywhere">{p.baseUrl || '—'}</p>
-
-                  <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t
-                                 border-[var(--border)] pt-2 text-xs">
-                    <div>
-                      <dt className="text-muted">Sağlayıcıdaki bakiyemiz</dt>
-                      <dd className="mt-0.5 font-semibold">{formatMoney(p.balance)}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted">Öncelik</dt>
-                      <dd className="mt-0.5 font-semibold">{p.priority}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted">Maliyet çarpanı</dt>
-                      <dd className="mt-0.5 font-semibold">{p.costMultiplier}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted">API anahtarı</dt>
-                      <dd className="mt-0.5">
-                        <Badge tone={p.hasApiKey ? 'ok' : 'bad'}>
-                          {p.hasApiKey ? 'Anahtar kurulu' : 'Anahtar kurulu değil'}
-                        </Badge>
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {p.capabilities.length
-                      ? p.capabilities.map((c) => (
-                          <Badge key={c} tone="brand">{CAP_LABELS[c] ?? c}</Badge>
-                        ))
-                      : <span className="text-xs text-muted">Yetenek tanımsız</span>}
-                  </div>
-
-                  <div className="mt-2"><SyncStatus sync={p.sync} /></div>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button variant="outline" size="sm" onClick={() => setEditing(p)}>Ayarlar</Button>
-                    <Button variant="outline" size="sm" onClick={() => setKeying(p)}>API anahtarı</Button>
-                    <Button
-                      variant="outline" size="sm"
-                      disabled={p.sync?.running || (sync.isPending && sync.variables === p.id)}
-                      loading={sync.isPending && sync.variables === p.id}
-                      onClick={() => sync.mutate(p.id)}
-                    >
-                      Katalogu senkronla
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-
-            {/* MASAÜSTÜ: gerçek tablo */}
-            <div className="mt-4 hidden md:block">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs
-                                 uppercase tracking-wide text-muted">
-                    <th scope="col" className="py-2 pr-3 font-medium">Sağlayıcı</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Durum</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Öncelik</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Çarpan</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Yetenekler</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Bakiyemiz</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Anahtar</th>
-                    <th scope="col" className="py-2 text-right font-medium">İşlem</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((p) => (
-                    <tr key={p.id} className="border-b border-[var(--border)] last:border-0 align-top">
-                      <td className="py-3 pr-3">
-                        <p className="font-medium">{p.name}</p>
-                        <p className="text-xs text-muted">{p.protocol}</p>
-                        <p className="text-xs text-muted break-anywhere">{p.baseUrl || '—'}</p>
-                      </td>
-                      <td className="py-3 pr-3">
-                        <Badge tone={p.isActive ? 'ok' : 'neutral'}>
-                          {p.isActive ? 'Aktif' : 'Pasif'}
-                        </Badge>
-                        <div className="mt-1"><SyncStatus sync={p.sync} /></div>
-                      </td>
-                      <td className="py-3 pr-3 text-right whitespace-nowrap">{p.priority}</td>
-                      <td className="py-3 pr-3 text-right whitespace-nowrap">{p.costMultiplier}</td>
-                      <td className="py-3 pr-3">
-                        <div className="flex flex-wrap gap-1">
-                          {p.capabilities.length
-                            ? p.capabilities.map((c) => (
-                                <Badge key={c} tone="brand">{CAP_LABELS[c] ?? c}</Badge>
-                              ))
-                            : <span className="text-xs text-muted">—</span>}
-                        </div>
-                      </td>
-                      <td className="py-3 pr-3 text-right font-semibold whitespace-nowrap">
-                        {formatMoney(p.balance)}
-                      </td>
-                      <td className="py-3 pr-3">
-                        <Badge tone={p.hasApiKey ? 'ok' : 'bad'}>
-                          {p.hasApiKey ? 'Kurulu' : 'Kurulu değil'}
-                        </Badge>
-                      </td>
-                      <td className="py-3">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <Button variant="outline" size="sm" onClick={() => setEditing(p)}>Ayarlar</Button>
-                          <Button variant="outline" size="sm" onClick={() => setKeying(p)}>API anahtarı</Button>
-                          <Button
-                            variant="outline" size="sm"
-                            disabled={p.sync?.running || (sync.isPending && sync.variables === p.id)}
-                            loading={sync.isPending && sync.variables === p.id}
-                            onClick={() => sync.mutate(p.id)}
-                          >
-                            Senkronla
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <VeriTablosu<AdminProvider>
+          className="mt-4"
+          baslik="Tanımlı sağlayıcılar"
+          sutunlar={sutunlar}
+          satirlar={q.data?.items}
+          satirAnahtari={(p) => p.id}
+          yukleniyor={q.isLoading}
+          hata={apiHatasi(q.error)}
+          iskeletSatir={3}
+          bos={
+            // Boş durum ÖĞRETİR ve bir eylem sunar (§6.3). Buradaki liste
+            // süzgeçsizdir: boşsa gerçekten boştur, "sonuç yok" değil.
+            <div className="flex flex-col items-center pb-12">
+              <Empty
+                title="Henüz sağlayıcı yok"
+                hint="Sağlayıcı ekleyip API anahtarını tanımladıktan sonra etkinleştirebilirsiniz."
+              />
+              <Button onClick={() => setCreating(true)}>Sağlayıcı ekle</Button>
             </div>
-          </>
-        )}
+          }
+        />
       </Card>
 
       {/* Modal içerikleri, kapanınca durumları da gitsin diye koşullu monte edilir. */}
       <Modal open={editing !== null} onClose={() => setEditing(null)} title="Sağlayıcı ayarları">
-        {editing && (
-          <ProviderSettingsForm
-            provider={editing}
-            onDone={() => setEditing(null)}
-          />
-        )}
+        {editing && <ProviderSettingsForm provider={editing} onDone={() => setEditing(null)} />}
       </Modal>
 
       <Modal open={keying !== null} onClose={() => setKeying(null)} title="API anahtarı">
@@ -288,33 +329,136 @@ export default function AdminProvidersPage() {
   );
 }
 
-/** Senkron durumu — listedeki `sync` alanından okunur, ayrı uç yoktur. */
-function SyncStatus({ sync }: { sync: AdminProvider['sync'] }) {
-  if (!sync) return null;
-  if (sync.running) {
-    return (
-      <span className="inline-flex flex-col gap-0.5">
-        <Badge tone="warn">Senkron çalışıyor</Badge>
-        {sync.startedAt && (
-          <span className="text-xs text-muted">Başlangıç: {formatDateTime(sync.startedAt)}</span>
-        )}
-      </span>
-    );
+/**
+ * Senkron durumu — listedeki `sync` alanından okunur, ayrı uç yoktur.
+ *
+ * Kartta sağa, tabloda sola yaslanır (`items-end md:items-start`): kart yalnız
+ * `< md`, tablo yalnız `md:` üstünde çizilir, yani tek sınıf dizisi ikisini de
+ * doğru kurar — `max-*` ile geri alma zinciri yok.
+ */
+function SenkronDurumu({ sync }: { sync: AdminProvider['sync'] }) {
+  const govde = () => {
+    if (!sync) return <span className="text-muted">—</span>;
+    /*
+      Rozet metinleri "Senkron" sözcüğünü TAŞIMAZ: onu sütun başlığı ve kart
+      `<dt>`si zaten söylüyor. Ölçüldü — "Son senkron başarısız" yazmak bu
+      sütunu 173px'e çıkarıyor, İşlem sütununu 187px'e sıkıştırıyor ve üç
+      düğme ÜÇ satıra iniyor: satır 181px. Kısaltınca düğmeler iki satıra
+      düşüyor. Rozet bir etikettir, bir cümle değildir (§5.2).
+    */
+    if (sync.running) {
+      return (
+        <>
+          <Badge tone="warn">Çalışıyor</Badge>
+          {sync.startedAt && (
+            <span className="text-sm text-muted">{formatDateTime(sync.startedAt)}</span>
+          )}
+        </>
+      );
+    }
+    if (sync.failed) {
+      return (
+        <>
+          <Badge tone="bad">Başarısız</Badge>
+          {sync.finishedAt && (
+            <span className="text-sm text-muted">{formatDateTime(sync.finishedAt)}</span>
+          )}
+        </>
+      );
+    }
+    if (sync.finishedAt) {
+      return <span className="text-sm text-muted">{formatDateTime(sync.finishedAt)}</span>;
+    }
+    return <span className="text-muted">Hiç çalışmadı</span>;
+  };
+
+  return <div className="flex flex-col items-end gap-1 md:items-start">{govde()}</div>;
+}
+
+/* ═══════════ Ayarlar ve Ekle formlarının ORTAK üç alanı ═══════════ */
+
+/**
+ * `baseUrl` · `priority` · `costMultiplier` — iki formda da aynı alanlar, aynı
+ * kurallar. Eskiden İKİ KEZ elle yazılıyordu ve ZATEN AYRIŞMIŞTI: çarpan hata
+ * mesajı bir formda "(örn. 1.25)", diğerinde "(örn. 1.00)"; adres ipucu yalnız
+ * Ekle formunda, çarpan ipucu yalnız Ayarlar formunda vardı — oysa dördü de her
+ * iki formda doğru. Tek kaynağa indirildi; ipuçları birleştirildi.
+ */
+interface OrtakAlanDegerleri {
+  baseUrl: string;
+  priority: string;
+  costMultiplier: string;
+}
+
+/** Doğrulama + kırpılmış değerler. Gövdeye kırpılmışlar gönderilir. */
+function dogrulaOrtakAlanlar(
+  v: OrtakAlanDegerleri,
+): { errs: Record<string, string>; url: string; prio: number; mult: string } {
+  const errs: Record<string, string> = {};
+
+  const url = v.baseUrl.trim();
+  if (url && !/^https?:\/\//i.test(url)) {
+    errs.baseUrl = 'Adres http:// veya https:// ile başlamalıdır.';
   }
-  if (sync.failed) {
-    return (
-      <span className="inline-flex flex-col gap-0.5">
-        <Badge tone="bad">Son senkron başarısız</Badge>
-        {sync.finishedAt && (
-          <span className="text-xs text-muted">{formatDateTime(sync.finishedAt)}</span>
-        )}
-      </span>
-    );
+  const prio = Number(v.priority.trim());
+  if (!/^\d+$/.test(v.priority.trim()) || !Number.isInteger(prio) || prio < 0 || prio > 10000) {
+    errs.priority = 'Öncelik 0-10000 arasında bir tam sayı olmalıdır.';
   }
-  if (sync.finishedAt) {
-    return <span className="text-xs text-muted">Son senkron: {formatDateTime(sync.finishedAt)}</span>;
+  const mult = v.costMultiplier.trim();
+  if (!/^\d+(\.\d+)?$/.test(mult)) {
+    errs.costMultiplier = 'Çarpan ondalık bir sayı olmalıdır (örn. 1.25).';
   }
-  return null;
+
+  return { errs, url, prio, mult };
+}
+
+function OrtakAlanlar({
+  deger, degistir, hatalar, adresOtoOdak,
+}: {
+  deger: OrtakAlanDegerleri;
+  degistir: (alan: keyof OrtakAlanDegerleri, v: string) => void;
+  hatalar: Record<string, string>;
+  /** Ayarlar formunda ilk odak adrestedir; Ekle formunda "Ad" alanındadır. */
+  adresOtoOdak?: boolean;
+}) {
+  return (
+    <>
+      <Field
+        data-autofocus={adresOtoOdak || undefined}
+        label="Adres (baseUrl)"
+        value={deger.baseUrl}
+        onChange={(e) => degistir('baseUrl', e.target.value)}
+        placeholder="https://api.ornek.com"
+        inputMode="url"
+        autoCapitalize="none"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        error={hatalar.baseUrl}
+        hint="Boş bırakılırsa protokolün varsayılan adresi kullanılır."
+      />
+
+      <Field
+        label="Öncelik"
+        value={deger.priority}
+        onChange={(e) => degistir('priority', e.target.value)}
+        inputMode="numeric"
+        autoComplete="off"
+        error={hatalar.priority}
+        hint="0-10000. Küçük değer önce denenir."
+      />
+
+      <Field
+        label="Maliyet çarpanı"
+        value={deger.costMultiplier}
+        onChange={(e) => degistir('costMultiplier', e.target.value)}
+        inputMode="decimal"
+        autoComplete="off"
+        error={hatalar.costMultiplier}
+        hint="Sağlayıcı maliyeti bu çarpanla düzeltilir (örn. 1.00)."
+      />
+    </>
+  );
 }
 
 /**
@@ -326,19 +470,20 @@ function SyncStatus({ sync }: { sync: AdminProvider['sync'] }) {
  * isActive'i false yapar — sağlayıcı sessizce ölür, sipariş akışı durur.
  * Bu yüzden form GET'ten gelen MEVCUT DEĞERLERLE doldurulur ve her kaydetmede
  * dördü birden gönderilir.
- *
- * `costMultiplier` sunucudan STRING gelir ve string gider; Number() ile
- * çevirip geri yazmak çarpanı yuvarlar ve çarpan doğrudan satış fiyatına girer.
  */
 function ProviderSettingsForm({
   provider, onDone,
 }: { provider: AdminProvider; onDone: () => void }) {
   const qc = useQueryClient();
-  const [baseUrl, setBaseUrl] = React.useState(provider.baseUrl);
+  const [ortak, setOrtak] = React.useState<OrtakAlanDegerleri>({
+    baseUrl: provider.baseUrl,
+    priority: String(provider.priority),
+    costMultiplier: provider.costMultiplier,
+  });
   const [isActive, setIsActive] = React.useState(provider.isActive);
-  const [priority, setPriority] = React.useState(String(provider.priority));
-  const [costMultiplier, setCostMultiplier] = React.useState(provider.costMultiplier);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const degistir = (alan: keyof OrtakAlanDegerleri, v: string) =>
+    setOrtak((o) => ({ ...o, [alan]: v }));
 
   const save = useMutation({
     mutationFn: (body: {
@@ -357,21 +502,7 @@ function ProviderSettingsForm({
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const errs: Record<string, string> = {};
-
-    const url = baseUrl.trim();
-    if (url && !/^https?:\/\//i.test(url)) {
-      errs.baseUrl = 'Adres http:// veya https:// ile başlamalıdır.';
-    }
-    const prio = Number(priority.trim());
-    if (!/^\d+$/.test(priority.trim()) || !Number.isInteger(prio) || prio < 0 || prio > 10000) {
-      errs.priority = 'Öncelik 0-10000 arasında bir tam sayı olmalıdır.';
-    }
-    const mult = costMultiplier.trim();
-    if (!/^\d+(\.\d+)?$/.test(mult)) {
-      errs.costMultiplier = 'Çarpan ondalık bir sayı olmalıdır (örn. 1.25).';
-    }
-
+    const { errs, url, prio, mult } = dogrulaOrtakAlanlar(ortak);
     setErrors(errs);
     if (Object.keys(errs).length) return;
 
@@ -379,70 +510,39 @@ function ProviderSettingsForm({
     save.mutate({ baseUrl: url, isActive, priority: prio, costMultiplier: mult });
   }
 
-  const err = save.error instanceof ApiError ? save.error : null;
+  const err = apiHatasi(save.error);
   const fieldErrs = { ...errors, ...(err?.fieldMap() ?? {}) };
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
-      <div className="raised rounded-xl border p-3">
-        <p className="text-sm font-medium">{provider.name}</p>
-        <p className="mt-0.5 text-xs text-muted">{provider.protocol}</p>
-      </div>
+      <SaglayiciKimligi ad={provider.name} alt={provider.protocol} />
 
-      <Alert tone="warn">
+      {/* `duyur={false}`: formun giriş metni, diyaloğun İLK çiziminde var —
+          "Sağlayıcı ayarları" diyalog duyurusunu kesecek ikinci bir duyuru
+          olmamalı (§7.4). Aşağıdaki anahtarsız-etkinleştirme uyarısı ise
+          `role="alert"` TAŞIMAYA DEVAM EDER: o, kutucuk işaretlenince belirir. */}
+      <Alert tone="warn" duyur={false}>
         Bu form sağlayıcının <strong>tüm ayarlarını</strong> birlikte kaydeder.
         Alanları olduğu gibi bırakırsanız değişmez; boşaltırsanız o değer silinir.
       </Alert>
 
-      <Field
-        data-autofocus
-        label="Adres (baseUrl)"
-        value={baseUrl}
-        onChange={(e) => setBaseUrl(e.target.value)}
-        placeholder="https://api.ornek.com"
-        inputMode="url"
-        autoCapitalize="none"
-        autoCorrect="off"
-        autoComplete="off"
-        spellCheck={false}
-        error={fieldErrs.baseUrl}
-      />
+      <OrtakAlanlar adresOtoOdak deger={ortak} degistir={degistir} hatalar={fieldErrs} />
 
-      <Field
-        label="Öncelik"
-        value={priority}
-        onChange={(e) => setPriority(e.target.value)}
-        inputMode="numeric"
-        autoComplete="off"
-        error={fieldErrs.priority}
-        hint="0-10000. Küçük değer önce denenir."
-      />
-
-      <Field
-        label="Maliyet çarpanı"
-        value={costMultiplier}
-        onChange={(e) => setCostMultiplier(e.target.value)}
-        inputMode="decimal"
-        autoComplete="off"
-        error={fieldErrs.costMultiplier}
-        hint="Sağlayıcı maliyeti bu çarpanla düzeltilir (örn. 1.00)."
-      />
-
-      <label className="flex items-start gap-3 py-1">
-        <input
-          type="checkbox"
-          checked={isActive}
-          onChange={(e) => setIsActive(e.target.checked)}
-          className="mt-0.5 size-5 shrink-0 rounded accent-[var(--color-brand-500)]"
-        />
-        <span className="text-sm">
-          Sağlayıcı aktif
-          <span className="mt-0.5 block text-xs text-muted">
-            Pasif sağlayıcı teklif ve satın alma yolunda hiç denenmez.
-          </span>
+      <OnayKutusu isaretli={isActive} onDegis={setIsActive}>
+        Sağlayıcı aktif
+        <span className="mt-1 block text-sm text-muted">
+          Pasif sağlayıcı teklif ve satın alma yolunda hiç denenmez.
         </span>
-      </label>
+      </OnayKutusu>
 
+      {/*
+        🔴 `role="alert"` BURADA KALIYOR (varsayılan `duyur`). Bu kutu statik
+        değil: `isActive` yukarıdaki kutucuğun yerel durumudur ve kutu tam da
+        yönetici "Sağlayıcı aktif"i İŞARETLEDİĞİ anda belirir. Yani eylemin
+        sonucunda beliren bir uyarıdır — §7.4'ün `role="alert"`i tanımladığı
+        durum birebir budur. Susturulursa, anahtarsız bir sağlayıcıyı
+        etkinleştiren ekran okuyucu kullanıcısı uyarıyı hiç duymaz.
+      */}
       {!provider.hasApiKey && isActive && (
         <Alert tone="warn">
           Bu sağlayıcının API anahtarı tanımlı değil. Anahtarsız etkinleştirirseniz
@@ -450,14 +550,14 @@ function ProviderSettingsForm({
         </Alert>
       )}
 
-      {err && <ErrorBox err={err} />}
+      {err && <HataDurumu hata={err} />}
 
-      <div className="flex flex-col gap-2 sm:flex-row-reverse">
-        <Button type="submit" loading={save.isPending} fullWidth>Ayarları kaydet</Button>
-        <Button type="button" variant="outline" fullWidth disabled={save.isPending} onClick={onDone}>
-          Vazgeç
-        </Button>
-      </div>
+      <FormDugmeleri
+        onayMetni="Ayarları kaydet"
+        bekliyor={save.isPending}
+        iptalMetni="Vazgeç"
+        onIptal={onDone}
+      />
     </form>
   );
 }
@@ -467,8 +567,12 @@ function ProviderSettingsForm({
  *
  * 🔴 Anahtar hiçbir GET yanıtında dönmez; ekranda gösterilmez ve React
  * durumunda tutulmaz. Alan kontrolsüzdür (ref ile okunur), gönderimden hemen
- * sonra temizlenir. Sunucu yalnız maskeli bir önizleme döner — yöneticinin
- * doğru anahtarı yapıştırdığını görmesine yeter, anahtarı ele vermez.
+ * sonra temizlenir.
+ *
+ * 🔴 MASKELİ ÖNİZLEME DE GÖSTERİLMEZ. Sunucu `masked` döndürüyor; eski sürüm
+ * bunu ekrana yazıyordu. Bir maskede bile anahtarın baş/son karakterleri
+ * bulunur ve bu ekran görüntüsüne, ekran paylaşımına, destek biletine düşer.
+ * Kaydın başarılı olduğunu listedeki "Kurulu" rozeti zaten söylüyor.
  *
  * Boş gönderim sunucuda 422 ile reddedilir (anahtar silme yolu yoktur;
  * sağlayıcı pasifleştirilir), bu yüzden boş formu hiç göndermeyiz.
@@ -503,18 +607,19 @@ function ApiKeyForm({ provider, onDone }: { provider: AdminProvider; onDone: () 
     save.mutate(key);
   }
 
-  const err = save.error instanceof ApiError ? save.error : null;
+  const err = apiHatasi(save.error);
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
-      <div className="raised rounded-xl border p-3">
-        <p className="text-sm font-medium">{provider.name}</p>
-        <p className="mt-0.5 text-xs text-muted">
-          {provider.hasApiKey ? 'Şu an bir anahtar tanımlı.' : 'Şu an anahtar tanımlı değil.'}
-        </p>
-      </div>
+      <SaglayiciKimligi
+        ad={provider.name}
+        alt={provider.hasApiKey ? 'Şu an bir anahtar tanımlı.' : 'Şu an anahtar tanımlı değil.'}
+      />
 
-      <Alert tone="info">
+      {/* `duyur={false}`: formun giriş metni, "API anahtarı" diyaloğunun ilk
+          çiziminde var. Aşağıdaki `save.isSuccess` kutusu ise `role="alert"`
+          taşımaya devam eder — o, kaydetmenin SONUCUdur (§7.4). */}
+      <Alert tone="info" duyur={false}>
         Anahtar kaydedildikten sonra <strong>hiçbir ekranda geri gösterilmez</strong>.
         Yeni bir anahtar yazmak eskisinin yerine geçer.
       </Alert>
@@ -532,20 +637,18 @@ function ApiKeyForm({ provider, onDone }: { provider: AdminProvider; onDone: () 
         hint="Sağlayıcı panelinden aldığınız anahtarı yapıştırın."
       />
 
-      {err && <ErrorBox err={err} />}
+      {err && <HataDurumu hata={err} />}
 
-      {save.isSuccess && save.data && (
-        <Alert tone="ok">
-          Anahtar kaydedildi. Önizleme: <strong>{save.data.masked}</strong>
-        </Alert>
+      {save.isSuccess && (
+        <Alert tone="ok">Anahtar kaydedildi. Sağlayıcı listesinde &laquo;Kurulu&raquo; görünecek.</Alert>
       )}
 
-      <div className="flex flex-col gap-2 sm:flex-row-reverse">
-        <Button type="submit" loading={save.isPending} fullWidth>Anahtarı kaydet</Button>
-        <Button type="button" variant="outline" fullWidth disabled={save.isPending} onClick={onDone}>
-          Kapat
-        </Button>
-      </div>
+      <FormDugmeleri
+        onayMetni="Anahtarı kaydet"
+        bekliyor={save.isPending}
+        iptalMetni="Kapat"
+        onIptal={onDone}
+      />
     </form>
   );
 }
@@ -562,11 +665,15 @@ function CreateProviderForm({ onDone }: { onDone: () => void }) {
   const qc = useQueryClient();
   const [name, setName] = React.useState('');
   const [protocol, setProtocol] = React.useState<string>(PROTOCOLS[0]);
-  const [baseUrl, setBaseUrl] = React.useState('');
-  const [priority, setPriority] = React.useState('100');
-  const [costMultiplier, setCostMultiplier] = React.useState('1.00');
+  const [ortak, setOrtak] = React.useState<OrtakAlanDegerleri>({
+    baseUrl: '',
+    priority: '100',
+    costMultiplier: '1.00',
+  });
   const [capabilities, setCapabilities] = React.useState<string[]>(['SMS_ACTIVATION']);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const degistir = (alan: keyof OrtakAlanDegerleri, v: string) =>
+    setOrtak((o) => ({ ...o, [alan]: v }));
 
   const create = useMutation({
     mutationFn: (body: {
@@ -582,41 +689,27 @@ function CreateProviderForm({ onDone }: { onDone: () => void }) {
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const errs: Record<string, string> = {};
+    const { errs, url, prio, mult } = dogrulaOrtakAlanlar(ortak);
 
     const nm = name.trim();
     if (!nm) errs.name = 'Ad zorunludur.';
     else if (nm.length > 60) errs.name = 'Ad en fazla 60 karakter olabilir.';
-
-    const url = baseUrl.trim();
-    if (url && !/^https?:\/\//i.test(url)) {
-      errs.baseUrl = 'Adres http:// veya https:// ile başlamalıdır.';
-    }
-    const prio = Number(priority.trim());
-    if (!/^\d+$/.test(priority.trim()) || !Number.isInteger(prio) || prio < 0 || prio > 10000) {
-      errs.priority = 'Öncelik 0-10000 arasında bir tam sayı olmalıdır.';
-    }
-    const mult = costMultiplier.trim();
-    if (!/^\d+(\.\d+)?$/.test(mult)) {
-      errs.costMultiplier = 'Çarpan ondalık bir sayı olmalıdır (örn. 1.00).';
-    }
     if (!capabilities.length) errs.capabilities = 'En az bir yetenek seçin.';
 
     setErrors(errs);
     if (Object.keys(errs).length) return;
 
-    create.mutate({
-      name: nm, protocol, baseUrl: url,
-      priority: prio, costMultiplier: mult, capabilities,
-    });
+    create.mutate({ name: nm, protocol, baseUrl: url, priority: prio, costMultiplier: mult, capabilities });
   }
 
-  const err = create.error instanceof ApiError ? create.error : null;
+  const err = apiHatasi(create.error);
   const fieldErrs = { ...errors, ...(err?.fieldMap() ?? {}) };
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
-      <Alert tone="info">
+      {/* `duyur={false}`: "Sağlayıcı ekle" diyaloğunun ilk çiziminde duran
+          giriş metni; diyaloğun kendi duyurusunu kesmemeli (§7.4). */}
+      <Alert tone="info" duyur={false}>
         Yeni sağlayıcı <strong>pasif</strong> olarak eklenir ve burada API anahtarı
         sorulmaz. Ekledikten sonra anahtarı tanımlayın, katalogu senkronlayın ve
         ancak ondan sonra ayarlardan etkinleştirin.
@@ -633,82 +726,93 @@ function CreateProviderForm({ onDone }: { onDone: () => void }) {
         error={fieldErrs.name}
       />
 
-      <label className="flex flex-col gap-1.5">
-        <span className="text-sm font-medium">Protokol</span>
-        <select
-          value={protocol}
-          onChange={(e) => setProtocol(e.target.value)}
-          className={SELECT_CLASS}
-        >
-          {PROTOCOLS.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-        {fieldErrs.protocol
-          ? <span role="alert" className="text-xs text-[var(--color-bad)]">{fieldErrs.protocol}</span>
-          : <span className="text-xs text-muted">Sağlayıcının konuştuğu API biçimi.</span>}
-      </label>
+      <Secim
+        etiket="Protokol"
+        value={protocol}
+        onChange={(e) => setProtocol(e.target.value)}
+        hata={fieldErrs.protocol}
+        ipucu="Sağlayıcının konuştuğu API biçimi."
+      >
+        {PROTOCOLS.map((p) => (
+          <option key={p} value={p}>
+            {p}
+          </option>
+        ))}
+      </Secim>
 
-      <Field
-        label="Adres (baseUrl)"
-        value={baseUrl}
-        onChange={(e) => setBaseUrl(e.target.value)}
-        placeholder="https://api.ornek.com"
-        inputMode="url"
-        autoCapitalize="none"
-        autoCorrect="off"
-        autoComplete="off"
-        spellCheck={false}
-        error={fieldErrs.baseUrl}
-        hint="Boş bırakılırsa protokolün varsayılan adresi kullanılır."
-      />
+      <OrtakAlanlar deger={ortak} degistir={degistir} hatalar={fieldErrs} />
 
-      <Field
-        label="Öncelik"
-        value={priority}
-        onChange={(e) => setPriority(e.target.value)}
-        inputMode="numeric"
-        autoComplete="off"
-        error={fieldErrs.priority}
-        hint="0-10000. Küçük değer önce denenir."
-      />
-
-      <Field
-        label="Maliyet çarpanı"
-        value={costMultiplier}
-        onChange={(e) => setCostMultiplier(e.target.value)}
-        inputMode="decimal"
-        autoComplete="off"
-        error={fieldErrs.costMultiplier}
-      />
-
-      <fieldset className="flex flex-col gap-1.5">
+      <fieldset className="flex flex-col gap-2">
         <legend className="text-sm font-medium">Yetenekler</legend>
         {CAPABILITIES.map((c) => (
-          <label key={c.value} className="flex items-start gap-3 py-1">
-            <input
-              type="checkbox"
-              checked={capabilities.includes(c.value)}
-              onChange={(e) =>
-                setCapabilities((prev) =>
-                  e.target.checked ? [...prev, c.value] : prev.filter((x) => x !== c.value))
-              }
-              className="mt-0.5 size-5 shrink-0 rounded accent-[var(--color-brand-500)]"
-            />
-            <span className="text-sm">{c.label}</span>
-          </label>
+          <OnayKutusu
+            key={c.value}
+            isaretli={capabilities.includes(c.value)}
+            onDegis={(v) =>
+              setCapabilities((prev) => (v ? [...prev, c.value] : prev.filter((x) => x !== c.value)))
+            }
+          >
+            {c.label}
+          </OnayKutusu>
         ))}
         {fieldErrs.capabilities && (
-          <span role="alert" className="text-xs text-[var(--color-bad)]">{fieldErrs.capabilities}</span>
+          // `text-sm`: doğrulama hatası ikincil dipnot değildir (§3.2).
+          <span role="alert" className="text-sm text-[var(--color-bad)]">
+            {fieldErrs.capabilities}
+          </span>
         )}
       </fieldset>
 
-      {err && <ErrorBox err={err} />}
+      {err && <HataDurumu hata={err} />}
 
-      <div className="flex flex-col gap-2 sm:flex-row-reverse">
-        <Button type="submit" loading={create.isPending} fullWidth>Sağlayıcıyı ekle</Button>
-        <Button type="button" variant="outline" fullWidth disabled={create.isPending} onClick={onDone}>
-          Vazgeç
-        </Button>
-      </div>
+      <FormDugmeleri
+        onayMetni="Sağlayıcıyı ekle"
+        bekliyor={create.isPending}
+        iptalMetni="Vazgeç"
+        onIptal={onDone}
+      />
     </form>
+  );
+}
+
+/* ═══════════════════════ Üç formun ortak parçaları ═══════════════════════ */
+
+/** Formun hangi sağlayıcı üzerinde çalıştığını söyleyen kimlik bloğu. */
+function SaglayiciKimligi({ ad, alt }: { ad: string; alt: string }) {
+  return (
+    <div className="raised rounded-xl border p-4">
+      <p className="font-medium">{ad}</p>
+      <p className="mt-1 text-sm text-muted">{alt}</p>
+    </div>
+  );
+}
+
+/**
+ * Form alt düğmeleri — `OnayDiyalogu` DEĞİLDİR.
+ *
+ * `OnayDiyalogu` yıkıcı bir işlemin ONAY adımıdır ve ilk odağı bilerek
+ * "Vazgeç"e koyar. Burası çok alanlı bir FORM: ilk odak `data-autofocus` ile
+ * ilk alandadır, çünkü kullanıcı buraya yazmaya gelir, onaylamaya değil.
+ * Düzen yine tektir: mobilde alt alta (onay üstte), `sm:` üstünde onay sağda.
+ */
+function FormDugmeleri({
+  onayMetni, iptalMetni, bekliyor, onIptal,
+}: { onayMetni: string; iptalMetni: string; bekliyor: boolean; onIptal: () => void }) {
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row-reverse sm:justify-start">
+      <Button type="submit" loading={bekliyor} fullWidth className="sm:w-auto">
+        {onayMetni}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        fullWidth
+        className="sm:w-auto"
+        disabled={bekliyor}
+        onClick={onIptal}
+      >
+        {iptalMetni}
+      </Button>
+    </div>
   );
 }

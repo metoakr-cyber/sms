@@ -103,8 +103,10 @@ func (h *Order) List(c *gin.Context) {
 		return
 	}
 	items := make([]dto.OrderResponse, 0, len(rows))
-	for _, o := range rows {
-		items = append(items, orderDTO(o, nil))
+	for _, r := range rows {
+		d := orderDTO(r.Order, nil)
+		d.IconURL = r.IconURL
+		items = append(items, d)
 	}
 	h.r.OK(c, dto.OrderListResponse{Items: items, Total: total, Limit: limit, Offset: offset})
 }

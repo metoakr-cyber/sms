@@ -73,6 +73,7 @@ type stubProvider struct {
 	failPurchase error
 	purchases    atomic.Int32
 	maxPrices    []int64 // her çağrıdaki maxPrice (mikro-USD)
+	durations    []int   // her çağrıdaki DurationHours (0 = aktivasyon)
 	cancels      atomic.Int32
 	finishes     atomic.Int32
 	// statusMessages GetStatus'un döndüreceği mesajlar. Boşken sağlayıcı
@@ -85,6 +86,34 @@ type stubProvider struct {
 	forceRemoteID string
 	expiresIn     time.Duration
 	now           func() time.Time
+	// ignoreRentalDuration SÜREYİ ONURLANDIRMAYAN SAĞLAYICI kipi.
+	//
+	// 🔴 BU KİP OLMADAN F2 GÖRÜNMEZDİ. Hem `fake` hem `stub` `DurationHours`u
+	// her zaman onurlandırdığı için "sağlayıcı 720 saatlik kiralık yerine 20
+	// dakikalık aktivasyon verdi" senaryosunu üretebilecek hiçbir test yoktu.
+	// Kip açıkken kiralık istekleri aktivasyon TTL'i ve aktivasyon `subtype`ı
+	// ile döner — HeroSMS'in desteklemediği kademeyi düşürme davranışı.
+	// test: rental_integration_test.go#TestRentalPurchaseFailsWhenProviderIgnoresDuration
+	ignoreRentalDuration bool
+	// shortRentalTTL > 0 ise sağlayıcı kiralığı KABUL EDER (subtype doğru) ama
+	// numarayı bu kadar süreliğine verir.
+	//
+	// `ignoreRentalDuration`dan AYRI: o kip iki ölçütü birden bozar (subtype +
+	// süre) ve hangisinin yakaladığı ayırt edilemez. Bu kip yalnız SÜRE
+	// ölçütünü sınar — tolerans değerinin gerçekten uygulandığını gösteren
+	// tek gözlem odur.
+	// test: rental_integration_test.go#TestRentalDurationToleranceIsBounded
+	shortRentalTTL time.Duration
+	// rentalSubtypeMismatch sağlayıcı süreyi DOĞRU verir ama satışı kiralık
+	// olarak TEYİT ETMEZ (subtype aktivasyon döner).
+	//
+	// Üçüncü bir kip gerekiyor çünkü iki ölçüt (subtype + süre) bağımsız
+	// olarak sınanmalı: biri diğerini gölgelerse, kaldırılan bir kontrolün
+	// eksikliği testte hiç görünmez.
+	// test: rental_integration_test.go#TestRentalPurchaseFailsWhenProviderDoesNotConfirmRental
+	rentalSubtypeMismatch bool
+	// finishResults SIRAYLA tüketilir; tükendiğinde Finish nil döner.
+	finishResults []error
 
 	/* ── Toplu yoklama (port.BatchPoller) ── */
 
@@ -137,6 +166,7 @@ func (p *stubProvider) GetPriceAndStock(context.Context, port.Creds, port.PriceQ
 func (p *stubProvider) Purchase(_ context.Context, _ port.Creds, cmd port.PurchaseCmd) (*port.PurchaseResult, error) {
 	p.mu.Lock()
 	p.maxPrices = append(p.maxPrices, cmd.MaxCost.Minor())
+	p.durations = append(p.durations, cmd.DurationHours)
 	fail := p.failPurchase
 	hook := p.purchaseHook
 	p.mu.Unlock()
@@ -158,12 +188,42 @@ func (p *stubProvider) Purchase(_ context.Context, _ port.Creds, cmd port.Purcha
 	if zorla != "" {
 		uzakID = zorla
 	}
+	// TTL SAĞLAYICIDAN gelir (değişmez #22). Kiralıkta `duration` kadar,
+	// aktivasyonda expiresIn kadar. Taklit süreyi yok saysaydı "30 günlük
+	// kiralık" testte 20 dakikada dolar ve dönem sonu davranışı hiç sınanmazdı.
+	ttl := p.expiresIn
+	kind := port.KindSMSActivation
+	if cmd.DurationHours > 0 {
+		ttl = time.Duration(cmd.DurationHours) * time.Hour
+		kind = port.KindSMSRental
+	}
+	p.mu.Lock()
+	sureYokSay := p.ignoreRentalDuration
+	kisaTTL := p.shortRentalTTL
+	p.mu.Unlock()
+	if sureYokSay && cmd.DurationHours > 0 {
+		// Sağlayıcı `duration`ı yok saydı: kiralık istendi, sıradan bir
+		// aktivasyon verildi.
+		ttl = p.expiresIn
+		kind = port.KindSMSActivation
+	} else if kisaTTL > 0 && cmd.DurationHours > 0 {
+		// Kiralık kabul edildi ama süre eksik teslim edildi.
+		ttl = kisaTTL
+	}
+	p.mu.Lock()
+	subtypeUyusmaz := p.rentalSubtypeMismatch
+	p.mu.Unlock()
+	if subtypeUyusmaz && cmd.DurationHours > 0 {
+		// Süre doğru, ama sağlayıcı satışı kiralık olarak teyit etmiyor.
+		kind = port.KindSMSActivation
+	}
+
 	return &port.PurchaseResult{
 		RemoteOrderID: uzakID,
 		PhoneNumber:   "+905551234567",
 		Cost:          money.New(1_000_000, money.USD),
-		ExpiresAt:     p.now().Add(p.expiresIn),
-		Subtype:       port.KindSMSActivation,
+		ExpiresAt:     p.now().Add(ttl),
+		Subtype:       kind,
 	}, nil
 }
 
@@ -251,6 +311,13 @@ func (p *stubProvider) Cancel(context.Context, port.Creds, string) error {
 }
 func (p *stubProvider) Finish(context.Context, port.Creds, string) error {
 	p.finishes.Add(1)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.finishResults) > 0 {
+		out := p.finishResults[0]
+		p.finishResults = p.finishResults[1:]
+		return out
+	}
 	return nil
 }
 func (p *stubProvider) GetBalance(context.Context, port.Creds) (money.Money, error) {
@@ -1125,5 +1192,67 @@ func TestDuplicateRemoteIDIsNotInternalError(t *testing.T) {
 	// (2) PARA GERİ VERİLMİŞ olmalı.
 	if sonrasi := e.balance(t); sonrasi != oncesi {
 		t.Fatalf("🔴 iade yazılmadı: bakiye %d → %d", oncesi, sonrasi)
+	}
+}
+
+// TestListUserOrdersCarriesServiceIcon sipariş listesinin servis logosunu CANLI
+// katalogdan taşıdığını ve katalogdan düşmüş servisin siparişini KAYBETMEDİĞİNİ
+// doğrular.
+//
+// İkisi tek testte: sorgudaki tek bir `LEFT` → `INNER` değişikliği ikinci
+// iddiayı düşürür, `coalesce`ın kaldırılması birincisini. Ayrı testlerde
+// olsalardı ikisi de yeşilken sorgu yine de yanlış olabilirdi.
+func TestListUserOrdersCarriesServiceIcon(t *testing.T) {
+	ctx := context.Background()
+	e := setup(t, 100_000)
+
+	// Katalogdaki servise logo ver. Sipariş satırına HİÇBİR ŞEY yazılmıyor —
+	// bağ yalnız `service_code` üzerinden kuruluyor.
+	if _, err := pool.Exec(ctx,
+		`UPDATE services SET icon_url = '/servis-logolari/wa.svg' WHERE code = 'wa'`); err != nil {
+		t.Fatalf("logo ataması: %v", err)
+	}
+	ord := e.newPendingOrder(t)
+
+	rows, total, err := e.svc.List(ctx, e.userID, 20, 0)
+	if err != nil {
+		t.Fatalf("liste: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("1 sipariş bekleniyordu, toplam=%d satır=%d", total, len(rows))
+	}
+	if rows[0].IconURL != "/servis-logolari/wa.svg" {
+		t.Errorf("logo taşınmadı: %q", rows[0].IconURL)
+	}
+	if rows[0].Order.ID != ord.ID {
+		t.Errorf("yanlış sipariş döndü")
+	}
+
+	// EŞLEŞME KAYBOLURSA sipariş listede KALMALI.
+	//
+	// Servisi SİLMEYİ denemek anlamsız: orders → price_quotes → products →
+	// services yabancı anahtar zinciri, sipariş dururken servis satırının
+	// silinmesini zaten engelliyor (denendi, `orders_quote_id_fkey` reddetti).
+	//
+	// Gerçek risk KOD DEĞİŞİMİ: `orders.service_code` satın alma anındaki metin
+	// anlık görüntüsüdür, katalog senkronu ise sağlayıcının kodunu güncelleyebilir.
+	// O an JOIN tutmaz. `INNER JOIN` olsaydı kullanıcı geçmiş siparişini
+	// SESSİZCE kaybederdi — para kaydı 10 yıl saklanıyor, listeden düşmesi
+	// kaydı fiilen yok eder.
+	if _, err := pool.Exec(ctx,
+		`UPDATE services SET code = 'wa-yeni' WHERE code = 'wa'`); err != nil {
+		t.Fatalf("servis kodu değişimi: %v", err)
+	}
+
+	rows, total, err = e.svc.List(ctx, e.userID, 20, 0)
+	if err != nil {
+		t.Fatalf("servis silindikten sonra liste: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("servis katalogdan düşünce sipariş listeden KAYBOLDU: toplam=%d satır=%d", total, len(rows))
+	}
+	// `coalesce` olmasaydı burada NULL gelir ve sqlc taraması patlardı.
+	if rows[0].IconURL != "" {
+		t.Errorf("logosuz sipariş boş dize vermeli, %q geldi", rows[0].IconURL)
 	}
 }

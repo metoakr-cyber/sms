@@ -76,7 +76,14 @@ func TestSyncRunsInBackgroundAndIsSingleFlight(t *testing.T) {
 	}
 
 	close(release)
+	// 🔴 İKİ sağlayıcının da boşalması beklenir, yalnız 7'nin değil.
+	// Sayaç 7 VE 8'i kapsıyor; yalnız 7 beklenirse 8'in goroutine'i sayacı
+	// artırmadan iddiaya varılabilir. Tek başına koşarken hep geçiyordu ama
+	// `check.sh` bütün paketleri paralel koşturunca CPU rekabeti altında
+	// düşüyordu ("toplam 1 tur koştu, 2 bekleniyordu") — kararsızlık kodda
+	// değil, testin bekleme koşulundaydı.
 	waitIdle(t, runner, 7)
+	waitIdle(t, runner, 8)
 	if n := runs.Load(); n != 2 { // sağlayıcı 7 ve 8 için birer tur
 		t.Fatalf("toplam %d tur koştu, 2 bekleniyordu", n)
 	}

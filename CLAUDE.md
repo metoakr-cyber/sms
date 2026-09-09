@@ -85,7 +85,14 @@ devam etme, sor.
 
 13. **`status` alanına durum makinesi fonksiyonu dışında yazılmaz.**
 
-14. **Kullanıcıya görünen metin sabit yazılmaz.** `web/messages/tr.json` sözlüğünden gelir.
+14. **Kullanıcıya görünen her metin Türkçedir.** Sözlük katmanı (`next-intl` +
+    `web/messages/tr.json`) **bugün YOKTUR ve kurulmayacaktır** — ürün tek dilde
+    satılıyor; kullanılmayan bir soyutlama, her metni iki dosyada aramak demektir.
+    Metinler bileşenlerde durur.
+    *Ölçüm (9 Eylül 2026): 557 sabit metin, `tr.json` yok, `next-intl` bağımlılığı yok.
+    Bu madde eskiden sözlüğü şart koşuyordu ve depo onu hiç uygulamamıştı; kural
+    gerçeğe uyduruldu. İkinci bir dil kararı verildiği gün bu madde geri gelir ve
+    taşıma o zaman tek seferde yapılır.*
 
 15. **Bileşenler `fetch`'i doğrudan çağırmaz.** Tüm HTTP çağrıları `web/src/lib/api/client.ts`
     sarmalayıcısından geçer — zaman aşımı, çerez, CSRF, JSON olmayan yanıt ve hata normalizasyonu

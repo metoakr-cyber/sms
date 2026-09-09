@@ -2,8 +2,10 @@ package fake
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
+	"github.com/ikmetrik/sms-platform/api/internal/domain/money"
 	"github.com/ikmetrik/sms-platform/api/internal/port"
 )
 
@@ -195,6 +197,25 @@ func (p *Provider) seedCatalog() {
 		p.catalog[key{s.service, s.country, port.VerifyCall}] = &entry{
 			costMicro: s.costMicro * 2, stock: s.stock / 10,
 		}
+
+		// KİRALIK KATALOG — yalnız `rent` bayrağı olan ülkelerde.
+		//
+		// Sağlayıcı `Capabilities()` içinde KindSMSRental bildiriyordu ama
+		// kiralık bir katalog hiç yoktu: `SyncRentals` tip iddiasında düşüp
+		// sessizce dönüyor, geliştirme ve testte kiralık senkronu HİÇ
+		// çalışmıyordu. Bildirilen bir yetenek uygulanmıyorsa taklit yalan
+		// söylüyor demektir.
+		if !fakeCountries[s.country].rent {
+			continue
+		}
+		for _, h := range []int{24, 72, 168, 336, 720} {
+			// Fiyat süreyle artar ama doğrusal değil: uzun kiralamada birim
+			// maliyet düşer (gerçek listede de öyle).
+			p.rents[rentKey{s.service, s.country, h}] = &entry{
+				costMicro: s.costMicro * int64(h) / 12,
+				stock:     s.stock / 10,
+			}
+		}
 	}
 }
 
@@ -228,4 +249,72 @@ func (p *Provider) ListServices(ctx context.Context, _ port.Creds) ([]port.Remot
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RemoteCode < out[j].RemoteCode })
 	return out, nil
+}
+
+/* ═══════════════════ Kiralık (port.RentalProvider) ═══════════════════ */
+
+// Derleme zamanı iddiası: `Capabilities()` KindSMSRental bildiriyorsa arayüz
+// de gerçekten uygulanmış olmalıdır. Bu satır olmadan sağlayıcı yeteneği
+// bildirip metotları eksik bırakabiliyordu ve `SyncRentals` tip iddiasında
+// sessizce düşüyordu — hiç çalışmayan bir senkron, çalıştığını sandığımız
+// bir senkrondur.
+// test: catalog_test.go#TestFakeImplementsRentalProvider
+var _ port.RentalProvider = (*Provider)(nil)
+
+// AllowedDurations kabul edilen kiralama sürelerini döner.
+func (p *Provider) AllowedDurations(ctx context.Context, _ port.Creds) ([]int, error) {
+	if err := p.delay(ctx); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]int(nil), p.RentDurations...), nil
+}
+
+// ListRentOffers bir servisin kiralık fiyat ve stoklarını döner.
+func (p *Provider) ListRentOffers(ctx context.Context, _ port.Creds, serviceCode string) ([]port.RentOffer, error) {
+	if err := p.delay(ctx); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make([]port.RentOffer, 0, 16)
+	for k, e := range p.rents {
+		if k.service != serviceCode {
+			continue
+		}
+		out = append(out, port.RentOffer{
+			ServiceCode:   k.service,
+			CountryCode:   k.country,
+			DurationHours: k.hours,
+			Cost:          money.New(e.costMicro, money.USD),
+			Stock:         e.stock,
+		})
+	}
+	// SIRALI: senkron raporu ve testler deterministik olmalı.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CountryCode != out[j].CountryCode {
+			return out[i].CountryCode < out[j].CountryCode
+		}
+		return out[i].DurationHours < out[j].DurationHours
+	})
+	return out, nil
+}
+
+// Extend süre uzatma — TAKLİT EDİLMEZ, açıkça desteklenmediği bildirilir.
+//
+// Uygulamada uzatma uç noktası yoktur (router'da `prolong` yolu yok) ve
+// kullanım şartları md. 7.5 "kiralama süresi uzatılamaz" diyor. Burada `nil`
+// dönmek "uzatma çalışıyor" yalanı olurdu: yazılacak ilk uzatma testi geçer,
+// gerçek sağlayıcıda ise ikinci bir para hareketi ve idempotent OLMAYAN bir
+// çağrı bizi bekliyor olurdu.
+func (p *Provider) Extend(ctx context.Context, _ port.Creds, _ string, hours int) error {
+	if err := p.delay(ctx); err != nil {
+		return err
+	}
+	if hours <= 0 {
+		return fmt.Errorf("%w: uzatma süresi pozitif olmalı", port.ErrUnsupported)
+	}
+	return fmt.Errorf("%w: uzatma bu sürümde sunulmuyor", port.ErrUnsupported)
 }

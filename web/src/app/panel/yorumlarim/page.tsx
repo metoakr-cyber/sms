@@ -12,17 +12,65 @@
  * ve olmayacaktır; React metni varsayılan olarak kaçırır. Satır sonları
  * `whitespace-pre-wrap` ile korunur — biçimlendirme HTML'e değil CSS'e
  * bırakılır.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * 🔴 NEDEN `VeriTablosu` KULLANILMADI — kasıtlı, `/yonetim/yorumlar` ile aynı
+ * ══════════════════════════════════════════════════════════════════════════
+ * Diğer listelerin satırı SKALER alanlardan oluşur (tutar, tarih, durum) ve bir
+ * tablo hücresine sığar. Bu ekranın BİRİNCİL VERİSİ bir PARAGRAFTIR —
+ * kullanıcının yazdığı serbest metin, satır sonlarıyla birlikte.
+ *
+ * Onu bir sütuna koymanın iki yolu var ve ikisi de yanlış:
+ *   1. Kısaltmak (`truncate`) → kullanıcı yayına çıkacak kendi cümlesinin
+ *      yalnız ilk satırını görür; red gerekçesiyle karşılaştıramaz.
+ *   2. Kısaltmamak → satır yüksekliği 5-10 kat değişkenlik gösterir; ne ferah
+ *      satır hedefi ne de tablo taranabilirliği kalır.
+ *
+ * §6.1'in amacı (mobilde yatay kaydırma yasağı, tek veri kaynağı) burada zaten
+ * sağlanıyor: TEK bir `<li>` şablonu var, mobil/masaüstü ikizi YOK, `overflow-x`
+ * YOK. `VeriTablosu`ya zorlamak, kapattığı tekrarı değil YENİ bir riski
+ * getirirdi. Aynı karar `/yonetim/yorumlar` için de verilmişti; iki ekran aynı
+ * gerekçeyle aynı biçimde duruyor.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * KATMANIN GERİ KALANI KULLANILDI — silinen yerel kopyalar
+ * ══════════════════════════════════════════════════════════════════════════
+ *   · `ErrorBox`      → `HataDurumu`  (11 kopyanın biriydi; `requestId` artık
+ *                        14px ve tam opaklıkta)
+ *   · `statusTone`    → `DurumRozeti` (6 kopyanın biri; rozet artık METİN +
+ *                        BİÇİM + renk taşıyor — renk körü kullanıcı için
+ *                        yalnız renk yetmez, §7.1)
+ *   · `textareaClass` → `CokSatir`    (+ `caret-color`: koyu temada varsayılan
+ *                        siyah imleç GÖRÜNMÜYORDU)
+ *   · elle sayfalama  → `Sayfalama`   (yerel `PAGE = 20` silindi → `SAYFA_BOYUTU`)
+ *   · başlık bloğu    → `SayfaBasligi`
+ *
+ * DAVRANIŞ DEĞİŞMEDİ. Tek sayısal fark sayfa boyutudur (20 → 25): aynı panelde
+ * iki farklı `limit`, "kaç kayıt kaldı" sorusunun ekrandan ekrana farklı
+ * cevaplanmasıydı.
+ *
+ * HAREKET: yok. Liste her girişte görülür (§4.2). Tek geçişler `Button`'un
+ * `:active` basma geri bildirimi ve `CokSatir`'ın odak KENARLIK rengidir —
+ * ikisi de katmandan gelir.
  */
 
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { ApiError, apiFetch } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
-import { Card, Button, Alert, Badge, Skeleton, Empty, cx } from '@/components/ui';
+import { Card, Button, Alert, Skeleton, Empty, cx } from '@/components/ui';
 import { Modal } from '@/components/modal';
 import { Yildiz } from '@/components/ikonlar';
-
-const PAGE = 20;
+import {
+  SayfaBasligi,
+  KayitSayaci,
+  CokSatir,
+  Sayfalama,
+  SAYFA_BOYUTU,
+  DurumRozeti,
+  HataDurumu,
+  apiHatasi,
+} from '@/components/yonetim';
 
 /* ═══════════════════════ Sunucu sözleşmesi ═══════════════════════ */
 /*
@@ -60,39 +108,10 @@ const MAX_BODY = 1000;
 /** Uzunluk KARAKTER (rune) ile sayılır: "ş" iki bayttır, bir karakterdir. */
 const runeLength = (s: string) => Array.from(s).length;
 
-function statusTone(s: ReviewStatus): 'ok' | 'warn' | 'bad' | 'neutral' {
-  switch (s) {
-    case 'APPROVED': return 'ok';
-    case 'PENDING': return 'warn';
-    case 'REJECTED': return 'bad';
-    default: return 'neutral';
-  }
-}
-
-/** Hata gösterimi — mesaj + alan hataları + istek numarası (§9). */
-function ErrorBox({ err, className }: { err: ApiError; className?: string }) {
-  return (
-    <Alert className={className}>
-      <p>{err.message}</p>
-      {err.fields?.length ? (
-        <ul className="mt-1 list-inside list-disc">
-          {err.fields.map((f) => <li key={f.field}>{f.message}</li>)}
-        </ul>
-      ) : null}
-      {err.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {err.requestId}</p>}
-    </Alert>
-  );
-}
-
-/** Girdi fontu 16px'ten KÜÇÜK OLAMAZ: iOS Safari odakta sayfayı yakınlaştırır. */
-const textareaClass =
-  'raised w-full rounded-xl border px-3.5 py-2.5 text-base outline-none ' +
-  'focus:border-brand-400 disabled:opacity-60';
-
 /** Salt okunur yıldız gösterimi. */
 function Yildizlar({ puan }: { puan: number }) {
   return (
-    <span className="flex items-center gap-0.5" aria-label={`5 üzerinden ${puan} puan`}>
+    <span className="flex items-center gap-1" aria-label={`5 üzerinden ${puan} puan`}>
       {[1, 2, 3, 4, 5].map((n) => (
         <Yildiz
           key={n}
@@ -117,15 +136,17 @@ function PuanSecici({
   value, onChange, disabled,
 }: { value: number; onChange: (n: number) => void; disabled?: boolean }) {
   return (
-    <fieldset disabled={disabled} className="flex flex-col gap-1.5">
+    <fieldset disabled={disabled} className="flex flex-col gap-2">
       <legend className="text-sm font-medium">Puanınız</legend>
       <div className="flex items-center gap-1">
         {[1, 2, 3, 4, 5].map((n) => (
           <label
             key={n}
-            /* Dokunma hedefi 44 px: p-2 + size-7 ikon = 44 px kenar. */
+            /* Dokunma hedefi 44px: p-2 (8+8) + size-7 (28) = 44px kenar. */
             className={cx(
-              'cursor-pointer rounded-lg p-2 transition-colors',
+              'cursor-pointer rounded-lg p-2',
+              // Yalnız RENK geçer, 120ms. Konum/ölçek hareketi yok (§4.3).
+              '[transition-property:background-color] [transition-duration:var(--sure-hizli)]',
               'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-brand-400',
               disabled && 'cursor-not-allowed opacity-60',
             )}
@@ -159,137 +180,164 @@ export default function YorumlarimPage() {
   const [creating, setCreating] = React.useState(false);
 
   const q = useQuery({
-    queryKey: ['reviews', 'mine', { limit: PAGE, offset }],
-    queryFn: () => apiFetch<ReviewList>(`/reviews/mine?limit=${PAGE}&offset=${offset}`),
+    queryKey: ['reviews', 'mine', { limit: SAYFA_BOYUTU, offset }],
+    queryFn: () => apiFetch<ReviewList>(`/reviews/mine?limit=${SAYFA_BOYUTU}&offset=${offset}`),
     // Sayfa değişince liste boşalıp zıplamasın.
     placeholderData: keepPreviousData,
   });
 
   const total = q.data?.total ?? 0;
-  const hasPrev = offset > 0;
-  const hasNext = offset + PAGE < total;
-  const listErr = q.error instanceof ApiError ? q.error : null;
+  const items = q.data?.items;
+  const listErr = apiHatasi(q.error);
 
   // Onay bekleyen bir yorum varken yenisi gönderilemez (sunucu kısıtı:
   // reviews_one_pending_per_user_idx). Düğmeyi kapatmak sunucunun kararını
   // TEKRAR ETMEZ, yalnız kullanıcıyı 409 almadan uyarır.
-  const bekleyen = q.data?.items.some((r) => r.status === 'PENDING') ?? false;
+  const bekleyen = items?.some((r) => r.status === 'PENDING') ?? false;
+
+  /*
+   * `Sayfalama` tek sayfaya sığan listede kendini hiç çizmez; bu ifade
+   * "sayfalama ekranda var mı" ile aynı şeydir.
+   */
+  const sayfali = total > SAYFA_BOYUTU;
+
+  /*
+   * Canlı bölge — `VeriTablosu`nun yaptığı işin kart listesi karşılığı (§7.4).
+   * Bölge DAİMA DOM'da durur: koşullu render edilirse ekran okuyucu onu "yeni
+   * içerik" saymaz ve hiçbir şey duyurulmaz. Bu yüzden bölge değil, İÇERİĞİ
+   * susturulur.
+   *
+   * 🔴 SAYFALIYKEN SUSAR — iki hatayı birden kapatır: (1) `Sayfalama`nın kendi
+   * `aria-live`'ı zaten konuşuyor, iki polite duyuru sıraya girerdi; (2)
+   * `items.length` SAYFADAKİ sayıdır — 87 kayıtlık listede her sayfada
+   * "25 yorum listelendi" derdi. Tek sayfalık listede sayfadaki sayı ZATEN
+   * toplamdır, yani duyuru konuştuğu her yerde doğrudur.
+   */
+  const duyuru = q.isLoading
+    ? ''
+    : listErr
+      ? 'Liste yüklenemedi.'
+      : !items || items.length === 0
+        ? 'Henüz yorumunuz yok.'
+        : sayfali
+          ? ''
+          : `${items.length} yorum listelendi.`;
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Yorumlarım</h1>
-          <p className="mt-1 text-sm text-muted">
-            Deneyiminizi yazın. Yorumunuz ekibimizin onayından sonra sitede yayımlanır.
-          </p>
-        </div>
+    <div className="mx-auto flex max-w-4xl flex-col gap-6">
+      <SayfaBasligi
+        baslik="Yorumlarım"
+        aciklama="Deneyiminizi yazın. Yorumunuz ekibimizin onayından sonra sitede yayımlanır."
+      >
         <Button
-          className="shrink-0 sm:w-auto"
           fullWidth
+          className="sm:w-auto"
           disabled={bekleyen}
           onClick={() => setCreating(true)}
         >
           Yorum yaz
         </Button>
-      </div>
+      </SayfaBasligi>
 
       {bekleyen && (
-        <Alert tone="info">
+        /* `duyur={false}`: bu kutu VERİ YÜKLENİNCE koşullu çizilir, bir işlemin
+           sonucunda BELİRMEZ. `role="alert"` olsaydı ekran okuyucu kullanıcının
+           sözünü sayfa açılışında keserdi (§7.4). */
+        <Alert tone="info" duyur={false}>
           Onay bekleyen bir yorumunuz var. O sonuçlandığında yenisini yazabilirsiniz.
         </Alert>
       )}
 
-      <Card>
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      <Card className="flex flex-col gap-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* `h2` her yerde aynı boyutta: `text-lg font-semibold` (§3.3). */}
           <h2 className="text-lg font-semibold">Gönderdiğim yorumlar</h2>
-          {total > 0 && <Badge tone="neutral">{total} yorum</Badge>}
+          <KayitSayaci toplam={total} />
         </div>
 
+        <p aria-live="polite" aria-atomic="true" className="sr-only">{duyuru}</p>
+
         {q.isLoading ? (
-          <div className="mt-4 flex flex-col gap-2">
-            {[0, 1, 2].map((i) => <Skeleton key={i} className="h-24" />)}
-          </div>
+          /* Yükleme İSKELETLE (§5.1). İskelet gerçek kartın şemasından türer:
+             üst satır (yıldız + rozet), üç satırlık paragraf, alt bilgi —
+             böylece veri geldiğinde düzen ZIPLAMAZ. */
+          <ul className="flex flex-col gap-4">
+            {[0, 1, 2].map((i) => (
+              <li key={i} className="raised rounded-xl border p-4 md:p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <Skeleton className="h-5 w-28" />
+                  <Skeleton className="h-5 w-24" />
+                </div>
+                <div className="mt-4 flex flex-col gap-2">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-4/5" />
+                </div>
+                <Skeleton className="mt-4 h-4 w-40" />
+              </li>
+            ))}
+          </ul>
         ) : listErr ? (
-          <ErrorBox err={listErr} className="mt-4" />
-        ) : !q.data?.items.length ? (
+          <HataDurumu hata={listErr} />
+        ) : !items?.length ? (
+          /* Boş durum ÖĞRETİR (§5.1). Bu liste süzgeçsizdir: boş olmasının tek
+             anlamı GERÇEKTEN boş olmasıdır (§6.3). */
           <Empty
             title="Henüz yorum yazmadınız"
-            hint="Hizmetimizle ilgili düşüncelerinizi paylaşırsanız, onaydan sonra sitede yayımlanır."
+            hint="Hizmetimizle ilgili düşüncelerinizi paylaşırsanız, onaydan sonra sitede kullanıcı adınızla yayımlanır."
           />
         ) : (
-          <>
-            {/* MOBİL VE MASAÜSTÜ AYNI: kart listesi. Yorum metni uzundur ve
-                tabloya sığmaz; yatay kaydırılan tablo kabul edilmez (§2.5). */}
-            <ul className="mt-4 flex flex-col gap-3">
-              {q.data.items.map((r) => (
-                <li key={r.id} className="raised rounded-xl border p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <Yildizlar puan={r.rating} />
-                    <Badge tone={statusTone(r.status)}>{r.statusLabel}</Badge>
-                  </div>
+          <ul className="flex flex-col gap-4">
+            {items.map((r) => (
+              /* İÇ İÇE KART YOK (§9.2): bu bir `<li>` satırıdır, ikinci bir
+                 `Card` değil; derinlik değil KENARLIK kullanır (§2.4). */
+              <li key={r.id} className="raised rounded-xl border p-4 md:p-5">
+                {/* `flex-wrap`, `shrink-0` DEĞİL: 320px'te yıldızlar + rozet tek
+                    satıra sığmayabilir. Sığmayan blok SARMALIDIR; sabitlenirse
+                    kart yatay taşar. */}
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <Yildizlar puan={r.rating} />
+                  <DurumRozeti durum={r.status} etiket={r.statusLabel} />
+                </div>
 
-                  {/* whitespace-pre-wrap: satır sonları korunur, HTML yorumlanmaz.
-                      break-anywhere: boşluksuz uzun bir dize 320 px'te yatay
-                      kaydırma üretirdi. */}
-                  <p className="mt-3 whitespace-pre-wrap break-anywhere text-sm leading-relaxed">
-                    {r.body}
-                  </p>
+                {/* Yorumun kendisi: 65-75ch bandında (§3.4), kısaltma YOK.
+                    `whitespace-pre-wrap` satır sonlarını korur, HTML yorumlamaz.
+                    `break-anywhere`: boşluksuz uzun bir dize 320px'te yatay
+                    kaydırma üretirdi. */}
+                <p className="mt-4 max-w-[70ch] whitespace-pre-wrap break-anywhere
+                              text-sm leading-relaxed">
+                  {r.body}
+                </p>
 
-                  <dl className="mt-3 flex flex-col gap-1.5 border-t border-[var(--border)]
-                                 pt-2 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Gönderildi</dt>
-                      <dd>{formatDateTime(r.createdAt)}</dd>
-                    </div>
-                    {r.reviewedAt && (
-                      <div className="flex items-center justify-between gap-3">
-                        <dt className="text-muted">
-                          {r.status === 'APPROVED' ? 'Yayımlandı' : 'Karar tarihi'}
-                        </dt>
-                        <dd>{formatDateTime(r.reviewedAt)}</dd>
-                      </div>
-                    )}
-                  </dl>
-
-                  {r.status === 'REJECTED' && r.rejectionReason && (
-                    <Alert tone="warn" className="mt-3">
-                      <p className="font-medium">Yayımlanmama nedeni</p>
-                      <p className="mt-1 whitespace-pre-wrap break-anywhere">
-                        {r.rejectionReason}
-                      </p>
-                      <p className="mt-2 opacity-80">
-                        Dilerseniz yeni bir yorum yazabilirsiniz.
-                      </p>
-                    </Alert>
+                {/* `text-sm` + `tabular-nums`: tarih veridir, dipnot değil
+                    (§3.2/§3.5 — eskiden `text-xs` idi ve rakamlar kayıyordu). */}
+                <p className="mt-4 text-sm tabular-nums text-muted">
+                  Gönderildi: {formatDateTime(r.createdAt)}
+                  {r.reviewedAt && (
+                    <> · {r.status === 'APPROVED' ? 'Yayımlandı' : 'Karar'}: {formatDateTime(r.reviewedAt)}</>
                   )}
+                </p>
 
-                  {r.status === 'PENDING' && (
-                    <p className="mt-3 text-xs text-muted">
-                      Bu yorum henüz sitede görünmüyor; onaydan sonra yayımlanacak.
+                {r.status === 'REJECTED' && r.rejectionReason && (
+                  <Alert tone="warn" duyur={false} className="mt-4">
+                    <p className="font-medium">Yayımlanmama nedeni</p>
+                    <p className="mt-1 max-w-[70ch] whitespace-pre-wrap break-anywhere">
+                      {r.rejectionReason}
                     </p>
-                  )}
-                </li>
-              ))}
-            </ul>
+                    <p className="mt-2">Dilerseniz yeni bir yorum yazabilirsiniz.</p>
+                  </Alert>
+                )}
 
-            {(hasPrev || hasNext) && (
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <Button variant="outline" size="sm" disabled={!hasPrev}
-                        onClick={() => setOffset((o) => Math.max(0, o - PAGE))}>
-                  Önceki
-                </Button>
-                <span className="text-xs text-muted">
-                  {offset + 1}–{Math.min(offset + PAGE, total)} / {total}
-                </span>
-                <Button variant="outline" size="sm" disabled={!hasNext}
-                        onClick={() => setOffset((o) => o + PAGE)}>
-                  Sonraki
-                </Button>
-              </div>
-            )}
-          </>
+                {r.status === 'PENDING' && (
+                  <p className="mt-4 text-sm text-muted">
+                    Bu yorum henüz sitede görünmüyor; onaydan sonra yayımlanacak.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
         )}
+
+        <Sayfalama offset={offset} limit={SAYFA_BOYUTU} toplam={total} onDegis={setOffset} />
       </Card>
 
       {creating && <YorumYazDialog onClose={() => setCreating(false)} />}
@@ -299,6 +347,11 @@ export default function YorumlarimPage() {
 
 /* ═══════════════════════ Yeni yorum ═══════════════════════ */
 
+/**
+ * `OnayDiyalogu` DEĞİL, ham `Modal`. §6.4: modal (a) yıkıcı işlem onayı ya da
+ * (b) korunmuş odak gerektiren çok adımlı form içindir. Bu (b)'dir — puan +
+ * metin, tek bir evet/hayır değil.
+ */
 function YorumYazDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [rating, setRating] = React.useState(5);
@@ -330,43 +383,46 @@ function YorumYazDialog({ onClose }: { onClose: () => void }) {
     create.mutate({ rating, body: b });
   }
 
-  const err = create.error instanceof ApiError ? create.error : null;
-  const kalan = MAX_BODY - runeLength(body);
+  const err = apiHatasi(create.error);
+
+  /*
+   * SINIR AŞIMI CANLI GÖSTERİLİR. Eski dosya sayacı sınır aşılınca KIRMIZIYA
+   * boyuyordu ama metni değiştirmiyordu — yani uyarı yalnız RENKLE taşınıyordu
+   * (§7.1 ihlali) ve ekran okuyucuya hiç ulaşmıyordu. Aynı bilgi artık
+   * `hata` olarak veriliyor: `CokSatir` onu `aria-describedby` +
+   * `role="alert"` ile bağlar, `aria-invalid` işaretler ve kenarlığı
+   * kırmızıya çeker. Metin sabit olduğu için sınır aşıldığında BİR KEZ
+   * duyurulur, her tuş vuruşunda değil.
+   */
+  const asim = runeLength(body) > MAX_BODY;
 
   return (
     <Modal open onClose={onClose} title="Yorum yaz">
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         <PuanSecici value={rating} onChange={setRating} disabled={create.isPending} />
         {errs.rating && (
-          <span role="alert" className="text-xs text-[var(--color-bad)]">{errs.rating}</span>
+          // `role="alert"`: hata YENİ BELİREN içeriktir (§7.4).
+          <p role="alert" className="text-sm text-[var(--color-bad)]">{errs.rating}</p>
         )}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">Yorumunuz</span>
-          <textarea
-            data-autofocus
-            className={textareaClass}
-            rows={6}
-            value={body}
-            disabled={create.isPending}
-            onChange={(e) => setBody(e.target.value)}
-            aria-invalid={errs.body ? true : undefined}
-            placeholder="Hangi servis için numara aldınız, kod ne kadar sürede geldi, ne beğendiniz?"
-          />
-          <span className={cx('text-xs', kalan < 0 ? 'text-[var(--color-bad)]' : 'text-muted')}>
-            {runeLength(body)}/{MAX_BODY} karakter
-          </span>
-          {errs.body && (
-            <span role="alert" className="text-xs text-[var(--color-bad)]">{errs.body}</span>
-          )}
-        </label>
+        <CokSatir
+          etiket="Yorumunuz"
+          data-autofocus
+          rows={6}
+          value={body}
+          disabled={create.isPending}
+          onChange={(e) => setBody(e.target.value)}
+          hata={errs.body ?? (asim ? 'Yorum en fazla 1000 karakter olabilir.' : undefined)}
+          ipucu={`${runeLength(body)}/${MAX_BODY} karakter`}
+          placeholder="Hangi servis için numara aldınız, kod ne kadar sürede geldi, ne beğendiniz?"
+        />
 
-        <p className="text-xs text-muted">
+        <p className="max-w-[70ch] text-sm text-muted">
           Yorumunuz ekibimizin onayından sonra sitede kullanıcı adınızla yayımlanır.
           E-posta adresiniz hiçbir zaman gösterilmez.
         </p>
 
-        {err && <ErrorBox err={err} />}
+        {err && <HataDurumu hata={err} />}
 
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           <Button type="submit" loading={create.isPending} fullWidth className="sm:w-auto">

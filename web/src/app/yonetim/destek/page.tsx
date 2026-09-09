@@ -11,16 +11,42 @@
  *
  * Ekrandaki gövde metinlerinin tamamı KULLANICI GİRDİSİDİR. React kaçırır;
  * `dangerouslySetInnerHTML` bu dosyada YOKTUR.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * BU DOSYA `components/yonetim` KATMANINA BAĞLANDI (tasarim-sistemi.md §5.3)
+ * ══════════════════════════════════════════════════════════════════════════
+ * Silinen yerel kopyalar: `ErrorBox` (9 ekranda birebir), `statusTone`
+ * (6 kopya), `selectClass` + `Chevron` (`.select-ok` zaten globals.css'te),
+ * `textareaClass`, elle kurulmuş sayfalama ve mobil kart ↔ masaüstü tablo
+ * İKİZİ. Veri artık TEK YERDE (`sutunlar`) tanımlıdır; kart sunumu ondan
+ * türetilir, ikinci kez elle yazılmaz.
+ *
+ * 🔴 ÇÖZÜLEN ETİKET AYRIŞMASI: eylem düğmesi mobil kartta "Yazışmayı aç",
+ * masaüstü tabloda "Aç" yazıyordu — aynı düğme, iki isim (§6 ölçülen üç
+ * ayrışmadan biri). Tek metin seçildi: "Yazışmayı aç". Kısa olan değil,
+ * NE YAPTIĞINI SÖYLEYEN kazandı; masaüstü sütunu zaten yeterince geniş.
  */
 
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { ApiError, apiFetch } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { Card, Button, Alert, Badge, Skeleton, Empty } from '@/components/ui';
 import { Modal } from '@/components/modal';
-
-const PAGE = 20;
+import {
+  SayfaBasligi,
+  SuzgecCubugu,
+  KayitSayaci,
+  Secim,
+  CokSatir,
+  VeriTablosu,
+  Sayfalama,
+  SAYFA_BOYUTU,
+  DurumRozeti,
+  HataDurumu,
+  apiHatasi,
+} from '@/components/yonetim';
+import type { Sutun } from '@/components/yonetim';
 
 /* ═══════════════════════ Sunucu sözleşmesi ═══════════════════════ */
 /* Karşılıkları: api/internal/transport/http/dto/ticket.go
@@ -80,54 +106,12 @@ const FILTERS: Array<{ value: Filter; label: string }> = [
 ];
 
 function queryFor(f: Filter, offset: number): string {
-  const qs = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
+  // Sayfa boyutu artık ekranın değil, katmanın kararı: tek panelde tek `limit`
+  // (§6.3). Yerel `PAGE = 20` sabiti silindi.
+  const qs = new URLSearchParams({ limit: String(SAYFA_BOYUTU), offset: String(offset) });
   if (f === 'pending') qs.set('pending', 'true');
   else if (f !== 'all') qs.set('status', f);
   return qs.toString();
-}
-
-function statusTone(s: TicketStatus): 'ok' | 'warn' | 'brand' | 'neutral' {
-  switch (s) {
-    case 'ANSWERED': return 'ok';
-    case 'OPEN': return 'warn';
-    case 'USER_REPLIED': return 'brand';
-    default: return 'neutral';
-  }
-}
-
-function ErrorBox({ err, className }: { err: ApiError; className?: string }) {
-  return (
-    <Alert className={className}>
-      <p>{err.message}</p>
-      {err.fields?.length ? (
-        <ul className="mt-1 list-inside list-disc">
-          {err.fields.map((f) => <li key={f.field}>{f.message}</li>)}
-        </ul>
-      ) : null}
-      {err.requestId && <p className="mt-2 text-xs opacity-60">İstek no: {err.requestId}</p>}
-    </Alert>
-  );
-}
-
-/** `appearance-none` ZORUNLU: WebKit'te yerel select 44 px hedefin altına düşer. */
-const selectClass =
-  'raised min-h-12 w-full appearance-none rounded-xl border px-3 pr-10 text-base ' +
-  'outline-none focus:border-brand-400 disabled:opacity-60';
-
-const textareaClass =
-  'raised w-full rounded-xl border px-3.5 py-2.5 text-base outline-none ' +
-  'focus:border-brand-400 disabled:opacity-60';
-
-function Chevron() {
-  return (
-    <svg
-      className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted)]"
-      viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden
-    >
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
 }
 
 /* ═══════════════════════ Sayfa ═══════════════════════ */
@@ -144,154 +128,170 @@ export default function AdminTicketsPage() {
   });
 
   const total = q.data?.total ?? 0;
-  const hasPrev = offset > 0;
-  const hasNext = offset + PAGE < total;
-  const listErr = q.error instanceof ApiError ? q.error : null;
+
+  /*
+   * `Sayfalama` GÖRÜNÜR MÜ? — `sayfalama.tsx` tek sayfaya sığan listede kendini
+   * hiç çizmez, yani bu ifade "sayfalama ekranda var mı" sorusunun aynısıdır.
+   * İki yerde birden kullanılıyor ve ikisi de AYNI hatayı kapatıyor:
+   *
+   *  1. ÇİFT CANLI BÖLGE. `VeriTablosu` ("12 kayıt listelendi.") ve `Sayfalama`
+   *     ("1–25 / 87") ikisi de `aria-live="polite"`. Süzgeç değişince ekran
+   *     okuyucu iki duyuruyu sıraya alır; ikincisi birincinin üstüne biner.
+   *     `kullanicilar` ve `denetim` bunu `duyuru={!sayfali}` ile çözmüştü, bu
+   *     ekran kuralın dışında kalmıştı.
+   *  2. YANLIŞ SAYI. `VeriTablosu`nun duyurusu SAYFADAKİ satır sayısıdır; 87
+   *     kayıtlık listede her sayfada "25 kayıt listelendi" der. Sayfalı liste
+   *     tam olarak bu ifadenin yanlış olduğu durumdur — ve orada susuyor.
+   *     Kalan durumda (tek sayfa) sayfadaki sayı ZATEN toplama eşittir, yani
+   *     duyuru açık kaldığı her yerde doğrudur.
+   */
+  const sayfali = total > SAYFA_BOYUTU;
+
+  /*
+   * SÜTUN TANIMI = TEK VERİ KAYNAĞI (§6.1 kural 2).
+   * `baslik` alanı hem `<th>` hem mobil kart `<dt>` olarak okunur; aynı veriyi
+   * iki yerde farklı etiketlemek yapısal olarak imkânsız.
+   *
+   * `sunum` YALNIZ sunum farkı içindir (dar düğme ↔ `fullWidth` düğme, kısaltma
+   * ↔ satır kaydırma). Metin ondan TÜRETİLMEZ.
+   *
+   * 🔴 SÜTUN ÖNCELİKLERİ ÖLÇÜMLE BELİRLENDİ. `admin-shell` `md:` üstünde
+   * 240px'lik (`w-60`) bir yan sütun çiziyor; tablonun ilk göründüğü
+   * genişlikte (768px) içerik alanı 768 − 240 − 48 = **480px**'dir. İlk
+   * taslak 7 sütundu ve tarayıcıda ölçüldüğünde sayfa 951px'e taşıyordu
+   * (yatay kaydırma = CLAUDE.md #17 ihlali): `whitespace-nowrap` taşıyan üç
+   * hücre (rozet ~150px, tarih ~128px, düğme ~103px) sert bir asgari genişlik
+   * dayatıyor, üstüne `truncate` (= nowrap) konmuş hücreler taban ekliyor.
+   * Düzeltme: "Mesaj" ayrı sütun olmaktan çıkıp Konu'nun alt satırına indi ·
+   * Konu/Kullanıcı kısaltma yerine SARMALIYOR · Kullanıcı ve Son hareket
+   * `oncelik: 3`. 768px'te kalan: Konu · Durum · İşlem — bilgi kaybolmaz,
+   * üçü de mobil kartta ve yazışma diyaloğunda durur.
+   */
+  const sutunlar: ReadonlyArray<Sutun<AdminTicket>> = [
+    {
+      anahtar: 'konu',
+      baslik: 'Konu',
+      mobilRol: 'baslik',
+      hucre: (t) => (
+        // `truncate` YOK: kısaltma `nowrap` demektir ve dar tabloda taşma
+        // üretir (yukarıdaki ölçüm). `max-w-[22rem]` yalnız ÜST sınırdır;
+        // hücre daralabilir.
+        <div className="max-w-[22rem] break-anywhere">
+          <span className="block font-medium">{t.subject}</span>
+          {/* Mesaj sayısı burada: ayrı sütun 768px'te sığmıyordu ve bu alt
+              satır zaten bugünkü masaüstü davranışı. Kartta da aynı yerde. */}
+          <span className="block text-sm tabular-nums text-muted">{t.messageCount} mesaj</span>
+        </div>
+      ),
+    },
+    {
+      anahtar: 'kullanici',
+      baslik: 'Kullanıcı',
+      oncelik: 3,
+      hucre: (t) => (
+        <div className="max-w-[16rem] break-anywhere">
+          <span className="block">{t.userUsername}</span>
+          <span className="block text-sm text-muted">{t.userEmail}</span>
+        </div>
+      ),
+    },
+    {
+      anahtar: 'oncelik',
+      baslik: 'Öncelik',
+      // §6.1 kural 3: 768px'te sığmayan sütun `lg:`'ye alınır, silinmez.
+      oncelik: 3,
+      hucre: (t) => t.priorityLabel,
+    },
+    {
+      anahtar: 'durum',
+      baslik: 'Durum',
+      mobilRol: 'rozet',
+      hucre: (t) => <DurumRozeti durum={t.status} etiket={t.statusLabel} />,
+    },
+    {
+      anahtar: 'sonHareket',
+      baslik: 'Son hareket',
+      oncelik: 3,
+      hizala: 'sag',
+      // Tarih de sayıdır: `tabular-nums` olmadan alt alta gelen saatler kayar
+      // (§3.5 — `/yonetim` altında bugün 0 kullanım).
+      sayisal: true,
+      hucre: (t) => formatDateTime(t.lastReplyAt),
+    },
+    {
+      anahtar: 'islem',
+      baslik: 'İşlem',
+      basligiGizle: true,
+      hizala: 'sag',
+      mobilRol: 'eylem',
+      hucre: (t, sunum) => (
+        <Button
+          variant="outline"
+          size="sm"
+          fullWidth={sunum === 'kart'}
+          onClick={() => setOpenId(t.id)}
+        >
+          Yazışmayı aç
+        </Button>
+      ),
+    },
+  ];
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Destek talepleri</h1>
-        <p className="mt-1 text-sm text-muted">
-          Kullanıcı taleplerini okuyun, yanıtlayın ve sonuçlananları kapatın.
-        </p>
-      </div>
+    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+      <SayfaBasligi
+        baslik="Destek talepleri"
+        aciklama="Kullanıcı taleplerini okuyun, yanıtlayın ve sonuçlananları kapatın."
+      />
 
-      <Card>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <label className="flex w-full flex-col gap-1.5 sm:max-w-xs">
-            <span className="text-sm font-medium">Görünüm</span>
-            <div className="relative">
-              <select
-                className={selectClass}
-                value={filter}
-                onChange={(e) => {
-                  setFilter(e.target.value as Filter);
-                  setOffset(0); // süzgeç değişti; eski sayfa numarası anlamsız
-                }}
-              >
-                {FILTERS.map((f) => (
-                  <option key={f.value} value={f.value}>{f.label}</option>
-                ))}
-              </select>
-              <Chevron />
-            </div>
-          </label>
-          {total > 0 && <div className="shrink-0"><Badge tone="neutral">{total} kayıt</Badge></div>}
-        </div>
+      <Card className="flex flex-col gap-6">
+        <SuzgecCubugu sag={<KayitSayaci toplam={total} />}>
+          <Secim
+            etiket="Görünüm"
+            className="sm:w-64"
+            value={filter}
+            onChange={(e) => {
+              setFilter(e.target.value as Filter);
+              setOffset(0); // süzgeç değişti; eski sayfa numarası anlamsız
+            }}
+          >
+            {FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </Secim>
+        </SuzgecCubugu>
 
-        {q.isLoading ? (
-          <div className="mt-4 flex flex-col gap-2">
-            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}
-          </div>
-        ) : listErr ? (
-          <ErrorBox err={listErr} className="mt-4" />
-        ) : !q.data?.items.length ? (
-          <Empty
-            title="Talep yok"
-            hint={filter === 'pending'
-              ? 'Yanıt bekleyen destek talebi bulunmuyor.'
-              : 'Bu görünüme uyan bir talep bulunmuyor.'}
-          />
-        ) : (
-          <>
-            {/* MOBİL: kart listesi. Yatay kaydırılan tablo kabul edilmez (§2.5). */}
-            <ul className="mt-4 flex flex-col gap-2 md:hidden">
-              {q.data.items.map((t) => (
-                <li key={t.id} className="raised rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="min-w-0 text-sm font-medium break-anywhere">{t.subject}</p>
-                    <Badge tone={statusTone(t.status)}>{t.statusLabel}</Badge>
-                  </div>
-                  <dl className="mt-3 flex flex-col gap-1.5 border-t border-[var(--border)] pt-2 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Kullanıcı</dt>
-                      <dd className="min-w-0 truncate">{t.userUsername}</dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Öncelik</dt>
-                      <dd>{t.priorityLabel}</dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Son hareket</dt>
-                      <dd>{formatDateTime(t.lastReplyAt)}</dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-muted">Mesaj</dt>
-                      <dd>{t.messageCount}</dd>
-                    </div>
-                  </dl>
-                  <Button variant="outline" size="sm" fullWidth className="mt-3"
-                          onClick={() => setOpenId(t.id)}>
-                    Yazışmayı aç
-                  </Button>
-                </li>
-              ))}
-            </ul>
+        <VeriTablosu
+          baslik="Destek talepleri"
+          sutunlar={sutunlar}
+          satirlar={q.data?.items}
+          satirAnahtari={(t) => t.id}
+          yukleniyor={q.isLoading}
+          hata={apiHatasi(q.error)}
+          // Sayfalama kendi aralığını duyuruyor; iki canlı bölge aynı anda
+          // konuşmasın (yukarıdaki `sayfali` notu).
+          duyuru={!sayfali}
+          bos={
+            /* §6.3: süzgeçten dolayı boş ile gerçekten boş FARKLI metinlerdir. */
+            <Empty
+              title="Talep yok"
+              hint={
+                filter === 'pending'
+                  ? 'Yanıt bekleyen destek talebi bulunmuyor.'
+                  : 'Bu görünüme uyan bir talep bulunmuyor. Görünümü "Tümü" yaparak listeyi genişletebilirsiniz.'
+              }
+            />
+          }
+        />
 
-            {/* MASAÜSTÜ: gerçek tablo. "Öncelik" lg: altında gizlenir ve bilgi
-                kaybolmaz — karttaki ve diyalogdaki yerinde durur. */}
-            <div className="mt-4 hidden md:block">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-xs
-                                 uppercase tracking-wide text-muted">
-                    <th scope="col" className="py-2 pr-3 font-medium">Konu</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Kullanıcı</th>
-                    <th scope="col" className="hidden py-2 pr-3 font-medium lg:table-cell">Öncelik</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Durum</th>
-                    <th scope="col" className="py-2 pr-3 font-medium">Son hareket</th>
-                    <th scope="col" className="py-2 text-right font-medium">
-                      <span className="sr-only">İşlem</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {q.data.items.map((t) => (
-                    <tr key={t.id} className="border-b border-[var(--border)] align-top last:border-0">
-                      <td className="max-w-[14rem] py-3 pr-3">
-                        <span className="block truncate font-medium">{t.subject}</span>
-                        <span className="block text-xs text-muted">{t.messageCount} mesaj</span>
-                      </td>
-                      <td className="max-w-[10rem] py-3 pr-3">
-                        <span className="block truncate">{t.userUsername}</span>
-                        <span className="block truncate text-xs text-muted">{t.userEmail}</span>
-                      </td>
-                      <td className="hidden py-3 pr-3 lg:table-cell">{t.priorityLabel}</td>
-                      <td className="py-3 pr-3">
-                        <Badge tone={statusTone(t.status)}>{t.statusLabel}</Badge>
-                      </td>
-                      <td className="py-3 pr-3 whitespace-nowrap text-muted">
-                        {formatDateTime(t.lastReplyAt)}
-                      </td>
-                      <td className="py-3 text-right">
-                        <Button variant="outline" size="sm" onClick={() => setOpenId(t.id)}>
-                          Aç
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {(hasPrev || hasNext) && (
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <Button variant="outline" size="sm" disabled={!hasPrev}
-                        onClick={() => setOffset((o) => Math.max(0, o - PAGE))}>
-                  Önceki
-                </Button>
-                <span className="text-xs text-muted">
-                  {offset + 1}–{Math.min(offset + PAGE, total)} / {total}
-                </span>
-                <Button variant="outline" size="sm" disabled={!hasNext}
-                        onClick={() => setOffset((o) => o + PAGE)}>
-                  Sonraki
-                </Button>
-              </div>
-            )}
-          </>
-        )}
+        <Sayfalama
+          offset={offset}
+          limit={SAYFA_BOYUTU}
+          toplam={total}
+          onDegis={setOffset}
+        />
       </Card>
 
       {openId && <AdminThreadDialog id={openId} onClose={() => setOpenId(null)} />}
@@ -301,6 +301,19 @@ export default function AdminTicketsPage() {
 
 /* ═══════════════════════ Yazışma diyaloğu ═══════════════════════ */
 
+/**
+ * `OnayDiyalogu` DEĞİL, ham `Modal`.
+ *
+ * §6.4 modalı iki duruma indirir: (a) yıkıcı işlem onayı, (b) korunmuş odak
+ * gerektiren çok adımlı form. Bu diyalog (b)'dir: yazışmayı okuyup yanıt
+ * yazmak tek bir "evet/hayır" değildir. `OnayDiyalogu` iki düğmeli bir onay
+ * adımıdır ve buraya uymaz.
+ *
+ * "Talebi kapat" için ARA ONAY EKLENMEDİ: bugün tek tıklamayla kapanıyor ve
+ * işlem GERİ ALINABİLİR — aynı diyalogdaki "Talebi yeniden aç" düğmesi bunu
+ * yapar. Geri alınabilir bir işleme onay adımı eklemek, günde onlarca kez
+ * yapılan bir işi yavaşlatmaktan başka bir şey yapmazdı.
+ */
 function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void }) {
   const qc = useQueryClient();
   const [message, setMessage] = React.useState('');
@@ -338,11 +351,8 @@ function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void })
   });
 
   const t = q.data;
-  const loadErr = q.error instanceof ApiError ? q.error : null;
-  const mutErr =
-    (reply.error instanceof ApiError && reply.error) ||
-    (setStatus.error instanceof ApiError && setStatus.error) ||
-    null;
+  const loadErr = apiHatasi(q.error);
+  const mutErr = apiHatasi(reply.error) ?? apiHatasi(setStatus.error);
   const closed = t?.status === 'CLOSED';
   const busy = reply.isPending || setStatus.isPending;
 
@@ -350,7 +360,13 @@ function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void })
     e.preventDefault();
     const m = message.trim();
     if (m.length === 0) { setFormErr('Mesaj boş olamaz.'); return; }
-    if (runeLength(m) > MAX_BODY) { setFormErr('Mesaj en fazla 4000 karakter olabilir.'); return; }
+    if (runeLength(m) > MAX_BODY) {
+      // Sayaç `ipucu` yuvasındadır ve hata varken gizlenir; bu yüzden güncel
+      // uzunluk HATA METNİNİN İÇİNDE tekrar verilir. Sınırı aştığını söyleyip
+      // "ne kadar aştın"ı gizlemek, kullanıcıyı saymaya zorlar.
+      setFormErr(`Mesaj en fazla ${MAX_BODY} karakter olabilir; şu an ${runeLength(m)}.`);
+      return;
+    }
     setFormErr('');
     reply.mutate(m);
   }
@@ -358,37 +374,38 @@ function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void })
   return (
     <Modal open onClose={onClose} title={t?.subject ?? 'Destek talebi'}>
       {q.isLoading ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-3">
           {[0, 1].map((i) => <Skeleton key={i} className="h-20" />)}
         </div>
       ) : loadErr ? (
-        <ErrorBox err={loadErr} />
+        <HataDurumu hata={loadErr} />
       ) : !t ? (
-        <Empty title="Talep bulunamadı" />
+        <Empty title="Talep bulunamadı" hint="Talep silinmiş ya da bağlantı eskimiş olabilir." />
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-5">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={statusTone(t.status)}>{t.statusLabel}</Badge>
+            <DurumRozeti durum={t.status} etiket={t.statusLabel} />
             <Badge tone="neutral">Öncelik: {t.priorityLabel}</Badge>
           </div>
 
-          <dl className="raised rounded-xl border p-3 text-xs">
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-muted">Kullanıcı</dt>
+          {/* Künye. `text-sm` — `text-xs` DEĞİL: burası veri (§3.2). */}
+          <dl className="raised flex flex-col gap-3 rounded-xl border p-4 text-sm">
+            <div className="flex items-start justify-between gap-4">
+              <dt className="shrink-0 text-muted">Kullanıcı</dt>
               <dd className="min-w-0 truncate font-medium">{t.userUsername}</dd>
             </div>
-            <div className="mt-1.5 flex items-center justify-between gap-3">
-              <dt className="text-muted">E-posta</dt>
-              <dd className="min-w-0 truncate break-anywhere">{t.userEmail}</dd>
+            <div className="flex items-start justify-between gap-4">
+              <dt className="shrink-0 text-muted">E-posta</dt>
+              <dd className="min-w-0 break-anywhere text-right">{t.userEmail}</dd>
             </div>
-            <div className="mt-1.5 flex items-center justify-between gap-3">
-              <dt className="text-muted">Açılış</dt>
-              <dd>{formatDateTime(t.createdAt)}</dd>
+            <div className="flex items-start justify-between gap-4">
+              <dt className="shrink-0 text-muted">Açılış</dt>
+              <dd className="tabular-nums">{formatDateTime(t.createdAt)}</dd>
             </div>
             {t.closedAt && (
-              <div className="mt-1.5 flex items-center justify-between gap-3">
-                <dt className="text-muted">Kapanış</dt>
-                <dd>{formatDateTime(t.closedAt)}</dd>
+              <div className="flex items-start justify-between gap-4">
+                <dt className="shrink-0 text-muted">Kapanış</dt>
+                <dd className="tabular-nums">{formatDateTime(t.closedAt)}</dd>
               </div>
             )}
           </dl>
@@ -402,8 +419,8 @@ function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void })
                   key={m.id}
                   className={
                     m.isStaff
-                      ? 'rounded-xl border border-brand-500/30 bg-brand-500/10 p-3'
-                      : 'raised rounded-xl border p-3'
+                      ? 'rounded-xl border border-brand-500/30 bg-brand-500/10 p-4'
+                      : 'raised rounded-xl border p-4'
                   }
                 >
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -414,11 +431,13 @@ function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void })
                       {m.isStaff ? `${m.authorLabel}${m.authorUsername ? ` · ${m.authorUsername}` : ''}`
                                  : t.userUsername}
                     </span>
-                    <span className="text-xs text-muted">{formatDateTime(m.createdAt)}</span>
+                    <span className="text-sm tabular-nums text-muted">
+                      {formatDateTime(m.createdAt)}
+                    </span>
                   </div>
                   {/* DÜZ METİN — `dangerouslySetInnerHTML` YOKTUR. Talebi okuyan
                       yöneticinin oturumunda kullanıcı betiği çalışamaz. */}
-                  <p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap break-anywhere">
+                  <p className="mt-3 max-w-[70ch] text-sm leading-relaxed whitespace-pre-wrap break-anywhere">
                     {m.body}
                   </p>
                 </li>
@@ -426,10 +445,21 @@ function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void })
             </ul>
           )}
 
-          {mutErr && <ErrorBox err={mutErr} />}
+          {mutErr && <HataDurumu hata={mutErr} />}
 
           {closed ? (
-            <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-4">
+            <div className="flex flex-col gap-3 border-t border-[var(--border)] pt-5">
+              {/*
+                🔴 `role="alert"` KALIYOR (varsayılan `duyur`). Bu kutu iki
+                yoldan gelir ve ikincisi belirleyici: "Talebi kapat" başarıyla
+                dönünce `t.status` CLOSED olur, yanıt formu YERİNİ buna bırakır.
+                Panelde toast yok (§5.3 P1-11); yani bu kutu, kapatma işleminin
+                ekran okuyucuya ulaşan TEK geri bildirimidir — susturulursa
+                yönetici düğmeye bastı mı, işledi mi, bilemez.
+                Zaten kapalı bir talep açılırken bir kez fazladan okunması bu
+                kaybın yanında kabul edilebilir; üstelik okunan şey talebin en
+                önemli durum bilgisidir.
+              */}
               <Alert tone="info">
                 Bu talep kapalı. Kullanıcı kapalı bir talebe yazamaz; yazışmaya devam
                 edilmesi gerekiyorsa talebi yeniden açın.
@@ -440,24 +470,25 @@ function AdminThreadDialog({ id, onClose }: { id: string; onClose: () => void })
               </Button>
             </div>
           ) : (
-            <form onSubmit={submit} className="flex flex-col gap-2 border-t
-                                               border-[var(--border)] pt-4" noValidate>
-              <label className="flex flex-col gap-1.5">
-                <span className="text-sm font-medium">Yanıtınız</span>
-                <textarea
-                  data-autofocus
-                  className={textareaClass}
-                  rows={4}
-                  value={message}
-                  disabled={busy}
-                  onChange={(e) => setMessage(e.target.value)}
-                  aria-invalid={formErr ? true : undefined}
-                />
-                <span className="text-xs text-muted">{runeLength(message)}/{MAX_BODY} karakter</span>
-                {formErr && (
-                  <span role="alert" className="text-xs text-[var(--color-bad)]">{formErr}</span>
-                )}
-              </label>
+            <form onSubmit={submit} className="flex flex-col gap-4 border-t
+                                               border-[var(--border)] pt-5" noValidate>
+              {/*
+                `data-autofocus` BU ALANDA KALIYOR (bugünkü davranış).
+                §7.5'in yasağı odağı ONAY DÜĞMESİNE koymaktır — basılı kalan
+                Enter'ın işlemi tetiklemesi riski oradadır. Bir metin alanında
+                Enter satır başı yapar, hiçbir şey göndermez; buraya gelen
+                yöneticinin ilk işi zaten yazmaktır.
+              */}
+              <CokSatir
+                data-autofocus
+                etiket="Yanıtınız"
+                rows={5}
+                value={message}
+                disabled={busy}
+                onChange={(e) => setMessage(e.target.value)}
+                ipucu={`${runeLength(message)}/${MAX_BODY} karakter`}
+                hata={formErr || undefined}
+              />
               <div className="flex flex-col gap-2 sm:flex-row-reverse">
                 <Button type="submit" loading={reply.isPending} disabled={busy}
                         fullWidth className="sm:w-auto">

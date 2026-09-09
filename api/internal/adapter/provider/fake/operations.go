@@ -74,9 +74,33 @@ func (p *Provider) Purchase(ctx context.Context, _ port.Creds, cmd port.Purchase
 	if vt == "" {
 		vt = port.VerifySMS
 	}
-	e, ok := p.catalog[key{cmd.ServiceCode, cmd.CountryCode, vt}]
-	if !ok {
-		return nil, port.ErrMappingMissing
+
+	// KİRALIK AYRI BİR KATALOGDAN OKUNUR ve süresi sağlayıcının kabul ettiği
+	// listede olmalıdır. Taklit `DurationHours`u yok sayarken testteki "30
+	// günlük kiralık" 20 dakikada doluyor ve hiçbir zaman kiralık olarak
+	// işaretlenmiyordu — düzeltilecek hatanın kendisi görünmez kalıyordu.
+	// test: rental_test.go#TestFakePurchaseHonoursRentalDuration
+	// test: rental_test.go#TestFakeRejectsUnsupportedRentalDuration
+	kind := port.KindSMSActivation
+	var e *entry
+	if cmd.DurationHours > 0 {
+		kind = port.KindSMSRental
+		if !p.durationAllowed(cmd.DurationHours) {
+			// Gerçek sağlayıcının BAD_DURATION yanıtının karşılığı.
+			return nil, fmt.Errorf("%w: kabul edilmeyen kiralama süresi %d saat",
+				port.ErrUnsupported, cmd.DurationHours)
+		}
+		re, ok := p.rents[rentKey{cmd.ServiceCode, cmd.CountryCode, cmd.DurationHours}]
+		if !ok {
+			return nil, port.ErrMappingMissing
+		}
+		e = re
+	} else {
+		ae, ok := p.catalog[key{cmd.ServiceCode, cmd.CountryCode, vt}]
+		if !ok {
+			return nil, port.ErrMappingMissing
+		}
+		e = ae
 	}
 	if e.stock <= 0 {
 		return nil, port.ErrOutOfStock
@@ -115,14 +139,29 @@ func (p *Provider) Purchase(ctx context.Context, _ port.Creds, cmd port.Purchase
 	id := fmt.Sprintf("fake-%s-%d", p.nonce, p.seq)
 	phone := fmt.Sprintf("%s%09d", fakeCountries[cmd.CountryCode].phoneCode, 100000000+p.seq)
 
+	// TTL ÜRÜN TÜRÜNDEN gelir: kiralıkta `duration`, aktivasyonda OrderTTL.
+	ttl := p.OrderTTL
+	if kind == port.KindSMSRental {
+		ttl = time.Duration(cmd.DurationHours) * time.Hour
+	}
+	// SÜREYİ ONURLANDIRMAYAN SAĞLAYICI KİPİ: kiralık istendi, aktivasyon
+	// verildi. Satın alma katmanı bunu YAKALAMALI ve parayı iade etmeli;
+	// yakalamazsa kullanıcı 30 günlük fiyata 20 dakikalık numara alır.
+	// test: rental_test.go#TestFakeCanIgnoreRentalDuration
+	if p.faults.RentalDurationIgnored && kind == port.KindSMSRental {
+		ttl = p.OrderTTL
+		kind = port.KindSMSActivation
+	}
+
 	o := &fakeOrder{
 		id: id, phone: phone,
 		service: cmd.ServiceCode, country: cmd.CountryCode,
 		costMicro: cost,
 		state:     port.StateWaiting,
 		createdAt: now,
-		expiresAt: now.Add(p.OrderTTL),
+		expiresAt: now.Add(ttl),
 		smsAt:     now.Add(p.SMSDelay),
+		kind:      kind, rentalHours: cmd.DurationHours,
 	}
 	p.orders[id] = o
 
@@ -133,8 +172,18 @@ func (p *Provider) Purchase(ctx context.Context, _ port.Creds, cmd port.Purchase
 		OperatorCode:  "any",
 		Cost:          money.New(cost, money.USD),
 		ExpiresAt:     o.expiresAt,
-		Subtype:       port.KindSMSActivation,
+		Subtype:       kind,
 	}, nil
+}
+
+// durationAllowed süre sağlayıcının kabul ettiği listede mi. Kilit ÇAĞIRANDA.
+func (p *Provider) durationAllowed(hours int) bool {
+	for _, h := range p.RentDurations {
+		if h == hours {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) GetStatus(ctx context.Context, _ port.Creds, remoteID string) (*port.RemoteStatus, error) {
@@ -172,16 +221,13 @@ func (p *Provider) GetStatus(ctx context.Context, _ port.Creds, remoteID string)
 // Kilit ÇAĞIRANDA tutulur: iki metot da p.mu altında çağırır.
 // test: fake_test.go#TestFakeListActiveMatchesGetStatus
 func (p *Provider) deliverDue(o *fakeOrder, now time.Time) {
+	if o.kind == port.KindSMSRental {
+		p.deliverRentalDue(o, now)
+		return
+	}
 	// SMS zamanı geldiyse otomatik teslim et.
 	if o.state == port.StateWaiting && !now.Before(o.smsAt) && len(o.messages) == 0 {
-		code := fmt.Sprintf("%06d", (p.seq*7919)%1000000)
-		o.messages = append(o.messages, port.RemoteMessage{
-			RemoteID:   o.id + "-msg-1",
-			Code:       code,
-			Body:       "Dogrulama kodunuz: " + code,
-			Sender:     "SERVIS",
-			ReceivedAt: now,
-		})
+		o.messages = append(o.messages, p.makeMessage(o, now, 1))
 		o.state = port.StateCompleted
 	}
 	// Süre dolduysa ve kod gelmediyse iptal.
@@ -190,10 +236,63 @@ func (p *Provider) deliverDue(o *fakeOrder, now time.Time) {
 	}
 }
 
+// deliverRentalDue kiralık numaraya dönem boyunca birden çok mesaj düşürür.
+//
+// AKTİVASYONDAN İKİ FARKI VAR ve ikisi de düzeltilen hatanın sınandığı yerdir:
+//
+//   - `len(o.messages) == 0` koruması YOKTUR: numara dönem boyunca N mesaj alır.
+//   - İlk mesaj `StateCompleted` YAZMAZ: kiralıkta ürün süredir, kod değil;
+//     sipariş `expiresAt`e kadar açık kalır.
+//
+// test: rental_test.go#TestFakeRentalDeliversMultipleMessages
+func (p *Provider) deliverRentalDue(o *fakeOrder, now time.Time) {
+	if o.state != port.StateWaiting {
+		return
+	}
+	if now.After(o.expiresAt) {
+		// Dönem bitti: yeni mesaj gelmez. Durum "iptal" DEĞİLDİR — hizmet
+		// verilmiştir; kapatma kararını servis katmanı verir.
+		return
+	}
+	interval := p.RentMessageInterval
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	for len(o.messages) < p.RentMessageCount {
+		due := o.smsAt.Add(time.Duration(len(o.messages)) * interval)
+		if now.Before(due) {
+			break
+		}
+		if due.After(o.expiresAt) {
+			break
+		}
+		o.messages = append(o.messages, p.makeMessage(o, due, len(o.messages)+1))
+	}
+}
+
+// makeMessage deterministik bir sahte SMS üretir. Kilit ÇAĞIRANDA tutulur.
+func (p *Provider) makeMessage(o *fakeOrder, at time.Time, n int) port.RemoteMessage {
+	code := fmt.Sprintf("%06d", (p.seq*7919+int64(n)*13)%1000000)
+	return port.RemoteMessage{
+		RemoteID:   fmt.Sprintf("%s-msg-%d", o.id, n),
+		Code:       code,
+		Body:       "Dogrulama kodunuz: " + code,
+		Sender:     "SERVIS",
+		ReceivedAt: at,
+	}
+}
+
 // minCancelWait iptal için asgari bekleme. HeroSMS'te 120 saniye
 // (info.minActivationTime). Gerçek kısıtı taklit ederiz ki arayüzdeki
 // "iptal butonu 120 sn pasif" kuralı (FR-416) burada da sınansın.
 const minCancelWait = 120 * time.Second
+
+// rentalFreeCancelWindow kiralıkta iptalin mümkün olduğu EN GEÇ an.
+//
+// docs/provider-herosms.md §6.1: "24 saat ve üzeri süreli aktivasyonda 20
+// dakikadan az süre geçmişse". Bu tavan taklit edilmezse "pencere kapandıktan
+// sonra iade" yolu testte hiç sınanmaz ve gerçek sağlayıcıda ilk kez görülür.
+const rentalFreeCancelWindow = 20 * time.Minute
 
 func (p *Provider) Cancel(ctx context.Context, _ port.Creds, remoteID string) error {
 	if err := p.delay(ctx); err != nil {
@@ -216,13 +315,24 @@ func (p *Provider) Cancel(ctx context.Context, _ port.Creds, remoteID string) er
 		// OTP geldiyse iptal edilemez — para iade edilmez.
 		return fmt.Errorf("%w: OTP alınmış", port.ErrCancelDenied)
 	}
-	if elapsed := p.clock.Now().Sub(o.createdAt); elapsed < minCancelWait {
+	elapsed := p.clock.Now().Sub(o.createdAt)
+	if elapsed < minCancelWait {
 		return port.NewRetryAfter("asgari bekleme süresi dolmadı", minCancelWait-elapsed, port.ErrCancelDenied)
+	}
+	if o.kind == port.KindSMSRental && elapsed >= rentalFreeCancelWindow {
+		// FREE_CANCELLATION_EXPIRED: kalıcı red, bizim giderimiz.
+		return fmt.Errorf("%w: ücretsiz iptal süresi doldu", port.ErrCancelDenied)
 	}
 
 	o.state = port.StateRefunded
 	o.closed = true
 	p.BalanceMicro += o.costMicro // sağlayıcı bize iade etti
+	if o.kind == port.KindSMSRental {
+		if e, ok := p.rents[rentKey{o.service, o.country, o.rentalHours}]; ok {
+			e.stock++
+		}
+		return nil
+	}
 	if e, ok := p.catalog[key{o.service, o.country, port.VerifySMS}]; ok {
 		e.stock++
 	}

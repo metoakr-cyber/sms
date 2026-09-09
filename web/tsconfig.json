@@ -34,11 +34,11 @@
     "**/*.tsx",
     ".next-check/types/**/*.ts",
     ".next-e2e/types/**/*.ts",
+    ".next-katalog/types/**/*.ts",
     ".next-seo/types/**/*.ts",
     ".next-tasarim/types/**/*.ts",
     ".next/types/**/*.ts",
-    "next-env.d.ts",
-    ".next-katalog/types/**/*.ts"
+    "next-env.d.ts"
   ],
   "exclude": [
     "node_modules"

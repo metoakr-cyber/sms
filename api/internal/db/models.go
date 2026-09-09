@@ -192,6 +192,7 @@ type OrderStatus string
 
 const (
 	OrderStatusPENDING   OrderStatus = "PENDING"
+	OrderStatusACTIVE    OrderStatus = "ACTIVE"
 	OrderStatusCOMPLETED OrderStatus = "COMPLETED"
 	OrderStatusCANCELLED OrderStatus = "CANCELLED"
 	OrderStatusFAILED    OrderStatus = "FAILED"
@@ -822,7 +823,10 @@ type Order struct {
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 	// Sağlayıcıda kapatma denemesinin sahiplenme damgası (kira). NULL = sahipsiz.
-	CloseClaimedAt *time.Time
+	CloseClaimedAt  *time.Time
+	ProductKind     ProductKind
+	RefundableUntil *time.Time
+	LastPolledAt    *time.Time
 }
 
 type OrderMessage struct {

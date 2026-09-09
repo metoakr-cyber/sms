@@ -55,12 +55,90 @@ func All(d Deps) []Job {
 		fxSync(d),
 		orderExpirer(d),
 		orderPoller(d),
+		rentalPoller(d),
+		rentalCloser(d),
 		activationReaper(d),
 		refundRetry(d),
 		orphanHoldReaper(d),
 		offerSync(d),
 		rentalSync(d),
 		dataRetention(d),
+	}
+}
+
+/* ═══════════════════════ Kiralık yaşam döngüsü ═══════════════════════ */
+
+// rentalPoller dönemi süren kiralıkları yoklar (FR-404'ün kiralık karşılığı).
+//
+// SIKLIK: 5 dakika — `order-poller`ın 30 saniyesinden AYRI, çünkü ölçek ayrı.
+// Aktivasyon ~20 dakika yaşar; kiralık 24–4320 saat. 100 kiralığı 30 saniyelik
+// tura sokmak günde 11.520 sağlayıcı isteği eder; 5 dakikada aynı yük 1.152'ye
+// iner. En kısa kiralıkta (24 saat) en kötü gecikme ömrün %0,35'idir, webhook
+// zaten birincil yoldur ve kullanıcının ekranı bizim API'mizi yokluyor —
+// sağlayıcıya değil.
+//
+// KİRALIK YOKLAMASI İLK MESAJLA BİTMEZ: 'ACTIVE' siparişler de taranır.
+// test: ../service/order/rental_integration_test.go#TestRentalPollerDeliversLaterMessages
+func rentalPoller(d Deps) Job {
+	if d.Orders == nil {
+		// Sessizce çalışmayan bir iş, çalıştığını sandığımız bir iştir.
+		return Job{Name: "rental-poller", Every: 0}
+	}
+	return Job{
+		Name: "rental-poller", Every: 5 * time.Minute,
+		Run: func(ctx context.Context) error {
+			rep, err := d.Orders.PollRentals(ctx, batchLimit)
+			if err != nil {
+				return err
+			}
+			if rep.Scanned > 0 {
+				slog.Info("kiralık yoklama turu",
+					"canli", rep.Scanned, "eslesen", rep.Matched,
+					"teslim", rep.Delivered, "saglayici_istegi", rep.ProviderCalls)
+			}
+			return nil
+		},
+	}
+}
+
+// rentalCloser kira dönemi biten siparişleri kapatır.
+//
+// `order-expirer` DEĞİL — ve bu ayrım kasıtlıdır. `order-expirer`ın işlediği
+// her satır bir TAM İADEdir ("kod gelmedi → parayı geri ver"). Kiralıkta dönem
+// sonu iade sebebi değildir: süre teslim edilmiştir ve sağlayıcının ücretsiz
+// iptal penceresi 1. günde kapanmıştır, yani yazacağımız iade sağlayıcıdan geri
+// gelmez. Birbirinin zıddı iki para sonucunu tek işe koymak, kaçınmaya
+// çalıştığımız hata sınıfının kendisidir.
+//
+// SIKLIK: 60 saniye — `activation-reaper` ile aynı ritim. Sorgu kısmi indeks
+// üzerinden ucuzdur ve sağlayıcıya istek yalnız gerçekten biten kiralık başına
+// BİR kez gider.
+// test: ../service/order/rental_integration_test.go#TestRentalNeverAutoRefundsAtEndOfPeriod
+func rentalCloser(d Deps) Job {
+	if d.Orders == nil {
+		return Job{Name: "rental-closer", Every: 0}
+	}
+	return Job{
+		Name: "rental-closer", Every: 60 * time.Second,
+		Run: func(ctx context.Context) error {
+			now := d.Clock.Now()
+			rows, err := d.TxRunner.Queries().ListEndedRentals(ctx,
+				db.ListEndedRentalsParams{Now: now, Lim: batchLimit})
+			if err != nil {
+				return err
+			}
+			for _, o := range rows {
+				// TEK SİPARİŞİN HATASI TURU DURDURMAZ.
+				if err := d.Orders.EndRental(ctx, o.ID); err != nil {
+					slog.Error("kira dönemi kapatılamadı",
+						"order", o.PublicID, "err", err)
+				}
+			}
+			if len(rows) > 0 {
+				slog.Info("kira dönemi biten siparişler işlendi", "count", len(rows))
+			}
+			return nil
+		},
 	}
 }
 
