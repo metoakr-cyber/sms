@@ -21,6 +21,7 @@ import (
 	depositsvc "github.com/ikmetrik/sms-platform/api/internal/service/deposit"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
+	reviewsvc "github.com/ikmetrik/sms-platform/api/internal/service/review"
 	ticketsvc "github.com/ikmetrik/sms-platform/api/internal/service/ticket"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	"github.com/ikmetrik/sms-platform/api/internal/transport/http/handler"
@@ -46,6 +47,9 @@ type Deps struct {
 
 	// TicketSvc destek talepleri (FR-600).
 	TicketSvc *ticketsvc.Service
+
+	// ReviewSvc müşteri yorumları.
+	ReviewSvc *reviewsvc.Service
 
 	// RuleSvc fiyat kuralı yönetimi (FR-703). nil ise /admin/pricing-rules
 	// uçları 500 döner.
@@ -119,6 +123,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	orderH := handler.NewOrder(d.OrderSvc, d.OrderBus, responder)
 	depositH := handler.NewDeposit(d.DepositSvc, responder)
 	ticketH := handler.NewTicket(d.TicketSvc, responder)
+	reviewH := handler.NewReview(d.ReviewSvc, responder)
 
 	requireAuth := middleware.RequireAuth(middleware.AuthDeps{
 		Sessions: d.Sessions, Queries: d.Queries,
@@ -160,6 +165,14 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		cat.GET("/rental/services", catalogH.RentalServices)
 		cat.GET("/rental/countries", catalogH.RentalCountries)
 		cat.GET("/rental/durations", catalogH.RentalDurations)
+
+		// ─── Müşteri yorumları (SİTEDE gösterilen liste) ───
+		//
+		// Oturumsuzdur: ziyaretçi de görür ve sunucu bileşeninden çekilir.
+		// YALNIZ ONAYLI yorumlar döner; e-posta seçilmez bile.
+		// Katalog grubunda durur çünkü aynı önbellek ve aynı SEO görünürlük
+		// kuralına tabidir — ayrı bir grup açmak yalnız tekrar üretirdi.
+		cat.GET("/reviews", reviewH.Public)
 	}
 
 	// ─── Oturum gerektiren ───
@@ -228,6 +241,30 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 				Limit: 20, Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			ticketH.AddMessage)
+
+		// ─── Müşteri yorumları (kullanıcı yolu) ───
+		//
+		// Kullanıcı uçlarında ayrı bir izin YOKTUR: sahiplik sorgunun
+		// parçasıdır ve başkasının yorumu 404 döner.
+		auth.GET("/reviews/mine", reviewH.Mine)
+		auth.GET("/reviews/:id", reviewH.Get)
+
+		// 🔴 YORUM YAZMAK DOĞRULANMIŞ E-POSTA İSTER — destek talebinin
+		// AKSİNE. Gerekçe: destek, e-postası doğrulanmayan kullanıcının
+		// başvuracağı yerdir; yorum ise SİTEDE YAYIMLANACAK bir içeriktir.
+		// Doğrulanmamış tek kullanımlık hesaplarla üretilen yorumlar hem
+		// moderasyon kuyruğunu doldurur hem de yayımlandığında sahte
+		// referans hâline gelir.
+		//
+		// Limit DAR: bekleyen yorum sınırı zaten bir kişiyi tek yoruma
+		// indiriyor, ama reddedilen yorumu art arda yeniden göndermek
+		// mümkün olmamalı.
+		auth.POST("/reviews",
+			middleware.RequireVerifiedEmail(Fail),
+			middleware.RateLimit(d.Limiter, "review", middleware.RateLimitConfig{
+				Limit: 5, Window: time.Minute, KeyFn: middleware.ByUser,
+			}, Fail),
+			reviewH.Create)
 
 		// Teklif: oturum + DOĞRULANMIŞ E-POSTA + hız limiti.
 		//
@@ -404,6 +441,21 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		// PATCH: durum DEĞİŞTİRİR, dolayısıyla GET olamaz (değişmez #8).
 		admin.PATCH("/tickets/:id/status",
 			middleware.RequirePermission("tickets:reply", Fail), ticketH.AdminSetStatus)
+
+		// ─── Müşteri yorumları (yönetim) ───
+		//
+		// İzin kodları 00013_reviews.sql'de tanımlanır ve admin rolüne
+		// bağlanır. Okuma ile moderasyon AYRI izinlerdir: destek personelinin
+		// kuyruğu görmesi, sitede ne yayımlanacağına karar verebilmesi
+		// anlamına gelmez.
+		admin.GET("/reviews",
+			middleware.RequirePermission("reviews:read", Fail), reviewH.AdminList)
+		// 🔴 ONAY VE RED **POST**'TUR, GET DEĞİL (değişmez #8): eski sistemde
+		// onay bir GET'ti ve <img src="…/approve"> ile tetiklenebiliyordu.
+		admin.POST("/reviews/:id/approve",
+			middleware.RequirePermission("reviews:moderate", Fail), reviewH.Approve)
+		admin.POST("/reviews/:id/reject",
+			middleware.RequirePermission("reviews:moderate", Fail), reviewH.Reject)
 	}
 
 	// M2: /wallet/*  ·  M4: /catalog/*  ·  M5: /orders/*  ·  M6: /admin/*

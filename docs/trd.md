@@ -468,6 +468,50 @@ Durum: `OPEN → ANSWERED → USER_REPLIED → CLOSED`.
 > **KK-600:** Personel yanıtı `is_staff = true` ile kaydedilir. *(Mevcut sistemde bu bayrak var olmayan
 > bir alandan okunduğu için her zaman `false`.)* Kullanıcı başkasının talebini göremez ve yanıtlayamaz.
 
+### FR-601 · Müşteri yorumu — gönderme `ZORUNLU`
+Oturum açmış ve **e-postası doğrulanmış** kullanıcı, panelinden 1–5 puan + 10–1000 karakter metin
+ile yorum gönderir. Yorum her zaman `PENDING` başlar; durum istemciden alınmaz.
+
+**Kabul kriterleri**
+- Kullanıcının aynı anda **en fazla bir** `PENDING` yorumu olabilir; ikinci gönderim `409` döner.
+  Sınır kısmi benzersiz indekstedir — N eşzamanlı istekten tam olarak biri yazılır.
+  → `internal/service/review/review_integration_test.go#TestConcurrentSubmitsLeaveOnePending`
+- Uzunluk **karakter (rune)** ile ölçülür; 1000 Türkçe karakterlik yorum kabul edilir.
+  → `dto/review_test.go#TestTurkishBodyIsMeasuredInRunes`
+- Gövdeye `"status":"APPROVED"` konsa bile yorum `PENDING` kaydedilir.
+  → `handler/review_integration_test.go#TestClientCannotSubmitApprovedReview`
+
+### FR-602 · Müşteri yorumu — moderasyon `ZORUNLU`
+Yönetici `reviews:read` ile kuyruğu görür, `reviews:moderate` ile karar verir.
+Durum: `PENDING → APPROVED | REJECTED`, ayrıca `APPROVED → REJECTED` (yayından kaldırma).
+`REJECTED` **terminaldir**. Onay ve red **POST**'tur (değişmez #8).
+
+**Kabul kriterleri**
+- Red gerekçesi zorunludur (`422`) ve kullanıcıya gösterilir; onayda gerekçe alanı temizlenir.
+  → `handler/review_integration_test.go#TestRejectRequiresReason`
+- Geçersiz geçiş hem serviste hem **veritabanı tetikleyicisinde** reddedilir.
+  → `internal/service/review/review_integration_test.go#TestInvalidReviewTransitionIsRejectedByDB`
+- Onaylanmış yorumun metni ve puanı değiştirilemez (DB tetikleyicisi).
+  → `internal/service/review/review_integration_test.go#TestReviewBodyIsImmutable`
+- Yetki matrisi: oturumsuz `401` · izinsiz `403` · başkasının yorumu `404`.
+  Yalnız `reviews:read` izni onay/red için **yetmez**.
+  → `handler/review_integration_test.go#TestReviewAuthMatrix`
+
+> **KK-601:** Sitede gösterilen yorum yanıtında **kullanıcı e-postası bulunmaz** ve sorgu o sütunu
+> seçmez. Yalnız kullanıcı adı, puan, metin ve yayın tarihi döner.
+> → `handler/review_integration_test.go#TestPublicReviewsNeverExposeEmail`
+
+### FR-603 · Müşteri yorumu — sitede gösterim `ZORUNLU`
+`GET /catalog/reviews` oturumsuzdur ve **yalnız `APPROVED`** yorumları döner. Bir kullanıcının
+birden fazla onaylı yorumu varsa yalnız **en sonu** gösterilir (`DISTINCT ON (user_id)`).
+
+**Kabul kriterleri**
+- Onay bekleyen ve reddedilen yorum sitede **hiç** görünmez.
+  → `handler/review_integration_test.go#TestRejectedReviewNeverReachesTheSite`
+- Onaylı yorum yoksa arayüz bölümü **hiç render edilmez**; yer tutucu, iskelet ya da örnek yorum
+  gösterilmez. Tohum verisi olarak sahte yorum **eklenmez**.
+- Ortalama puan JSON'da kayan nokta değil, onda birlik tam sayı olarak taşınır (`averageX10`).
+
 ---
 
 ## 7. Yönetim paneli
@@ -699,6 +743,11 @@ POST   /api/v1/tickets
 GET    /api/v1/tickets/:id
 POST   /api/v1/tickets/:id/messages
 
+GET    /api/v1/catalog/reviews            FR-603   ⟵ OTURUMSUZ, yalnız APPROVED
+POST   /api/v1/reviews                    FR-601
+GET    /api/v1/reviews/mine               FR-601
+GET    /api/v1/reviews/:id                FR-601
+
 --- admin (izin gerektirir) ---
 GET    /api/v1/admin/users                users:read
 PATCH  /api/v1/admin/users/:id            users:write
@@ -715,6 +764,9 @@ POST   /api/v1/admin/providers/:id/sync   providers:write
 GET    /api/v1/admin/pricing-rules        pricing:read      FR-703
 POST   /api/v1/admin/pricing-rules        pricing:write
 POST   /api/v1/admin/pricing-rules/preview pricing:read
+GET    /api/v1/admin/reviews              reviews:read      FR-602
+POST   /api/v1/admin/reviews/:id/approve  reviews:moderate  FR-602  ⟵ POST, GET DEĞİL
+POST   /api/v1/admin/reviews/:id/reject   reviews:moderate  FR-602
 GET    /api/v1/admin/audit-logs           audit:read        FR-705
 GET    /api/v1/admin/reports/profit       orders:read_all   FR-706
 ```

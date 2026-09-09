@@ -14,6 +14,12 @@ import { cx } from '../ui';
  *
  * Bölümün kendisi HAZIR: gerçek yorumlar dosyaya eklendiği an görünür olur,
  * başka bir kod değişikliği gerekmez.
+ *
+ * 🔗 SIRADAKİ ADIM: bu oturumda başka bir ajan gerçek bir yorum sistemi
+ * yazıyor (`api/internal/service/review`, genel uç: `GET /catalog/reviews`,
+ * YALNIZ onaylı yorumları döner). Uç canlıya çıktığında bölümü beslemek için
+ * bu bileşeni DEĞİŞTİRMEK GEREKMEZ — sayfa `fetchPublic` ile listeyi çekip
+ * `yorumlar` özelliğiyle geçer. Statik dosya o zaman yedek olarak boş kalır.
  */
 
 const AVATAR: Renk[] = ['mavi', 'pembe', 'yesil', 'mor', 'deniz', 'turuncu'];
@@ -71,8 +77,10 @@ function Kart({ yorum, renk }: { yorum: Yorum; renk: Renk }) {
   );
 }
 
-export function Yorumlar() {
-  if (YORUMLAR.length === 0) return null;
+export function Yorumlar({ yorumlar = YORUMLAR }: { yorumlar?: Yorum[] } = {}) {
+  // Boş liste → bölüm HİÇ YOK. Boş bir "Kullanıcılar ne diyor?" başlığı
+  // bırakmak, hiç yorum olmadığını duyurmanın en gürültülü yoludur.
+  if (yorumlar.length === 0) return null;
 
   return (
     <Bolum aria-labelledby="yorumlar">
@@ -85,7 +93,7 @@ export function Yorumlar() {
         aciklama="Yayımlanmasına izin verilen kullanıcı yorumları."
       />
       <ul className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {YORUMLAR.map((y, i) => (
+        {yorumlar.map((y, i) => (
           <Belir as="li" key={`${y.ad}-${i}`} gecikme={i * 80}>
             <Kart yorum={y} renk={AVATAR[i % AVATAR.length] ?? 'mavi'} />
           </Belir>

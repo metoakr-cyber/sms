@@ -32,6 +32,7 @@ import (
 	depositsvc "github.com/ikmetrik/sms-platform/api/internal/service/deposit"
 	ordersvc "github.com/ikmetrik/sms-platform/api/internal/service/order"
 	pricingsvc "github.com/ikmetrik/sms-platform/api/internal/service/pricing"
+	reviewsvc "github.com/ikmetrik/sms-platform/api/internal/service/review"
 	ticketsvc "github.com/ikmetrik/sms-platform/api/internal/service/ticket"
 	walletsvc "github.com/ikmetrik/sms-platform/api/internal/service/wallet"
 	httptransport "github.com/ikmetrik/sms-platform/api/internal/transport/http"
@@ -176,6 +177,11 @@ func run() error {
 		TxRunner: txRunner, Clock: port.RealClock{},
 	})
 
+	// Müşteri yorumları. Para hareketi üretmez; dış çağrı yapmaz.
+	reviewService := reviewsvc.New(reviewsvc.Deps{
+		TxRunner: txRunner, Clock: port.RealClock{},
+	})
+
 	authService := authsvc.New(authsvc.Deps{
 		TxRunner: txRunner, Sessions: sessions, Mailer: mail,
 		Captcha: cap, Limiter: limiter, Clock: port.RealClock{},
@@ -248,6 +254,7 @@ func run() error {
 		OrderSvc: orderService, OrderBus: orderBus,
 		DepositSvc:   depositService,
 		TicketSvc:    ticketService,
+		ReviewSvc:    reviewService,
 		RuleSvc:      ruleService,
 		CatalogSync:  syncRunner,
 		Metrics:      metricsHandler(metrics),

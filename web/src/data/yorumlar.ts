@@ -18,6 +18,13 @@
  * Dizi boşken ana sayfadaki yorum bölümü HİÇ RENDER EDİLMEZ — boş bir
  * "Müşterilerimiz ne diyor?" başlığı bırakılmaz.
  *
+ * 🔗 KALICI ÇÖZÜM: `api/internal/service/review` (bu oturumda yazılıyor)
+ * gerçek yorumları veritabanında tutuyor ve `GET /catalog/reviews` YALNIZ
+ * ONAYLI olanları döndürüyor. O uç canlıya çıktığında ana sayfa listeyi
+ * `fetchPublic` ile çekip `<Yorumlar yorumlar={...} />` şeklinde geçmeli;
+ * bu dosya elle doldurulacak bir yer OLMAKTAN ÇIKAR. Uç hazır olana kadar
+ * burası bilerek boştur — geçici diye uydurma yorum yazılmaz.
+ *
  * Doldururken:
  *   · `ad` — kişinin yayımlanmasına izin verdiği ad (kısaltma olabilir: "M. Yılmaz")
  *   · `unvan` — isteğe bağlı, izin verilmişse

@@ -1,1 +1,0 @@
-{"kind":"FETCH","data":{"headers":{"content-length":"12","content-type":"application/json; charset=utf-8","date":"Wed, 09 Sep 2026 07:10:25 GMT","x-request-id":"4e98d32e-7a3c-48d3-9269-e868609a72a7"},"body":"eyJpdGVtcyI6W119","status":200,"url":"http://127.0.0.1:8091/api/v1/catalog/rental/services"},"revalidate":300,"tags":[]}

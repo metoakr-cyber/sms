@@ -38,6 +38,7 @@ SELECT * FROM reviews WHERE public_id = @public_id AND user_id = @user_id;
 -- name: LockReview :one
 -- Yönetim yolu: ÇAĞIRANIN TRANSACTION'I İÇİNDE. Kilit, aynı yoruma iki
 -- yöneticinin aynı anda karar vermesini (biri onay, biri red) engeller.
+-- test: internal/service/review/review_integration_test.go#TestConcurrentDecisionsLeaveOneOutcome
 SELECT * FROM reviews WHERE public_id = @public_id FOR UPDATE;
 
 -- name: DecideReview :one

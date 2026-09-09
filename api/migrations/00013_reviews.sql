@@ -5,6 +5,7 @@
 --
 -- Akış: müşteri kendi panelinden yorum yazar → yönetici onaylar/reddeder →
 -- YALNIZ onaylı yorumlar sitede görünür.
+-- test: internal/transport/http/handler/review_integration_test.go#TestRejectedReviewNeverReachesTheSite
 --
 -- 🔴 TOHUM VERİSİ YOKTUR ve OLMAYACAKTIR. Bu migration tek bir örnek yorum
 -- bile eklemez. Uydurma yorum, para yatırılan bir sitede yanıltıcı reklamdır;

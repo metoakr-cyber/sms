@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next';
+import { yazilariGetir } from './(genel)/blog/icerik';
 
 const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
 
@@ -9,6 +10,17 @@ const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
  */
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
+
+  // Blog yazıları DOSYADAN okunur ve haritaya ELLE eklenmez: yeni yazı
+  // eklendiğinde birinin haritayı güncellemeyi hatırlaması gerekseydi,
+  // yazılar er geç haritasız kalırdı.
+  const blog = yazilariGetir().map((y) => ({
+    url: `${SITE}/blog/${y.slug}`,
+    lastModified: new Date(y.tarih),
+    changeFrequency: 'monthly' as const,
+    priority: 0.5,
+  }));
+
   return [
     { url: `${SITE}/`,        lastModified: now, changeFrequency: 'daily',  priority: 1 },
     { url: `${SITE}/fiyatlar`,lastModified: now, changeFrequency: 'daily',  priority: 0.9 },
@@ -16,6 +28,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
     // "aylık sanal numara"). Ana sayfaya gömülü bir bölüm olsaydı bu
     // aramalarda hiç görünmezdi.
     { url: `${SITE}/kiralama`,lastModified: now, changeFrequency: 'daily',  priority: 0.9 },
+    // Tam servis listesi. Katalog senkronla günde birkaç kez değişir ve
+    // "X için sanal numara" aramalarının indiği sayfa burasıdır.
+    { url: `${SITE}/servisler`, lastModified: now, changeFrequency: 'daily', priority: 0.8 },
     { url: `${SITE}/sss`,     lastModified: now, changeFrequency: 'weekly', priority: 0.7 },
     // Hakkımızda ve İletişim fiyat/stoktan bağımsızdır, yılda birkaç kez
     // değişir — bu yüzden 'monthly'. Öncelikleri SSS'in altında ama giriş
@@ -23,6 +38,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
     // para yatırmadan önce bakılan sayfalar bunlardır.
     { url: `${SITE}/hakkimizda`, lastModified: now, changeFrequency: 'monthly', priority: 0.6 },
     { url: `${SITE}/iletisim`,   lastModified: now, changeFrequency: 'monthly', priority: 0.6 },
+    { url: `${SITE}/blog`,    lastModified: now, changeFrequency: 'weekly', priority: 0.6 },
+    ...blog,
     { url: `${SITE}/kayit`,   lastModified: now, changeFrequency: 'yearly', priority: 0.5 },
   ];
   // NEDEN /giris ÇIKARILDI: sayfanın kendi metadata'sı `robots: noindex`

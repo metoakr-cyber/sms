@@ -138,6 +138,61 @@ farklı kod. `make check` bunu çalıştırır. Göz kaçırılamaz.
 
 **Ders:** Uzun çıktı üreten bir doğrulama adımı, doğrulama değildir.
 
+### 2026-09-09 · Sahte sağlayıcı kataloğu GERÇEK servis kodlarıyla genişletildi
+Ana sayfada yalnız 6 servis görünüyordu. Kök sebep ön yüz değil VERİYDİ: gerçek HeroSMS kataloğu
+silinmişti ve geliştirme veritabanında yalnız sahte sağlayıcının 6 servis / 5 ülkelik tohumu vardı.
+
+**Karar:** `api/internal/adapter/provider/fake/catalog.go` tohumu **16 servis × 10 ülke / 77
+kombinasyon**a çıkarıldı ve kodlar **gerçek HeroSMS kodları** seçildi (`wa`, `tg`, `ig`, `go`, `fb`,
+`tw`, `ds`, `lf`, `am`, `mm`, `nf`, `ub`, `vi`, `mt`, `ya`, `bkd`).
+
+**Neden gerçek kodlar:** `services.code` hem logo eşleştirmesinin (`web/scripts/servis-logolari.sql`
+→ `WHERE code = 'wa'`) hem de sağlayıcı boyut eşleştirmesinin anahtarıdır. Uydurma bir kodla
+geliştirme logosuz çalışır ve gerçek sağlayıcıya geçince "neden şimdi bozuldu?" sorusu üretir.
+
+**Kod → marka eşleşmesi TAHMİNLE YAZILMADI:** `web/public/servis-logolari/<kod>.svg` dosyalarının
+`aria-label` değerlerinden doğrulandı. Görev metnindeki iki kod YANLIŞTI ve düzeltildi:
+Steam = **`mt`** (`ss` değil), TikTok = **`lf`** (`ti` değil; `ti.png` tanımlanamayan bir favicon).
+
+**WhatsApp × TR bilerek STOKSUZ kaldı** (canlıda `physicalCount=0` gözlendi) — "stok yok" dalı
+yerel geliştirmede de gerçekten oluşsun diye. Ama WhatsApp'ın stoklu ülkeleri var, yani servis
+katalogda görünüyor.
+→ test: `internal/adapter/provider/fake/catalog_test.go` (logo dosyası var mı, ülke adı
+`country_reference`'ta çözülüyor mu, ≥12 stoklu servis var mı, wa×TR hâlâ stoksuz mu)
+
+### 2026-09-09 · Müşteri yorumu sistemi — dört kural
+Müşteri panelinden yorum → yönetici onayı → sitede yayın. Kararlar ve gerekçeleri:
+
+1. **Kullanıcı başına aynı anda EN FAZLA BİR bekleyen yorum.** Sınır uygulama katmanında değil,
+   kısmi benzersiz indekstedir (`reviews_one_pending_per_user_idx`): "önce SELECT sonra INSERT"
+   kontrolünü iki eşzamanlı istek ikisi de geçerdi. Kullanıcı zaman içinde birden fazla yorum
+   yazabilir; sitede yalnız **en son onaylı** yorumu görünür (`DISTINCT ON (user_id)`).
+2. **Onaylanmış yorumun metni ve puanı DEĞİŞTİRİLEMEZ** (DB tetikleyicisi). "Onaylandı" bir
+   yöneticinin O METNE verdiği karardır; sonradan değişebilseydi nazik bir yorum onaylattırıp
+   içeriği reklama çevirmek mümkün olurdu. Fikir değişirse yeni yorum yazılır, yeniden onaya girer.
+3. **`APPROVED → REJECTED` oku VAR, `REJECTED`'dan çıkış YOK.** Onayı tümüyle terminal yapmak daha
+   temiz görünür ama yanlışlıkla onaylanmış bir yorumu siteden indirmenin hiçbir yolu kalmazdı.
+   Red gerekçesi her iki durumda da zorunlu ve kullanıcıya gösterilir.
+4. **Sitedeki sorgu e-postayı SEÇMEZ.** "Yanıtta gizleriz" yeterli değil: alan seçilirse bir gün
+   birinin onu DTO'ya koyması bir satır uzaklıktadır. Seçilmeyen sütun sızamaz.
+   → test: `handler/review_integration_test.go#TestPublicReviewsNeverExposeEmail`
+
+**Tohum verisi YOK ve olmayacak.** Onaylı yorum yoksa sitedeki bölüm hiç render edilmez.
+Uydurma yorum yanıltıcı reklamdır (bkz. `web/src/data/yorumlar.ts` başlığındaki gerekçe).
+
+Yeni izinler: `reviews:read` (kuyruğu görme) ve `reviews:moderate` (karar verme) — **ayrı**
+tutuldu; destek personelinin kuyruğu görmesi, sitede ne yayımlanacağına karar verebilmesi anlamına
+gelmez.
+
+### 2026-09-09 · `/servisler` sayfasında fiyat GÖSTERİLMEDİ
+"En ucuz fiyattan itibaren" bilgisi istendi ama **eklenmedi**. Gerekçe: fiyat kullanıcıya özeldir ve
+satın alma ekranında bir TEKLİF olarak üretilir (design.md §8.1) — maliyet dövizle gelir, kur gün
+içinde değişir, marj kuralları ürün bazında farklıdır. Genel (oturumsuz) bir fiyat ucu bilerek
+yoktur ve `/fiyatlar` sayfası da aynı gerekçeyi yazıyor. "Şu kadardan başlayan fiyatlarla" yazmak,
+sunucunun garanti etmediği bir sayıyı garanti gibi göstermek olurdu.
+→ ⬜ Açık: genel bir "başlangıç fiyatı" ucu istenirse, önbellekteki `min_cost_micro` + fiyat
+kuralları + kur ile hesaplanabilir (`RuleService.Preview` deseni). Bu bir fiyatlandırma kararıdır.
+
 ### ~~⬜ Açık: kur (FX) sağlayıcısı~~ — ✅ TCMB seçildi (yukarıdaki kayda bakın)
 
 ### ⬜ Açık: e-posta sağlayıcısı seçilmedi
@@ -578,6 +633,8 @@ gösteriyor: 5sim'de `country` boyutu `"turkey"` gibi bir metin, HeroSMS'te `62`
 | **`fetch`'in zaman aşımı yoktur** | Mobil ağ koparsa arayüz sonsuza kadar yükleniyor kalır | `AbortController` + 15 sn zaman aşımı — istemci sarmalayıcısında |
 | **`navigator.onLine` güvenilmez** | İnternetsiz Wi-Fi'de `true` döner | Yalnız ipucu; gerçek karar başarısız isteğe göre |
 | **Yerel geri sayım sekme donunca durur** | Kullanıcı "2 dakikam vardı" der, süre çoktan dolmuş | Kalan süre **her zaman** sunucudaki `expiresAt`'ten hesaplanır |
+| 🔴 **Eski binary katalog tohumunu 30 dk'da bir geri alır** | `offer-sync` işi 30 dakikada bir koşar ve o turda görülmeyen teklifleri "bayat" işaretler (`MarkStaleOffersUnavailable`). Sahte sağlayıcının tohumunu genişletip **çalışan sunucuyu yeniden başlatmazsanız**, eski binary bir sonraki turda kataloğu eski hâline döndürür ve "senkronladım ama yine 6 servis" sanılır | Tohum değiştikten sonra `go run ./cmd/server`'ı **yeniden başlat**, sonra `cli catalog:sync` |
+| **Türkçe aramada `toLowerCase()` yetmez** | `"İNSTAGRAM".toLowerCase()` → `"i̇nstagram"` (birleşik nokta); `includes("instagram")` **eşleşmez** ve kullanıcı aradığı servisi bulamaz | `toLocaleLowerCase('tr')` + açık harf eşlemesi — `components/katalog/servis-listesi.tsx` |
 
 ---
 

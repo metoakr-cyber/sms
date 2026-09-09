@@ -403,6 +403,7 @@ SELECT id, public_id, user_id, rating, body, status, rejection_reason, reviewed_
 
 // Yönetim yolu: ÇAĞIRANIN TRANSACTION'I İÇİNDE. Kilit, aynı yoruma iki
 // yöneticinin aynı anda karar vermesini (biri onay, biri red) engeller.
+// test: internal/service/review/review_integration_test.go#TestConcurrentDecisionsLeaveOneOutcome
 func (q *Queries) LockReview(ctx context.Context, publicID uuid.UUID) (Review, error) {
 	row := q.db.QueryRow(ctx, lockReview, publicID)
 	var i Review

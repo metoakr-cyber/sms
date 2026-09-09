@@ -11,6 +11,7 @@ const LINKS = [
   { href: '/kiralama', label: 'Kiralama' },
   { href: '/fiyatlar', label: 'Fiyatlar' },
   { href: '/sss', label: 'Sık Sorulanlar' },
+  { href: '/blog', label: 'Blog' },
   { href: '/hakkimizda', label: 'Hakkımızda' },
 ];
 
@@ -47,7 +48,14 @@ export function SiteNav() {
         <Link href="/" aria-label="Ana sayfa"
               className="flex min-h-11 shrink-0 items-center"><Logo /></Link>
 
-        <ul className="hidden items-center gap-7 md:flex">
+        {/* MASAÜSTÜ MENÜ `lg:` ÜSTÜNDE.
+            Daha önce `md:` idi ve 768 px'te header 838 px'e taşıyordu:
+            altı bağlantı + 44 px dokunma dolgusu + giriş düğmeleri o genişliğe
+            sığmıyor. Bağlantıları sıkıştırmak yanlış olurdu — 768 px genelde
+            bir TABLET, yani dokunmatik; hedefleri küçültmek dokunma hatasını
+            artırır. Bu aralıkta hamburger menü kullanılır.
+            Ölçüm: 768 px'te belge 838 → 768. */}
+        <ul className="hidden items-center gap-7 lg:flex">
           {LINKS.map((l) => (
             <li key={l.href}>
               {/* px-2: dokunma hedefi 44 px'i İKİ EKSENDE de karşılamalı.
@@ -65,13 +73,13 @@ export function SiteNav() {
           ))}
         </ul>
 
-        <div className="hidden items-center gap-2 md:flex">
+        <div className="hidden items-center gap-2 lg:flex">
           <ThemeToggle />
           <Link href="/giris"><Button variant="outline" size="sm">Giriş yap</Button></Link>
           <Link href="/kayit"><Button size="sm">Kayıt ol</Button></Link>
         </div>
 
-        <div className="flex items-center md:hidden">
+        <div className="flex items-center lg:hidden">
         <ThemeToggle />
         <button
           type="button"
@@ -79,7 +87,7 @@ export function SiteNav() {
           aria-expanded={open}
           aria-controls="mobil-menu"
           aria-label={open ? 'Menüyü kapat' : 'Menüyü aç'}
-          className="-mr-2 grid size-11 place-items-center rounded-xl md:hidden"
+          className="-mr-2 grid size-11 place-items-center rounded-xl lg:hidden"
         >
           <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth="1.8">
             {open
@@ -94,7 +102,7 @@ export function SiteNav() {
       <div
         id="mobil-menu"
         hidden={!open}
-        className="border-t border-[var(--border)] bg-[var(--bg)] md:hidden"
+        className="border-t border-[var(--border)] bg-[var(--bg)] lg:hidden"
       >
         <ul className="flex flex-col px-4 py-2">
           {LINKS.map((l) => (
@@ -141,6 +149,7 @@ export function SiteFooter() {
           <Link href="/sss" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Sık Sorulanlar</Link>
           <Link href="/kullanim-sartlari" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Kullanım Şartları</Link>
           <Link href="/gizlilik" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Gizlilik</Link>
+          <Link href="/blog" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Blog</Link>
           <Link href="/hakkimizda" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">Hakkımızda</Link>
           <Link href="/iletisim" className="inline-flex min-h-11 items-center text-muted hover:text-[var(--text)]">İletişim</Link>
         </div>

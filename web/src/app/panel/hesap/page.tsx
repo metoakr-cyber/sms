@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, ApiError } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
@@ -50,6 +51,21 @@ export default function AccountPage() {
             </dd>
           </div>
         </dl>
+      </Card>
+
+      {/* Yorumlarım ALT MENÜYE eklenmedi: orada zaten 6 sekme var ve
+          320 px'te yedincisi her sekmeyi 44 px dokunma hedefinin altına
+          düşürürdü. Yorum yazmak sık yapılan bir iş değil; doğal yeri
+          hesap sayfası. */}
+      <Card>
+        <h2 className="text-lg font-semibold">Yorumlarım</h2>
+        <p className="mt-1.5 text-sm leading-relaxed text-muted">
+          Hizmet hakkındaki görüşünüzü yazabilirsiniz. Yorumunuz yönetici
+          onayından sonra sitede yayımlanır.
+        </p>
+        <Link href="/panel/yorumlarim" className="mt-4 block sm:inline-block">
+          <Button variant="outline" fullWidth className="sm:w-auto">Yorumlarımı aç</Button>
+        </Link>
       </Card>
 
       <Card>

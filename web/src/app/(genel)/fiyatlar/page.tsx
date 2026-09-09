@@ -4,6 +4,8 @@ import { fetchPublic } from '@/lib/server-api';
 import { Belir, Sayac } from '@/components/animasyon';
 import { Bolum, BolumBasligi, IkonKaro, RenkliKart } from '@/components/pazarlama/parcalar';
 import { KapanisCTA } from '@/components/pazarlama/bolumler';
+import { ServiceIcon } from '@/components/service-icon';
+import { Button } from '@/components/ui';
 import { Cuzdan, Izgara, Kure, SagOk, Saat } from '@/components/ikonlar';
 import type { ServiceSummary, Country } from '@/lib/types';
 
@@ -23,6 +25,17 @@ export const metadata: Metadata = {
  * kimsenin okumadığı bir duvar demek. Sayfa servisleri gösterir, ülkeler
  * satın alma ekranında seçilir.
  */
+/**
+ * VITRIN — ikonla basılacak servis sayısı.
+ *
+ * Katalog üretimde yüzlerce servise çıkıyor; hepsini ikonla basmak sayfayı
+ * megabaytlara taşır. Bu sayı "vitrin" içindir, katalog değil.
+ */
+const VITRIN = 12;
+
+/** Izgarada renkler sırayla dağılsın; aynı renk yan yana gelmesin. */
+const SERVIS_RENKLERI = ['mavi', 'mor', 'yesil', 'turuncu', 'pembe', 'deniz'] as const;
+
 export default async function PricingPage() {
   const [data, countries] = await Promise.all([
     fetchPublic<{ items: ServiceSummary[] }>('/catalog/services-in-stock', { revalidate: 300 }),
@@ -92,27 +105,48 @@ export default async function PricingPage() {
               Servis adının altında, o serviste numara alınabilen ülke sayısı yazar.
             </p>
             {/*
-              SADE İŞARETLEME, BİLEREK.
+              İKONLU AMA SINIRLI LİSTE.
 
-              Aynı liste `Card` + `ServiceIcon` bileşenleriyle basıldığında
-              sayfa 2,4 MB ediyordu: 712 öğe × ağır sınıf listesi, üstüne bir
-              de RSC yükünde ikinci kez. Pazarlama sayfasının tamamı, bir
-              uygulama ekranından ağır olamaz (docs/frontend-contract.md §8).
+              Daha önce burada ikon YOKTU ve gerekçesi şuydu: 712 servis ×
+              `Card` + `ServiceIcon` = 2,4 MB sayfa. Gerekçe doğruydu ama
+              çözümü yanlıştı — ikonu tümden atmak yerine LİSTEYİ sınırlamak
+              gerekiyordu. Pazarlama sayfasının işi kataloğun tamamını basmak
+              değil, "burada ne var" hissini vermek ve tam listeye götürmek.
 
-              Renk `.servis-listesi` sınıfının nth-child kuralından gelir —
-              her `<li>`ye ayrı sınıf yazmak HTML'i şişirirdi (globals.css).
+              İlk `VITRIN` kadarı ikonla basılır, gerisi `/servisler`
+              sayfasında. Böylece hem logo görünür hem de yük katalog
+              büyüdükçe artmaz (docs/frontend-contract.md §8).
 
-              Servis adları HTML'de kalır — SEO değeri burada.
+              Servis adlarının TAMAMI HTML'de kalır — SEO değeri orada.
             */}
-            <ul className="servis-listesi mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3
-                           lg:grid-cols-4">
-              {items.map((s) => (
-                <li key={s.code} className="surface rounded-xl border px-3 py-2.5 golge-1">
-                  <span className="block truncate text-sm font-semibold">{s.name}</span>
-                  <span className="text-xs text-muted">{s.countryCount} ülke</span>
+            <ul className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {items.slice(0, VITRIN).map((s, i) => (
+                <li key={s.code}
+                    className="surface flex items-center gap-3 rounded-xl border px-3 py-2.5 golge-1">
+                  <ServiceIcon name={s.name} iconUrl={s.iconUrl} size={32}
+                               renk={SERVIS_RENKLERI[i % SERVIS_RENKLERI.length]} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold">{s.name}</span>
+                    <span className="text-xs text-muted">{s.countryCount} ülke</span>
+                  </span>
                 </li>
               ))}
             </ul>
+
+            {/* Kalan servisler: adları SEO için HTML'de kalsın ama ızgarayı
+                şişirmesin. Ekran okuyucuya da anlamlı bir liste sunulur. */}
+            {items.length > VITRIN && (
+              <p className="mt-4 text-sm text-muted">
+                <span className="sr-only">Diğer servisler: </span>
+                {items.slice(VITRIN).map((s) => s.name).join(' · ')}
+              </p>
+            )}
+
+            <Link href="/servisler" className="mt-5 inline-block">
+              <Button variant="outline" size="sm">
+                Tüm servisleri gör ({items.length})
+              </Button>
+            </Link>
           </>
         )}
 

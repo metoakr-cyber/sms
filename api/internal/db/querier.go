@@ -440,6 +440,7 @@ type Querier interface {
 	LockQuoteForConsumption(ctx context.Context, arg LockQuoteForConsumptionParams) (PriceQuote, error)
 	// Yönetim yolu: ÇAĞIRANIN TRANSACTION'I İÇİNDE. Kilit, aynı yoruma iki
 	// yöneticinin aynı anda karar vermesini (biri onay, biri red) engeller.
+	// test: internal/service/review/review_integration_test.go#TestConcurrentDecisionsLeaveOneOutcome
 	LockReview(ctx context.Context, publicID uuid.UUID) (Review, error)
 	// Yönetim yolu: sahiplik kısıtı YOKTUR, izin kontrolü middleware'dedir
 	// (tickets:reply).

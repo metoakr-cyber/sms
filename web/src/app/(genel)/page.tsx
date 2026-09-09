@@ -8,7 +8,7 @@ import { Istatistikler } from '@/components/pazarlama/istatistikler';
 import {
   Adimlar, HizmetKartlari, KapanisCTA, OzellikIzgarasi, PopulerServisler,
 } from '@/components/pazarlama/bolumler';
-import { Yorumlar } from '@/components/pazarlama/yorumlar';
+import { MusteriYorumlari } from '@/components/katalog/yorumlar';
 import { Iade, Kilit, SagOk, Yildirim } from '@/components/ikonlar';
 import { yazilariGetir } from './blog/icerik';
 import type { ServiceSummary, Country } from '@/lib/types';
@@ -236,8 +236,12 @@ export default async function HomePage() {
         </div>
       </Bolum>
 
-      {/* ═══════════ Yorumlar — veri boşsa hiç render edilmez ═══════════ */}
-      <Yorumlar />
+      {/* ═══════════ Yorumlar ═══════════
+          Veri GERÇEK: /catalog/reviews yalnız yöneticinin ONAYLADIĞI
+          yorumları döndürür. Onaylı yorum yoksa bölüm hiç render edilmez —
+          boş bir "Kullanıcılar ne diyor?" başlığı, yorum olmadığını
+          duyurmanın en gürültülü yoludur. Sahte yorum EKLENMEZ. */}
+      <MusteriYorumlari />
 
       {/* ═══════════ SSS özeti ═══════════ */}
       <Bolum aria-labelledby="sss">

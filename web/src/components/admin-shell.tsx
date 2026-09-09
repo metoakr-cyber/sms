@@ -19,6 +19,7 @@ const NAV = [
   { href: '/yonetim/odeme-yontemleri', label: 'Ödeme yöntemleri' },
   { href: '/yonetim/saglayicilar',     label: 'Sağlayıcılar' },
   { href: '/yonetim/destek',           label: 'Destek' },
+  { href: '/yonetim/yorumlar',         label: 'Yorumlar' },
   { href: '/yonetim/denetim',          label: 'Denetim kaydı' },
 ];
 
