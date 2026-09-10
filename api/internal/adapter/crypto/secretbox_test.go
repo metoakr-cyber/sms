@@ -23,6 +23,10 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 🔴 SAHTE BİR DİZE. Burada bir zamanlar GERÇEK sağlayıcı API anahtarı
+	// yazılıydı ve depo GitHub'a itilmeden fark edildi (CLAUDE.md: "API
+	// anahtarını koda yazma"). Test yalnız 32 karakterlik bir dizeye ihtiyaç
+	// duyuyor; gerçek bir sırrın burada işi yok.
 	const secret = "sahte-api-anahtari-yalnizca-test"
 
 	sealed, err := box.SealString(secret)
