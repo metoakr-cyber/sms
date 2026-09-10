@@ -5,16 +5,38 @@ fark yalnız süreçlerin nerede koştuğudur.
 
 | Yol | Ne zaman | Nasıl |
 |---|---|---|
-| **Docker'sız** (`kurulum.sh`) | Tek VPS, en az katman, sistem paketleriyle | `sudo bash deploy/kurulum.sh` |
+| **Docker'sız** (`kur.sh`) | Tek VPS, en az katman, sistem paketleriyle | tek komut, aşağıda |
 | **Docker Compose** | Konteyner tercih ediliyorsa, birden çok ortam | `make prod-build && make prod-up` |
 
 ---
 
 ## Docker'sız kurulum — tek komut
 
+Boş bir Ubuntu 22.04/24.04 sunucuda, başka hiçbir hazırlık yapmadan:
+
 ```bash
-git clone <depo> /opt/onay360 && cd /opt/onay360
-sudo bash deploy/kurulum.sh
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"
+```
+
+Bu komut git'i kurar, depoyu `/opt/onay360`'a çeker ve asıl kurulumu başlatır.
+Depo zaten oradaysa **günceller** — yani aynı komut hem kurulum hem güncellemedir.
+
+> **Neden `bash -c "$(curl …)"`, neden `curl … | bash` değil?** Kurulum
+> interaktiftir. `curl … | bash` betiği stdin'den okur ve `read` komutlarına
+> girdi kalmaz: bütün sorular sessizce boş cevapla geçilir. Komut ikamesinde
+> betik argüman olarak gelir, stdin terminalde kalır.
+
+Ortam değişkenleriyle değiştirilebilir — başka bir dal ya da dizin için:
+
+```bash
+sudo ONAY360_DAL=feat/deneme ONAY360_HEDEF=/srv/onay360 \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"
+```
+
+Depo elinizde zaten varsa asıl betiği doğrudan da çalıştırabilirsiniz:
+
+```bash
+cd /opt/onay360 && sudo bash deploy/kurulum.sh
 ```
 
 Betik **sorular sorar** (alan adı, yönetici hesabı, portlar, veritabanı parolası,
@@ -30,7 +52,7 @@ kritik: `ENCRYPTION_KEY` yeniden üretilirse veritabanındaki şifreli sağlayı
 API anahtarları bir daha açılamaz. Güncelleme de aynı komuttur:
 
 ```bash
-cd /opt/onay360 && git pull && sudo bash deploy/kurulum.sh
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"
 ```
 
 Yalnız yapılandırma değiştiyse (port, sağlayıcı anahtarı, üretim moduna geçiş)
