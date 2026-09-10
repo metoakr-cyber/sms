@@ -25,6 +25,9 @@
 #
 # Kullanım:
 #   sudo bash deploy/kurulum.sh
+#
+#   # yalnız yapılandırmayı yenile, yeniden derleme:
+#   sudo KURULUM_DERLEMEYI_ATLA=1 bash deploy/kurulum.sh
 set -euo pipefail
 
 # ─────────────────────────── Sabitler ───────────────────────────
@@ -125,8 +128,23 @@ baslik "2/4 · Yönetici hesabı"
 sor YONETICI_EPOSTA "Yönetici e-postası" ""
 [[ "$YONETICI_EPOSTA" == *@*.* ]] || hata "geçerli bir e-posta girin"
 sor YONETICI_KULLANICI "Yönetici kullanıcı adı" "admin"
-sor_gizli YONETICI_PAROLA "Yönetici parolası (en az 10 karakter)"
-[[ ${#YONETICI_PAROLA} -ge 10 ]] || hata "parola en az 10 karakter olmalı"
+# Politika sunucuda da uygulanır (domain/auth CheckPasswordStrength) ama orada
+# takılmak, 10 dakikalık kurulumun SONUNDA yöneticisiz kalmak demektir.
+# En sık takılan iki kural burada, soru anında kontrol edilir.
+YONETICI_YEREL="${YONETICI_EPOSTA%%@*}"
+while true; do
+  sor_gizli YONETICI_PAROLA "Yönetici parolası (en az 10 karakter)"
+  if [[ ${#YONETICI_PAROLA} -lt 10 ]]; then
+    uyari "parola en az 10 karakter olmalı"
+    continue
+  fi
+  PAROLA_KUCUK="${YONETICI_PAROLA,,}"
+  if [[ "$PAROLA_KUCUK" == *"${YONETICI_YEREL,,}"* || "$PAROLA_KUCUK" == *"${YONETICI_KULLANICI,,}"* ]]; then
+    uyari "parola e-posta adınızı ya da kullanıcı adınızı içeremez"
+    continue
+  fi
+  break
+done
 
 baslik "3/4 · Portlar ve veritabanı"
 sor API_PORT "API portu (yalnız yerel dinler)" "8091"
@@ -348,8 +366,31 @@ install -d -o "$SERVIS_KULLANICI" -g "$SERVIS_KULLANICI" -m 750 /var/lib/onay360
 tamam ".env yazıldı (600, ${SERVIS_KULLANICI})"
 
 # ─────────────────────────── Derleme ───────────────────────────
-ADIM="api derlemesi"
+ADIM="derleme"
 baslik "Derleme"
+
+# ══════════════════════════════════════════════════════════════════════════
+# DERLEME ATLANABİLİR: KURULUM_DERLEMEYI_ATLA=1
+# ══════════════════════════════════════════════════════════════════════════
+# Bu betik tekrar çalıştırılabilir ve çoğu tekrar YAPILANDIRMA içindir: portu
+# değiştirmek, sağlayıcı anahtarı eklemek, üretim moduna geçmek. Bunların
+# hiçbiri yeniden derleme gerektirmez — ama `npm ci` + `next build` her
+# seferinde ~10 dakika ve ~800 MB disk harcar.
+#
+# 🔴 BAYRAK TEK BAŞINA YETMEZ: ikililer ya da standalone çıktısı yoksa yine
+# DERLENİR. "Atla" dediği için var olmayan bir ikiliyle devam etmek, kurulumu
+# sessizce bozuk bitirmek olurdu.
+ATLA=0
+if [[ "${KURULUM_DERLEMEYI_ATLA:-0}" == "1" ]]; then
+  if [[ -x "$KOK/bin/api" && -x "$KOK/bin/cli" && -f "$KOK/web/.next/standalone/server.js" ]]; then
+    ATLA=1
+    uyari "derleme ATLANDI (KURULUM_DERLEMEYI_ATLA=1) — mevcut çıktılar kullanılıyor"
+  else
+    uyari "KURULUM_DERLEMEYI_ATLA=1 verildi ama çıktılar eksik — yine de derleniyor"
+  fi
+fi
+
+if [[ $ATLA -eq 0 ]]; then
 install -d "$KOK/bin"
 ( cd "$KOK/api" && go build -trimpath -ldflags="-s -w" -o "$KOK/bin/api"    ./cmd/server )
 ( cd "$KOK/api" && go build -trimpath -ldflags="-s -w" -o "$KOK/bin/worker" ./cmd/worker )
@@ -367,6 +408,7 @@ ADIM="ön yüz derlemesi"
      NEXT_PUBLIC_RECAPTCHA_SITE_KEY="$RECAPTCHA_SITE" \
      npm run build >/dev/null )
 tamam "ön yüz (standalone)"
+fi
 
 chown -R "$SERVIS_KULLANICI":"$SERVIS_KULLANICI" "$KOK/bin" "$KOK/web/.next"
 
@@ -384,22 +426,26 @@ CLI="$KOK/bin/cli"
 
 # Yönetici hesabı. Parola ORTAM DEĞİŞKENİYLE geçer, komut satırıyla DEĞİL:
 # argümanlar `ps` çıktısına ve kabuk geçmişine düşer.
-if ONAY360_KURULUM_PAROLA="$YONETICI_PAROLA" "$CLI" user:create \
+# 🔴 HATA YUTULMAZ. Önceki hâl her başarısızlığı "zaten var" diye rapor
+# ediyordu; konteyner testinde parola politikaya takıldı ve kurulum
+# YÖNETİCİSİZ bitip "zaten var" dedi — yanlış ve teşhis edilemez.
+# Gerçek sebep artık ekrana gelir.
+if CIKTI=$(ONAY360_KURULUM_PAROLA="$YONETICI_PAROLA" "$CLI" user:create \
      --email="$YONETICI_EPOSTA" --username="$YONETICI_KULLANICI" \
-     --env-password=ONAY360_KURULUM_PAROLA --role=admin 2>/dev/null; then
+     --env-password=ONAY360_KURULUM_PAROLA --role=admin 2>&1); then
   tamam "yönetici hesabı: $YONETICI_EPOSTA"
 else
-  uyari "yönetici hesabı zaten var — atlandı"
+  uyari "yönetici hesabı oluşturulamadı → ${CIKTI##*hata: }"
 fi
 
 if [[ -n "$HEROSMS_ANAHTAR" ]]; then
-  if HEROSMS_API_KEY="$HEROSMS_ANAHTAR" "$CLI" provider:add \
+  if CIKTI=$(HEROSMS_API_KEY="$HEROSMS_ANAHTAR" "$CLI" provider:add \
        --name=herosms --protocol=HEROSMS_V1 \
        --base-url="$HEROSMS_URL" --env-key=HEROSMS_API_KEY \
-       --priority=10 --cost-multiplier=1.0 --active=true 2>/dev/null; then
+       --priority=10 --cost-multiplier=1.0 --active=true 2>&1); then
     tamam "sağlayıcı eklendi: herosms"
   else
-    uyari "sağlayıcı zaten var — atlandı"
+    uyari "sağlayıcı eklenemedi → ${CIKTI##*hata: }"
   fi
 fi
 
@@ -513,9 +559,16 @@ WORKERBIRIM
 
 # Next standalone statik dosyaları kendi kopyalamaz — derleme çıktısındaki
 # `static` ve `public` elle taşınır. Atlanırsa site CSS'siz açılır.
+# `rm -rf` ÖNCE: hedef zaten varsa `cp -r kaynak hedef` onu İÇİNE kopyalar
+# (`.next/static/static`) ve statik dosyalar yanlış yoldan servis edilir —
+# site CSS'siz açılır ve sebebi görünmez.
 install -d "$KOK/web/.next/standalone/.next"
+rm -rf "$KOK/web/.next/standalone/.next/static"
 cp -r "$KOK/web/.next/static" "$KOK/web/.next/standalone/.next/static"
-if [[ -d "$KOK/web/public" ]]; then cp -r "$KOK/web/public" "$KOK/web/.next/standalone/public"; fi
+if [[ -d "$KOK/web/public" ]]; then
+  rm -rf "$KOK/web/.next/standalone/public"
+  cp -r "$KOK/web/public" "$KOK/web/.next/standalone/public"
+fi
 chown -R "$SERVIS_KULLANICI":"$SERVIS_KULLANICI" "$KOK/web/.next"
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -589,6 +642,10 @@ CADDYOVR
 else
   # Alan adı yok: TLS yok, yalnız 80. Depodaki dosya `{$DOMAIN}` bekliyor ve
   # boş bir ad geçersiz bir site bloğu üretir; bu yüzden sade bir yapılandırma.
+  # 🔴 BLOKLAR ÇOK SATIRLI YAZILIR. Caddyfile `handle /x { ... }` biçimini
+  # TEK SATIRDA kabul etmez: "Unexpected next token after '{' on same line".
+  # Ölçüldü (caddy 2.11, konteyner testinde) — sözdizimi hatası yalnız
+  # `caddy validate` çalıştırıldığında görünür.
   cat > /etc/caddy/Caddyfile <<CADDYIP
 :80 {
 	handle /api/* {
@@ -597,11 +654,21 @@ else
 			header_up X-Real-IP {http.request.remote.host}
 		}
 	}
-	handle /healthz { reverse_proxy 127.0.0.1:${API_PORT} }
-	handle /readyz  { reverse_proxy 127.0.0.1:${API_PORT} }
-	handle /metrics* { respond 404 }
-	handle /debug/*  { respond 404 }
-	handle { reverse_proxy 127.0.0.1:${WEB_PORT} }
+	handle /healthz {
+		reverse_proxy 127.0.0.1:${API_PORT}
+	}
+	handle /readyz {
+		reverse_proxy 127.0.0.1:${API_PORT}
+	}
+	handle /metrics* {
+		respond 404
+	}
+	handle /debug/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:${WEB_PORT}
+	}
 }
 CADDYIP
 fi

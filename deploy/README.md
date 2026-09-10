@@ -33,6 +33,19 @@ API anahtarları bir daha açılamaz. Güncelleme de aynı komuttur:
 cd /opt/onay360 && git pull && sudo bash deploy/kurulum.sh
 ```
 
+Yalnız yapılandırma değiştiyse (port, sağlayıcı anahtarı, üretim moduna geçiş)
+yeniden derlemeye gerek yok — `npm ci` + `next build` ~10 dakika ve ~800 MB
+disk demektir:
+
+```bash
+sudo KURULUM_DERLEMEYI_ATLA=1 bash deploy/kurulum.sh
+```
+
+Betiği değiştirdiyseniz `bash deploy/kurulum_test.sh` ile sınayın: systemd'li
+bir Ubuntu konteyneri açar, kurulumu baştan sona koşar, servislerin gerçekten
+ayağa kalktığını ve sitenin 80. porttan servis edildiğini doğrular, sonra
+ikinci kez çalıştırıp veritabanının ve sırların korunduğunu ölçer.
+
 Kurulan servisler: `onay360-api`, `onay360-web`, `caddy`. Arka plan işleri
 varsayılan olarak API sürecinde koşar (`WORKERS_IN_PROCESS=true`);
 `onay360-worker.service` yazılır ama **etkinleştirilmez** — ikisi birden
@@ -58,6 +71,7 @@ yığınının tamamıdır.
 | `docker-compose.prod.yml` | caddy · api · worker · web · postgres · redis |
 | `Caddyfile` | TLS, HTTP/2+3, `/api/*` → api, gerisi → web, SSE için ayrı blok. Yukarı akış adresleri `{$API_UPSTREAM}` / `{$WEB_UPSTREAM}` ile değişir; **iki topoloji de bu dosyayı kullanır**. |
 | `kurulum.sh` | Docker'sız Ubuntu kurulumu — soru sorar, tohumlar, systemd birimlerini yazar |
+| `kurulum_test.sh` | Kurulumu systemd'li bir Ubuntu konteynerinde uçtan uca sınar |
 | `.env.prod.example` | Uygulamanın okuduğu her değişken, açıklamalı |
 | `scripts/yedekle.sh` | Şifreli günlük yedek + doğrulama + saklama |
 | `scripts/geri-yukle.sh` | Onay isteyen geri yükleme / tatbikat |
