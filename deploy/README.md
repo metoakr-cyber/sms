@@ -15,22 +15,25 @@ fark yalnız süreçlerin nerede koştuğudur.
 Boş bir Ubuntu 22.04/24.04 sunucuda, başka hiçbir hazırlık yapmadan:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"
+curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh -o /tmp/kur.sh && sudo bash /tmp/kur.sh
 ```
 
 Bu komut git'i kurar, depoyu `/opt/onay360`'a çeker ve asıl kurulumu başlatır.
 Depo zaten oradaysa **günceller** — yani aynı komut hem kurulum hem güncellemedir.
 
-> **Neden `bash -c "$(curl …)"`, neden `curl … | bash` değil?** Kurulum
-> interaktiftir. `curl … | bash` betiği stdin'den okur ve `read` komutlarına
-> girdi kalmaz: bütün sorular sessizce boş cevapla geçilir. Komut ikamesinde
-> betik argüman olarak gelir, stdin terminalde kalır.
+> **Neden bu biçim?** İki ayrı tuzak var, ikisi de ölçüldü.
+> `curl … | bash` betiği stdin'e bağlar; kurulum interaktif olduğu için
+> `read` komutlarına girdi kalmaz ve **bütün sorular sessizce boş cevapla
+> geçilir**. `bash -c "$(curl …)"` bunu çözer ama indirme başarısız olunca
+> `$(…)` boş dizeye düşer ve bash **çıkış 0** verir — kurulum hiç olmadığı
+> hâlde başarılı görünür. `-o dosya && bash dosya` ikisini de çözer: stdin
+> terminalde kalır, curl'ün hata kodu `&&` zincirini keser.
 
 Ortam değişkenleriyle değiştirilebilir — başka bir dal ya da dizin için:
 
 ```bash
-sudo ONAY360_DAL=feat/deneme ONAY360_HEDEF=/srv/onay360 \
-  bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"
+curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh -o /tmp/kur.sh \
+  && sudo ONAY360_DAL=feat/deneme ONAY360_HEDEF=/srv/onay360 bash /tmp/kur.sh
 ```
 
 Depo elinizde zaten varsa asıl betiği doğrudan da çalıştırabilirsiniz:
@@ -52,7 +55,7 @@ kritik: `ENCRYPTION_KEY` yeniden üretilirse veritabanındaki şifreli sağlayı
 API anahtarları bir daha açılamaz. Güncelleme de aynı komuttur:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"
+curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh -o /tmp/kur.sh && sudo bash /tmp/kur.sh
 ```
 
 Yalnız yapılandırma değiştiyse (port, sağlayıcı anahtarı, üretim moduna geçiş)

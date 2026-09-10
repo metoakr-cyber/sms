@@ -2,19 +2,25 @@
 #
 # Onay360 — TEK KOMUTLUK sunucu kurulumu. Docker YOK.
 #
-#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"
+#   curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh -o /tmp/kur.sh && sudo bash /tmp/kur.sh
 #
 # Bu betik yalnız ÖNYÜKLEYİCİDİR: git'i kurar, depoyu /opt/onay360'a çeker ve
 # asıl kurulumu (deploy/kurulum.sh) çalıştırır. Kurulumun kendisi orada.
 #
 # ══════════════════════════════════════════════════════════════════════════
-# NEDEN `bash -c "$(curl …)"`, NEDEN `curl … | bash` DEĞİL
+# ÇAĞIRMA BİÇİMİ İKİ AYRI TUZAĞA GÖRE SEÇİLDİ
 # ══════════════════════════════════════════════════════════════════════════
-# Asıl kurulum İNTERAKTİFTİR: port, parola, alan adı sorar. `curl … | bash`
-# betiği STDIN'den okur, yani `read` komutlarının okuyacağı girdi kalmaz —
-# bütün sorular boş cevapla geçilir ve kullanıcı bunu fark etmez. Komut
-# ikamesinde ise betik metni ARGÜMAN olarak gelir, stdin terminalde kalır ve
-# sorular normal çalışır.
+# 1. `curl … | bash` OLMAZ. Asıl kurulum İNTERAKTİFTİR: port, parola, alan adı
+#    sorar. Boru, betiği stdin'e bağlar; `read` komutlarına girdi kalmaz ve
+#    BÜTÜN SORULAR sessizce boş cevapla geçilir. Kullanıcı bunu fark etmez.
+#
+# 2. `bash -c "$(curl …)"` de OLMAZ. stdin sorununu çözer ama indirme
+#    başarısız olduğunda `$(…)` boş dizeye düşer, bash hiçbir şey çalıştırmadan
+#    ÇIKIŞ 0 verir — kurulum hiç olmadığı hâlde "başarılı" görünür. Ölçüldü:
+#    çözülemeyen bir konakta çıkış kodu 0.
+#
+# `-o dosya && bash dosya` ikisini birden çözer: stdin terminalde kalır ve
+# curl'ün çıkış kodu `&&` zincirini keser (ölçüldü: 6).
 #
 # ══════════════════════════════════════════════════════════════════════════
 # 🔴 GÖVDE NEDEN TEK BİR FONKSİYON
@@ -51,7 +57,7 @@ kur360() {
   # Kurulum apt kullanır, systemd birimi yazar ve sistem kullanıcısı açar.
   # Root olmadan hepsi yarı yolda düşer; en baştan söylemek daha dürüst.
   [[ $EUID -eq 0 ]] || hata 'root gerekli. Komut şöyle:
-  sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh)"'
+  curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh -o /tmp/kur.sh && sudo bash /tmp/kur.sh'
 
   [[ -f /etc/os-release ]] || hata "Ubuntu/Debian bekleniyor (/etc/os-release yok)"
   # shellcheck disable=SC1091

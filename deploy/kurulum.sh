@@ -719,7 +719,8 @@ cat <<SON
   CLI          : ${KOK}/bin/cli help
   Yapılandırma : ${ENV_YOLU}  (600, ${SERVIS_KULLANICI})
 
-  Güncelleme   : git pull && sudo bash deploy/kurulum.sh
+  Güncelleme   : curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh \
+                   -o /tmp/kur.sh && sudo bash /tmp/kur.sh
 SON
 
 # ── HeroSMS panelinde yapılacak ayar ──
