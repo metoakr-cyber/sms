@@ -182,21 +182,27 @@ Aktif ve bu ürünü destekleyen tüm sağlayıcılara **paralel** sorulur (3 sn
 Yanıt vermeyen elenir. `stock > 0` olanlar arasında düzeltilmiş maliyeti en düşük olan seçilir;
 eşitlikte `providers.priority`.
 
-> 🔴 **Stok tanımı (HeroSMS):** `counts.physical` (modern) / `physicalCount` (legacy).
-> `counts.total` / `count` alanı **stok değildir** ve kullanılmaz.
-> Canlı ölçüm: WhatsApp × Türkiye → `count = 56964` ama `physicalCount = 0`.
-> `count` kullanılırsa kullanıcıdan para çekilir ve sağlayıcı boş döner.
+> 🔴 **Stok tanımı (HeroSMS):** `counts.defaultPrice`.
+> `counts.total` / `count` alanı **stok değildir** ve kullanılmaz — fiyat tavanı yoktur.
 > ([provider-herosms.md](provider-herosms.md) §3.3)
 >
-> ⚠️ **Dürüstlük notu:** `counts` alanlarının (`total`, `physical`, `defaultPrice`) **hiçbirinin
-> `description`'ı spec'te yoktur.** `physical` seçimi yukarıdaki **canlı gözleme** dayanır,
-> spec'e değil → ❓H16. Seçim skoruna `stats.percent` ve `offers.meta.order.deliverability`
-> opsiyonel girdi olarak eklenebilir (düşük başarı oranı = yüksek iade = zarar).
+> **Ölçümle kanıtlandı (10 Eylül 2026, 20.788 kombinasyon):** `counts.defaultPrice`, `map`
+> merdiveninin `prices.default` ve altındaki kümülatif toplamına **20.788/20.788 eşittir**.
+> Ölçüt `maxPrice = prices.default` politikamızla aynı şeyi ölçer — bu bir çıkarım değil.
+>
+> ⚠️ **`physical` ölçüt DEĞİLDİR.** 2026-09-08'de öyle seçilmişti (❓H16, canlı gözleme
+> dayanıyordu) ve **satışı sessizce engelliyordu**: katalogun %28'i (5.910 kombinasyon)
+> satılabilirken "stok yok" görünüyordu, Türkiye'de ise 123 kombinasyonun hiçbirinde pozitif
+> değildi. `physical > 0` iken `defaultPrice = 0` olan 208 kombinasyon ölçüldü — hepsinde
+> merdivenin en ucuz basamağı varsayılan fiyatın **üstünde**, yani `maxPrice`'ımızla zaten
+> alınamazlar. Seçim skoruna `stats.percent` ve `offers.meta.order.deliverability` opsiyonel
+> girdi olarak eklenebilir (düşük başarı oranı = yüksek iade = zarar).
 
 > **KK-306:** İki sahte sağlayıcıdan biri 5 sn gecikirse, teklif 3 sn içinde diğeriyle döner.
 > Hiçbiri yanıt vermezse `503 NO_PROVIDER_AVAILABLE`.
-> **Ek test:** `physicalCount = 0` olan bir kombinasyon teklife **hiç girmez** — `count` ne kadar
-> yüksek olursa olsun.
+> **Ek test:** `counts.defaultPrice = 0` olan bir kombinasyon teklife **hiç girmez** — `total`
+> ne kadar yüksek olursa olsun.
+> → `api/internal/adapter/provider/herosms/herosms_stok_test.go#TestStokVarsayilanFiyatSayacindanGelir`
 
 ---
 

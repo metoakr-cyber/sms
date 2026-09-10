@@ -295,31 +295,70 @@ func (p *Provider) ListServices(ctx context.Context, c port.Creds) ([]port.Remot
 //
 //	{"data": {"<servis>": {"<ülkeId>": {"prices":{...}, "counts":{...}}}}}
 type offersResponse struct {
-	Data map[string]map[string]struct {
-		Prices struct {
-			Default float64 `json:"default"`
-			Retail  float64 `json:"retail"`
-			Min     float64 `json:"min"`
-		} `json:"prices"`
-		Counts struct {
-			Total        int `json:"total"`
-			Physical     int `json:"physical"`
-			DefaultPrice int `json:"defaultPrice"`
-		} `json:"counts"`
-	} `json:"data"`
+	Data map[string]map[string]offerEntry `json:"data"`
+}
+
+// offerEntry tek bir servis × ülke teklifidir.
+type offerEntry struct {
+	Prices struct {
+		Default float64 `json:"default"`
+		Retail  float64 `json:"retail"`
+		Min     float64 `json:"min"`
+	} `json:"prices"`
+	Counts struct {
+		Total        int `json:"total"`
+		Physical     int `json:"physical"`
+		DefaultPrice int `json:"defaultPrice"`
+	} `json:"counts"`
+}
+
+// stok, bu teklifte BİZİM ödemeye razı olduğumuz fiyattan alınabilecek numara
+// adedini verir.
+//
+// ══════════════════════════════════════════════════════════════════════════
+// NEDEN `defaultPrice`, NEDEN `physical` DEĞİL
+// ══════════════════════════════════════════════════════════════════════════
+// Sağlayıcı üç sayaç döndürür ve spec ÜÇÜNÜ DE açıklamaz (docs/provider-herosms.md
+// ❓H16). Seçim ölçümle yapıldı, tahminle değil.
+//
+//	counts.total        fiyat tavanı olmayan havuzun tamamı
+//	counts.physical     fiziksel SIM havuzu
+//	counts.defaultPrice `prices.default` ve altındaki numaralar
+//
+// `total` KULLANILAMAZ: merdivenin tepesi 37,50 USD'ye kadar çıkıyor. Eski
+// prototip `total` kullanıyordu — kullanıcıdan para çekiliyor, sağlayıcı boş
+// dönüyordu (docs/trd.md FR-306).
+//
+// `physical` de KULLANILAMAZ, ve bu daha sinsi bir hatadır: sessizce satış
+// engeller. 10 Eylül 2026'da canlı katalogun tamamı ölçüldü (20.788 kombinasyon):
+//
+//	physical > 0        9.930  (%47,8)   ← eski ölçütümüz
+//	defaultPrice > 0   15.840  (%76,2)
+//	ikisi de 0          4.740  (%22,8)   ← gerçekten boş olanlar
+//
+// Yani katalogun ~%28'i satılabilirken "numara bulunmuyor" diyordu. TÜRKİYE'DE
+// ise `physical` 123 kombinasyonun HİÇBİRİNDE pozitif değil — ülke tamamen
+// kapalıydı; oysa 70'i varsayılan fiyattan alınabilir durumda (WhatsApp × TR:
+// physical 0, defaultPrice 9.929, 1,20 USD).
+//
+// Doğru sayaç `defaultPrice`'tır ÇÜNKÜ satın alırken `maxPrice = prices.default`
+// gönderiyoruz (Değişmez 21). Ölçüt, ödeyeceğimiz fiyata bağlıdır — havuzun
+// fiziksel/sanal ayrımına değil.
+//
+// `physical > 0` iken `defaultPrice == 0` olan 208 kombinasyon ÖLÇÜLDÜ: hepsinde
+// merdivenin en ucuz basamağı varsayılan fiyatın hemen ÜSTÜNDE (örn. hu×1:
+// default 0,075 · en ucuz basamak 0,0751). Onlar `maxPrice`'ımızla zaten
+// alınamaz; 0 doğru cevaptır.
+//
+// test: herosms_stok_test.go#TestStokVarsayilanFiyatSayacindanGelir
+func (o offerEntry) stok() int {
+	return o.Counts.DefaultPrice
 }
 
 // ListOffers tüm servis × ülke fiyat ve stok anlık görüntüsünü çeker.
 //
-// 🔴 STOK = counts.physical. `counts.total` DEĞİL.
-//
-// Canlı ölçüm (bu adaptör yazılırken tekrar doğrulandı):
-//
-//	WhatsApp × Türkiye → total: 14048, physical: 0
-//
-// Eski prototip `total` kullanıyordu: kullanıcıdan para çekiliyor, sağlayıcı
-// boş dönüyordu. `total` bir pazarlama sayacıdır, envanter değil.
-// Bkz. docs/trd.md FR-306.
+// 🔴 Stok `offerEntry.stok()` ile hesaplanır — hangi sayacın kullanıldığı ve
+// diğer ikisinin neden yanlış olduğu orada yazılı.
 func (p *Provider) ListOffers(ctx context.Context, c port.Creds, vt port.VerificationType) ([]port.OfferSnapshot, error) {
 	kind := string(vt)
 	if kind != string(port.VerifySMS) && kind != string(port.VerifyCall) {
@@ -348,7 +387,7 @@ func (p *Provider) ListOffers(ctx context.Context, c port.Creds, vt port.Verific
 				CountryCode:      country,
 				VerificationType: vt,
 				Cost:             cost,
-				Stock:            o.Counts.Physical,
+				Stock:            o.stok(),
 			})
 		}
 	}
@@ -384,7 +423,7 @@ func (p *Provider) GetPriceAndStock(ctx context.Context, c port.Creds, q port.Pr
 	if err != nil {
 		return nil, err
 	}
-	return &port.PriceResult{Cost: cost, Stock: o.Counts.Physical}, nil
+	return &port.PriceResult{Cost: cost, Stock: o.stok()}, nil
 }
 
 // GetBalance legacy `?action=getBalance` → düz metin `ACCESS_BALANCE:30.3133`.

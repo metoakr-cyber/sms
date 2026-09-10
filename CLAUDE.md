@@ -109,8 +109,16 @@ devam etme, sor.
 19. **Tarih ayrıştırma yalnız RFC 3339.** Safari boşluklu formatı ayrıştıramaz.
     Biçimlemede `timeZone` her zaman açıkça `Europe/Istanbul`.
 
-20. **Stok = `counts.physical` / `physicalCount`.** `count` / `total` alanı **asla** stok olarak
-    kullanılmaz — sahte değer döndürür (WhatsApp×TR: `count=56964`, `physical=0`).
+20. **Stok = `counts.defaultPrice`.** `total` / `count` **asla** stok değildir (fiyat tavanı
+    yoktur; merdivenin tepesi 37,50 USD'ye çıkar). `physical` de stok değildir — ayrı bir
+    eksendir (fiziksel SIM havuzu) ve ölçüt olarak kullanıldığında **satışı sessizce engeller**.
+
+    *Ölçüm (10 Eylül 2026, 20.788 kombinasyon): `counts.defaultPrice`, fiyat merdiveninin
+    (`map`) `prices.default` ve altındaki kümülatif toplamına **20.788/20.788 birebir eşit**.
+    Yani alan tam olarak "tavanımızdan alınabilir adet" demektir ve `maxPrice = prices.default`
+    politikamızla (Değişmez 21) aynı şeyi ölçer. `physical` ölçütüyken katalogun %28'i
+    (5.910 kombinasyon) satılabilirken "stok yok" görünüyordu; Türkiye'nin 123 kombinasyonunun
+    **hiçbirinde** `physical` pozitif değildi.*
 
 21. **Her satın almada `maxPrice` gönderilir.** Teklifteki maliyet üstünde ücretlendirme
     sağlayıcı sınırında engellenir.

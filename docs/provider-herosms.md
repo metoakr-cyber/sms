@@ -20,7 +20,7 @@
 | 3 | ✅ **`sms-incoming` webhook'u** + **kaynak IP'ler spec'te yazılı** | Yoklama yedeğe düşer; IP izin listesi mümkün |
 | 4 | 🔴 **Webhook yanıt zaman aşımı 3 sn**, ≥7 yeniden deneme | Handler senkron iş yapamaz → **ADR-024** |
 | 5 | ✅ **`maxPrice`** kabul ediliyor · 🔴 **`fixedPrice` "tam o fiyat" demek** | `maxPrice` gönderilir, **`fixedPrice` gönderilmez** → **ADR-027** |
-| 6 | ⚠️ **`counts.physical` seçimi canlı gözleme dayanır** — spec üç sayacı da açıklamıyor | Karar korunur ama çıkarım olarak işaretli |
+| 6 | ✅ **Stok = `counts.defaultPrice`** — merdivenle 20.788/20.788 tutarlı (2026-09-10) | `physical` ölçütü satışı sessizce engelliyordu; H16 kapandı |
 | 7 | ✅ **`expiredAt` yanıttan gelir**; varsayılan süre spec'te hiç yok | TTL koda gömülmez |
 | 8 | ✅ **Kiralık = aynı uç nokta + `duration`**, `subtype: 2` | Birleşik `orders` doğru |
 | 9 | 🔴 **İptal iki eşikli:** ilk **120 sn** yasak, sonra **20 dk** penceresi, OTP geldiyse hiç | UI'de iptal butonu 120 sn pasif → **FR-416** |
@@ -120,16 +120,30 @@
 | Alan | Durum |
 |---|---|
 | `prices.default` / `retail` / `min` | ⚠️ **Üçünün de `description` alanı BOŞ.** Hangisinden ücretlendirildiğimiz **bilinmiyor** → ❓**H6**. `MinPrice` = *"Mümkün olan en düşük **kişisel** fiyat"* — hesaba özel fiyatlandırma ima ediyor. Legacy `TopCountriesOneService`'te `price=0.045` vs `retail_price=0.2` → **gerçekten ayrışabiliyorlar** |
-| `counts.total` / `physical` / `defaultPrice` | ⚠️ **Üçünün de `description`'ı YOK.** `physical` seçimimiz **canlı gözleme** dayanır, spec'e değil → ❓**H16** |
+| `counts.total` / `physical` / `defaultPrice` | Üçünün de `description`'ı YOK ama **`defaultPrice` ölçümle çözüldü**: `map` merdiveninin `prices.default` altındaki kümülatif toplamına 20.788/20.788 **birebir eşit** → stok ölçütü budur. `total` fiyat tavanı tanımaz. `physical` ayrı bir eksen (fiziksel SIM); ölçüt yapılırsa satışı sessizce engeller → ✅**H16** |
 | `map` | Fiyat→adet merdiveni. `maxPrice`'ı `default`'a sabitlersek görünen stok `counts.defaultPrice` kadardır, `total` kadar değil |
 | `meta.order.deliverability.countries` | ✅ Ülke sıralaması için bedava teslim-edilebilirlik sinyali |
 
-**Canlı ölçüm — 🔴 en tehlikeli tuzak:**
+**Canlı ölçüm — 🔴 iki ayrı tuzak, ikisi de para kaybettirir:**
+
 ```
-WhatsApp × Türkiye → { "cost": 1.44, "count": 56964, "physicalCount": 0 }
+WhatsApp × Türkiye (2026-09-10) →
+  prices.default 1.20 · counts: { total: 265358, physical: 0, defaultPrice: 9929 }
+  map: { "1.0800": 9929, "1.2188": 136163, … , "37.5000": 265358 }
 ```
-`count` 56.964 ama **gerçek stok 0**. Eski prototip `count` kullanıyordu → kullanıcıdan para
-çekilir, sağlayıcı boş döner. **Stok = `counts.physical` / `physicalCount`.** → `trd.md` FR-306
+
+**Tuzak 1 — `total` kullanmak (para çeker, numara gelmez).** 265.358 sayısı 37,50 USD'ye kadar
+uzanan havuzun tamamıdır. `maxPrice`'ımız 1,20 iken bunların 9.929'u dışındakiler alınamaz.
+Eski prototip `count` kullanıyordu → kullanıcıdan para çekiliyor, sağlayıcı boş dönüyordu.
+
+**Tuzak 2 — `physical` kullanmak (sessizce satış engeller).** Burada `physical = 0` ama
+9.929 numara varsayılan fiyattan alınabilir. Bu ölçüt 2026-09-08 – 2026-09-10 arası
+yürürlükteydi ve katalogun **%28'ini** (5.910 kombinasyon) kapatıyordu; **Türkiye'nin 123
+kombinasyonunun hiçbirinde** `physical` pozitif değildi, yani ülke tamamen satılamaz
+görünüyordu. Hiçbir hata log'lanmıyordu — kullanıcı yalnız "numara bulunmuyor" görüyordu.
+
+**Stok = `counts.defaultPrice`.** → `trd.md` FR-306 ·
+`api/internal/adapter/provider/herosms/herosms_stok_test.go`
 
 > ⚠️ Legacy `?action=getPrices`, `getTopCountriesByService`, `getTopCountriesByServiceRank`
 > **`deprecated: true`** — *"Yöntem kullanımdan kaldırıldı. GET activations/offers kullanın."*
@@ -431,7 +445,7 @@ Adaptör hepsini tek iç tipe indirger: `Code`, `Body`, `ReceivedAt`.
 | **H13** | Modern `DELETE` iptal reddinde 409 mu 422 mi | ✅ | **Yüksek** |
 | **H14** | Webhook `id` alanı nedir + **imza/secret başlığı geliyor mu** (ham HTTP başlıkları kaydedilir) | ✅ | **Yüksek** |
 | **H15** | `/otp` OTP gelmemişken ne döner; `/otp/last`'ın 400'ü ne zaman | ✅ | **Yüksek** |
-| **H16** | `counts.physical` / `total` / `defaultPrice` gerçek anlamı; `map` değerleri adet mi | ❌ | Orta |
+| **H16** | `counts.physical` / `total` / `defaultPrice` gerçek anlamı; `map` değerleri adet mi | ✅ **2026-09-10** | Orta |
 | **H17** | `resellerUserId` geri dönüyor mu | ✅ | Orta |
 | **H18** | `status=10` tek taraflı iade nasıl bildiriliyor | ❌ | Orta |
 | **H19** | `replace` ücretli mi | ✅ | Düşük |

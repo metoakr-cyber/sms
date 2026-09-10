@@ -109,9 +109,14 @@ Bunlar **kod işi değil**, sizin yapmanız gerekenler:
   görüyordu. Düzeltildi (`DeliverMessages` yayın süzgeci); regresyonu
   `rental_integration_test.go#TestRefundedOrderCodeIsNotPublishedOverSSE`
   tutuyor. Ders: kod kullanıcıya İKİ kanaldan ulaşır; kural ikisinde de olmalı.
-- **Türkiye numarası satılamıyor.** Sağlayıcının API'si Türkiye için 122
-  serviste de `physical = 0` döndürüyor (kıyas: 195 ülkenin 67'sinde > 0).
-  Ülke listede en üstte ama **seçilemez** durumda. Ayrıntı: [memory.md](memory.md) §H23.
+- ~~**Türkiye numarası satılamıyor.**~~ **Çözüldü 2026-09-10:** sorun sağlayıcıda
+  değil, stok ölçütümüzdeydi — `counts.physical`'a bakıyorduk ve o sayaç Türkiye'de
+  hiçbir kombinasyonda pozitif değil. Doğru sayaç `counts.defaultPrice`
+  (merdivenle 20.788/20.788 tutarlı). Ölçüt düzeltilip katalog senkronlandıktan
+  sonra Türkiye'de **126 teklifin 69'u satılabilir** oldu (WhatsApp × TR: 10.053
+  numara, 1,20 USD); katalog geneli 9.912 → 15.848. Sağlayıcının numarayı gerçekten
+  TESLİM ettiği hâlâ kanıtlanmadı — tek belirleyici test gerçek satın alma.
+  Ayrıntı: [memory.md](memory.md) §H23 ve §1 karar günlüğü.
 
 ---
 

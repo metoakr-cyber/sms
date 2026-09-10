@@ -691,8 +691,8 @@ GET /api/v1/catalog/quote?serviceId=..&countryId=..&operator=any
    │        -> provider_offers önbelleği + Retry-After uyumlu geri çekilme zorunlu
    │
    ├─ 4. stock > 0 olanlar arasında (cost × cost_multiplier) en düşüğü seç
-   │     ⚠️ stok = counts.physical  (total/defaultPrice DEĞİL — ama üçünün de açıklaması
-   │        spec'te YOK; bu seçim canlı gözleme dayanıyor, H16)
+   │     ✅ stok = counts.defaultPrice  (total DEĞİL: fiyat tavanı yok. physical DEĞİL:
+   │        ayrı eksen, satışı sessizce engelliyordu — H16 kapandı, 2026-09-10)
    │     ⚠️ hangi fiyat katmanı (prices.default | retail | min) ücretlendirilir: BİLİNMİYOR (H6)
    │        maxPrice'ı default'a sabitlersek görünen stok counts.defaultPrice kadardır
    │     eşitlikte: priority, ayrıca offers.meta.order.deliverability ve stats.percent
@@ -913,7 +913,7 @@ Adaptörü doğrudan etkileyen dört doğrulanmış kural:
 | **Teyit `GET /{id}/otp/last`** | 🔴 Tekil `GET /activations/{id}` **YOK** — o yolda yalnız `delete` (ADR-022) |
 | **`Cancel()` ve `Finish()` ayrı** | `DELETE` = *"iptal ve iade"*, `/finish` = *"para iadesi yapılmaz"* (ADR-023) |
 | **Yanıt DİZİ:** `data[0]` okunur | `amount:1` olsa bile dizi. `len(data) != 1` → **hata** (parası çekilmiş ama siparişe dönmemiş numara) |
-| Stok = `counts.physical` | Canlı: WhatsApp×TR → `total=56964`, `physical=0`. ⚠️ **Spec üç sayacı da açıklamıyor — bu bir çıkarım** |
+| Stok = `counts.defaultPrice` | Ölçüm (20.788 kombinasyon): `defaultPrice` = `map` merdiveninin `prices.default` altındaki kümülatif toplamı, **birebir**. `maxPrice` politikamızla aynı şeyi ölçer. `physical` ölçütken katalogun %28'i sessizce kapalıydı |
 | `maxPrice` gönderilir, **`fixedPrice` GÖNDERİLMEZ** | `fixedPrice` = *"kesinlikle o fiyattan"* — tavan değil sabit fiyat (ADR-027) |
 | TTL `expiredAt`'ten, **eksi güvenlik payı** | Varsayılan süre spec'te hiçbir yerde yok |
 | **OTP alan adı normalizasyonu** | Üç kaynak, üç isim seti: `smsCode\|code` → `Code`, `smsText\|text` → `Body`, `receivedAt\|date` → `ReceivedAt`. İki tarih formatı (ISO8601 / RFC3339) |

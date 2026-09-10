@@ -141,7 +141,7 @@ katmanlara dokunuyor ama iş mantığı basit.
 ### Çıkış kriteri
 - `FakeProvider` ile tüm katalog akışı ağsız çalışıyor
 - Gerçek hesapla 195 ülke / 811 servis çekiliyor, eşleştirmeler doluyor
-- **Stok `counts.physical`'den okunuyor**; `count` hiçbir yerde stok olarak kullanılmıyor (**KK-306**)
+- **Stok `counts.defaultPrice`'ten okunuyor**; `total`/`count` hiçbir yerde stok olarak kullanılmıyor (**KK-306**)
 - Sözleşme testleri fixture'larla yeşil
 - 3 sn'de yanıt vermeyen sağlayıcı eleniyor, sistem beklemiyor
 

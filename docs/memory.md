@@ -13,6 +13,28 @@
 Her önemli karar tarihiyle ve gerekçesiyle. **Karar değiştiğinde eskisi silinmez, üstü çizilir ve
 altına yenisi yazılır** — geçmiş kararın gerekçesi gelecekte işe yarar.
 
+### 2026-09-10 · Stok ölçütü `counts.physical` → `counts.defaultPrice`
+
+~~Stok = `counts.physical`~~ (2026-09-08, canlı gözleme dayanıyordu — ❓H16). Ölçüt
+**satışı sessizce engelliyordu**: hiçbir hata log'lanmadan katalogun %28'i (20.788
+kombinasyonun 5.910'u) "numara bulunmuyor" gösteriyordu ve **Türkiye'nin 123
+kombinasyonunun hiçbirinde** `physical` pozitif değildi — ülke tamamen kapalıydı.
+
+**Yeni ölçüt `counts.defaultPrice`, ve bu bir çıkarım değil:** 20.788 kombinasyonun
+**20.788'inde** `defaultPrice`, `map` fiyat merdiveninin `prices.default` ve altındaki
+kümülatif toplamına birebir eşit çıktı. Yani alan tam olarak "tavanımızdan alınabilir
+adet" demek — `maxPrice = prices.default` politikamızla (Değişmez 21) aynı şeyi ölçüyor.
+
+`physical > 0` iken `defaultPrice = 0` olan 208 kombinasyon da incelendi: hepsinde
+merdivenin en ucuz basamağı varsayılan fiyatın **üstünde** (örn. `hu×1`: default 0,075 ·
+en ucuz basamak 0,0751). Onlar `maxPrice`'ımızla zaten alınamaz; 0 doğru cevaptır.
+Yani yeni ölçüt eski ölçütün kapsadığı gerçek satılabilir stoğu kaybetmiyor.
+
+🔴 **Hâlâ kanıtlanmamış olan:** sağlayıcının gerçekten numara TESLİM edip etmediği.
+Bu ölçütün doğruluğu ile stoğun gerçekliği ayrı sorulardır — bkz. §H23, tek belirleyici
+test hâlâ gerçek bir satın almadır.
+→ `api/internal/adapter/provider/herosms/herosms_stok_test.go`
+
 ### 2026-09-08 · Yeniden yazma kararı
 Mevcut sistem (127 commit, son commit 2026-04-09, canlıya hiç alınmadı) prototip olarak amacına
 ulaştı ama ticari kullanıma uygun değil. Kritik güvenlik açıkları, çalışmayan kod bölümleri ve
@@ -154,7 +176,8 @@ geliştirme logosuz çalışır ve gerçek sağlayıcıya geçince "neden şimdi
 `aria-label` değerlerinden doğrulandı. Görev metnindeki iki kod YANLIŞTI ve düzeltildi:
 Steam = **`mt`** (`ss` değil), TikTok = **`lf`** (`ti` değil; `ti.png` tanımlanamayan bir favicon).
 
-**WhatsApp × TR bilerek STOKSUZ kaldı** (canlıda `physicalCount=0` gözlendi) — "stok yok" dalı
+**WhatsApp × TR o gün STOKSUZ görünüyordu** (yanlış sayaç: `physicalCount=0`; 2026-09-10'da
+düzeltildi, bkz. §1) — "stok yok" dalı
 yerel geliştirmede de gerçekten oluşsun diye. Ama WhatsApp'ın stoklu ülkeleri var, yani servis
 katalogda görünüyor.
 → test: `internal/adapter/provider/fake/catalog_test.go` (logo dosyası var mı, ülke adı
@@ -665,7 +688,7 @@ gösteriyor: 5sim'de `country` boyutu `"turkey"` gibi bir metin, HeroSMS'te `62`
 | **Next.js `middleware.ts` güvenlik sınırı değil** | Yalnız yönlendirme yapar; atlanabilir | Gerçek yetki her zaman Go tarafında — `design.md` §14.2 |
 | **Para JSON'da float'a dönüşür** | `12.50` JavaScript'te `12.499999...` olabilir | API'de her zaman `{minor, currency, formatted}` — `trd.md` §9 |
 | **`CITEXT` uzantısı gerekli** | E-posta/kullanıcı adı büyük-küçük harf duyarsız benzersizlik için | İlk migration'da `CREATE EXTENSION citext` |
-| 🔴 **HeroSMS `count` sahte stok gösterir** | WhatsApp×TR: `count=56964` ama `physicalCount=0`. `count` kullanılırsa kullanıcıdan para çekilir, sağlayıcı boş döner | Stok **her zaman** `counts.physical`/`physicalCount` — `trd.md` FR-306 |
+| 🔴 **HeroSMS'te üç sayaç var, ikisi stok DEĞİL** | `total` fiyat tavanı tanımaz (para çekilir, numara gelmez). `physical` ayrı eksendir ve ölçüt yapılınca **sessizce satış engeller** — katalogun %28'i, Türkiye'nin tamamı | Stok **her zaman** `counts.defaultPrice` — `trd.md` FR-306, `herosms_stok_test.go` |
 | 🔴 **HeroSMS webhook'unda imza yok** | URL'i bilen herkes sahte "kod geldi" gönderebilir | IP izin listesi (`84.32.223.53`, `185.138.88.87`) + kod `GET /{id}/otp/last` ile teyit — ADR-019, ADR-022 |
 | **`POST /activations` idempotent değil** | Yeniden deneme iki numara alır, iki kez ücretlendirir | Asla yeniden deneme — `CLAUDE.md` değişmez #6 |
 | **Legacy yanıtlar `text/html` döner** | JSON ayrıştırıcıya verilirse patlar (`ACCESS_BALANCE:0.5632`) | Legacy çağrılar ayrı ayrıştırıcıdan geçer |
@@ -773,18 +796,27 @@ ipucu metinleri şunu diyor: *"Fiziksel numaralar — 8.721.190 adet, sanal
 numaralar — **-8.642.940** adet"*. **Negatif** bir sayı. Site iki sayacı
 birbirinden çıkarıyor ve eksi değer üretiyor — bu sayılar envanter değil.
 
-**Sonuç:** API üzerinden bu hesaba Türkiye numarası SATILMIYOR. Sitedeki
-"Türk sanal numara" ifadesi ya havuz sayacına dayanıyor ya da API'ye açılmayan
-ayrı bir stoktan geliyor.
+~~**Sonuç:** API üzerinden bu hesaba Türkiye numarası SATILMIYOR.~~
+**Bu sonuç 2026-09-10'da YANLIŞLANDI.** O günkü ölçüm yalnız `physical` sayacına
+bakıyordu ve `physical` Türkiye'de hiçbir kombinasyonda pozitif değil. Aynı çağrı
+`defaultPrice` sayacını da döndürüyordu ve **Türkiye'nin 123 kombinasyonunun 70'inde
+pozitif** (WhatsApp × TR: `physical 0`, `defaultPrice 9.929`, 1,20 USD). Yani API
+Türkiye numarasını gösteriyordu; biz yanlış sayaca bakıyorduk.
+→ Ölçüt düzeltildi, bkz. §1 karar günlüğü 2026-09-10.
 
-**Kesin kanıt eksik:** tek belirleyici test, Türkiye için gerçek bir satın alma
-denemesidir (en ucuz servis ≈ 0,05 USD). `NO_NUMBERS` dönerse `physical` doğru;
-numara gelirse FR-306 kuralı yanlış ve satılabilir stoğu gizliyoruz demektir.
-**Kullanıcı onayı bekliyor.**
+Sağlayıcının kendi sitesindeki **negatif** sayaç gözlemi yine de geçerlidir: o
+sayfadaki rakamlar envanter değildir. Ama API'nin `map` merdiveni tutarlıdır —
+20.788/20.788 kombinasyonda `defaultPrice` merdivenle birebir eşleşiyor.
 
-**Bugünkü davranış:** Türkiye ülke listesinde **en üstte** ama seçilemez
-(`disabled`), etiketi "şu an stok yok". Kiralamada Türkiye hiç listelenmiyor —
-sağlayıcıda kiralık Türkiye ürünü yok.
+🔴 **Kesin kanıt HÂLÂ eksik:** sayacın doğru okunması ile numaranın gerçekten
+TESLİM edilmesi ayrı şeylerdir. Tek belirleyici test, Türkiye için gerçek bir satın
+alma denemesidir (en ucuz servis ≈ 0,05 USD). Numara gelirse zincir baştan sona
+doğrulanmış olur; `NO_NUMBERS` dönerse stok sayacı doğru okunuyor ama havuz
+bize kapalı demektir. **Kullanıcı onayı bekliyor.**
+
+**Bugünkü davranış:** Ölçüt düzeltildikten sonra Türkiye seçilebilir olmalı —
+katalog senkronu koştuğunda 70 servis stoklu görünecek. Kiralamada Türkiye hiç
+listelenmiyor: sağlayıcıda kiralık Türkiye ürünü yok, o ayrı bir konu.
 
 ---
 
