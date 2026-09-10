@@ -233,7 +233,22 @@ export default function AdminProvidersPage() {
         Türkçede `.` BİNLİK ayırıcı olduğu için kullanıcı bunu "4000" diye
         okudu ve çarpanını yanlış sandı. Değer doğruydu, yazım yanlıştı.
       */
-      hucre: (p) => formatDecimal(p.costMultiplier),
+      /*
+        1 DIŞINDAKİ DEĞER İŞARETLENİR. Çarpan normalde 1'dir ve öyle kaldığı
+        sürece görünmez bir alandır; 1 olmadığı anda satış fiyatını doğrudan
+        değiştirir. Listeyi tarayan yöneticinin bunu fark etmesi için rozet
+        gerekiyor — ölçüm: çarpan aylarca 4'te kaldı ve kimse görmedi, çünkü
+        sütunda yalnız sayı vardı ve "4" tek başına yanlış görünmüyor.
+      */
+      hucre: (p) => {
+        const sade = trimDecimal(p.costMultiplier);
+        return (
+          <span className="inline-flex items-center gap-2">
+            {formatDecimal(p.costMultiplier)}
+            {sade !== '1' && <Badge tone="warn">maliyet ×{sade}</Badge>}
+          </span>
+        );
+      },
     },
     {
       anahtar: 'yetenekler',
@@ -519,9 +534,54 @@ function OrtakAlanlar({
         inputMode="decimal"
         autoComplete="off"
         error={hatalar.costMultiplier}
-        hint="Sağlayıcı maliyeti bu çarpanla düzeltilir (örn. 1.00)."
+        /*
+          İPUCU NE OLMADIĞINI DA SÖYLER. Eski metin ("Sağlayıcı maliyeti bu
+          çarpanla düzeltilir") doğruydu ama eksikti: alanın kâr marjı
+          OLMADIĞINI ve marjın nerede olduğunu söylemiyordu. Bu ipucu
+          `aria-describedby` ile alana bağlı, yani ekran okuyucu da duyar.
+        */
+        hint="Sağlayıcının bildirdiği maliyeti düzeltir; normalde 1 kalır. Kâr marjı DEĞİLDİR — marj, Fiyat kuralları ekranındadır."
       />
+      <CarpanUyarisi ham={deger.costMultiplier} />
     </>
+  );
+}
+
+/**
+ * Çarpan 1 değilken beliren uyarı.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * NEDEN VAR
+ * ══════════════════════════════════════════════════════════════════════════
+ * Bu alan kâr marjı sanıldı ve 4 yazıldı. Sonuç: sağlayıcı maliyeti dörde
+ * katlandı, üstüne fiyat kuralının %40 marjı bindi ve müşteri 83 ₺'lik
+ * numarayı 332 ₺ gördü. Hiçbir yerde hata yoktu — sistem tam da söylendiği
+ * gibi çalışıyordu. Yanlış olan tek şey, alanın ne yaptığını söylememesiydi.
+ *
+ * Mimari bu ikisini bilerek ayırmıştır (design.md §487, §601): çarpan
+ * *maliyet düzeltmesi*, marj *iş kararı*. Eski sistemde ikisi tek alanda
+ * karışıktı ve yeniden yazımda ayrılmalarının sebebi tam olarak buydu.
+ *
+ * 🔴 `duyur={false}` — kutu, kullanıcı yazarken her tuş vuruşunda yeniden
+ * çizilir. `role="alert"` olsaydı ekran okuyucu her harfte sözü keserdi.
+ * Metnin kendisi ipucunda da var ve o ipucu alana `aria-describedby` ile
+ * bağlı; yani duyuru kaybolmuyor, yalnız kesintili olmuyor.
+ */
+function CarpanUyarisi({ ham }: { ham: string }) {
+  const v = ham.trim();
+  // Geçersiz giriş için susulur: alan doğrulaması zaten konuşuyor, iki mesaj
+  // aynı anda görünürse hangisinin engellediği belirsizleşir.
+  if (!/^\d+(\.\d+)?$/.test(v)) return null;
+  const sade = trimDecimal(v);
+  if (sade === '1') return null;
+
+  return (
+    <Alert tone="warn" duyur={false}>
+      <strong>Bu alan kâr marjı değildir.</strong> Sağlayıcının bildirdiği
+      maliyet {sade} ile çarpılır ve satış fiyatı aynı oranda değişir. Kârı
+      buradan ayarlamayın — marj <strong>Fiyat kuralları</strong> ekranındadır.
+      Maliyet düzeltmesine ihtiyaç yoksa <strong>1</strong> yazın.
+    </Alert>
   );
 }
 
