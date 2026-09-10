@@ -34,18 +34,38 @@ SELECT balance_minor FROM users WHERE id = $1 AND deleted_at IS NULL;
 -- name: ListLedgerEntries :many
 -- Kullanıcının hareket dökümü. SAHİPLİK sorgunun parçasıdır: user_id ayrı bir
 -- if kontrolü değil, WHERE koşuludur (docs/design.md §10).
+--
+-- `q` SERBEST METİN: not ve referans kimliği. Tür adı ARANMAZ — "iade" yazan
+-- kullanıcı REFUND satırlarını beklerdi ama tür adı veritabanında DURMAZ,
+-- sunucuda enum'dan üretilir (`ledgerTypeLabel`). O iş tür süzgecinindir.
 SELECT * FROM ledger_entries
 WHERE user_id = sqlc.arg('user_id')
   AND (sqlc.narg('entry_type')::ledger_type IS NULL OR entry_type = sqlc.narg('entry_type')::ledger_type)
   AND (sqlc.narg('from_ts')::timestamptz IS NULL OR created_at >= sqlc.narg('from_ts')::timestamptz)
   AND (sqlc.narg('to_ts')::timestamptz   IS NULL OR created_at <= sqlc.narg('to_ts')::timestamptz)
+  AND (sqlc.narg('q')::text IS NULL
+       OR coalesce(note, '')::text ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR coalesce(reference_id, '')::text ILIKE '%' || sqlc.narg('q')::text || '%')
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountLedgerEntries :one
+--
+-- 🔴 SÜZGEÇLER `ListLedgerEntries` İLE BİREBİR AYNI.
+--
+-- ÖNCEDEN DEĞİLDİ: liste `from_ts`/`to_ts` süzerken sayım SÜZMÜYORDU. Tarih
+-- aralığı arayüzde henüz açılmamıştı, yani hata gizli kalmıştı; açıldığı gün
+-- sayfalama "1–25 / 412" derken liste 3 satır gösterecekti. `q` eklenirken
+-- ikisi tek elden yazıldı.
+-- test: wallet_integration_test.go#TestListLedgerEntriesSuzgecleri
 SELECT count(*) FROM ledger_entries
 WHERE user_id = sqlc.arg('user_id')
-  AND (sqlc.narg('entry_type')::ledger_type IS NULL OR entry_type = sqlc.narg('entry_type')::ledger_type);
+  AND (sqlc.narg('entry_type')::ledger_type IS NULL OR entry_type = sqlc.narg('entry_type')::ledger_type)
+  AND (sqlc.narg('from_ts')::timestamptz IS NULL OR created_at >= sqlc.narg('from_ts')::timestamptz)
+  AND (sqlc.narg('to_ts')::timestamptz   IS NULL OR created_at <= sqlc.narg('to_ts')::timestamptz)
+  AND (sqlc.narg('q')::text IS NULL
+       OR coalesce(note, '')::text ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR coalesce(reference_id, '')::text ILIKE '%' || sqlc.narg('q')::text || '%');
 
 -- name: FindLedgerEntriesByReference :many
 SELECT * FROM ledger_entries

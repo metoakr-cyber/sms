@@ -14,15 +14,36 @@ const countLedgerEntries = `-- name: CountLedgerEntries :one
 SELECT count(*) FROM ledger_entries
 WHERE user_id = $1
   AND ($2::ledger_type IS NULL OR entry_type = $2::ledger_type)
+  AND ($3::timestamptz IS NULL OR created_at >= $3::timestamptz)
+  AND ($4::timestamptz   IS NULL OR created_at <= $4::timestamptz)
+  AND ($5::text IS NULL
+       OR coalesce(note, '')::text ILIKE '%' || $5::text || '%'
+       OR coalesce(reference_id, '')::text ILIKE '%' || $5::text || '%')
 `
 
 type CountLedgerEntriesParams struct {
 	UserID    int64
 	EntryType *LedgerType
+	FromTs    *time.Time
+	ToTs      *time.Time
+	Q         *string
 }
 
+// 🔴 SÜZGEÇLER `ListLedgerEntries` İLE BİREBİR AYNI.
+//
+// ÖNCEDEN DEĞİLDİ: liste `from_ts`/`to_ts` süzerken sayım SÜZMÜYORDU. Tarih
+// aralığı arayüzde henüz açılmamıştı, yani hata gizli kalmıştı; açıldığı gün
+// sayfalama "1–25 / 412" derken liste 3 satır gösterecekti. `q` eklenirken
+// ikisi tek elden yazıldı.
+// test: wallet_integration_test.go#TestListLedgerEntriesSuzgecleri
 func (q *Queries) CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countLedgerEntries, arg.UserID, arg.EntryType)
+	row := q.db.QueryRow(ctx, countLedgerEntries,
+		arg.UserID,
+		arg.EntryType,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Q,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -175,8 +196,11 @@ WHERE user_id = $1
   AND ($2::ledger_type IS NULL OR entry_type = $2::ledger_type)
   AND ($3::timestamptz IS NULL OR created_at >= $3::timestamptz)
   AND ($4::timestamptz   IS NULL OR created_at <= $4::timestamptz)
+  AND ($5::text IS NULL
+       OR coalesce(note, '')::text ILIKE '%' || $5::text || '%'
+       OR coalesce(reference_id, '')::text ILIKE '%' || $5::text || '%')
 ORDER BY created_at DESC, id DESC
-LIMIT $6 OFFSET $5
+LIMIT $7 OFFSET $6
 `
 
 type ListLedgerEntriesParams struct {
@@ -184,18 +208,24 @@ type ListLedgerEntriesParams struct {
 	EntryType *LedgerType
 	FromTs    *time.Time
 	ToTs      *time.Time
+	Q         *string
 	Off       int32
 	Lim       int32
 }
 
 // Kullanıcının hareket dökümü. SAHİPLİK sorgunun parçasıdır: user_id ayrı bir
 // if kontrolü değil, WHERE koşuludur (docs/design.md §10).
+//
+// `q` SERBEST METİN: not ve referans kimliği. Tür adı ARANMAZ — "iade" yazan
+// kullanıcı REFUND satırlarını beklerdi ama tür adı veritabanında DURMAZ,
+// sunucuda enum'dan üretilir (`ledgerTypeLabel`). O iş tür süzgecinindir.
 func (q *Queries) ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error) {
 	rows, err := q.db.Query(ctx, listLedgerEntries,
 		arg.UserID,
 		arg.EntryType,
 		arg.FromTs,
 		arg.ToTs,
+		arg.Q,
 		arg.Off,
 		arg.Lim,
 	)

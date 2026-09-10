@@ -20,10 +20,19 @@
  * ══════════════════════════════════════════════════════════════════════════
  * YERLEŞİM
  * ══════════════════════════════════════════════════════════════════════════
- * Yan sütun gidince içerik alanı 240 px genişledi. Sayfaların kendi
- * `mx-auto max-w-*` kapları var (3xl–5xl arası); `main` bunlara ORTAK bir
- * `max-w-6xl` çerçeve verir ki başlık şeridiyle aynı sol/sağ kenardan
- * hizalansınlar — aksi hâlde 1440 px'te gezinti solda, içerik ortada durur.
+ * İÇERİK TAVANI `max-w-12xl` = 1920px (kullanıcı kararı, 10 Eylül 2026).
+ *
+ * Eski hâl: `main` `mx-auto max-w-6xl`, sayfalar ayrıca kendi `max-w-4xl/5xl`
+ * kaplarını açıyordu. Üst başlık şeridi (`panel-header.tsx`) ise HİÇ
+ * sınırlanmamıştı (`px-4 md:px-6`, `max-w` yok). Yani başlık kenardan
+ * kenara, içerik ortada dar bir şerit hâlinde duruyordu; 1440 px'te ikisi
+ * hizasızdı ve tabloların sütunları gereksiz sıkışıyordu.
+ *
+ * Yeni hâl: `main` yalnız `px-4 md:px-6` dolgusu ve 1920px'lik bir tavan
+ * taşır. İçerik başlıkla AYNI sol/sağ kenardan hizalanır ve tablo, yaygın
+ * masaüstü çözünürlüklerinin tamamında ekranın verdiği genişliği kullanır.
+ * 🔴 Sayfa içindeki `max-w-[70ch]` KALIR: o bir yerleşim kabı değil, düz metin
+ * satır uzunluğu sınırıdır (§3.4) — kaldırılırsa paragraflar okunmaz olur.
  *
  * `pb-28`: mobil alt gezinti çubuğu `fixed`tir, akıştan çıkar. Alt dolgu
  * olmasaydı son kart çubuğun altında kalırdı. Ölçü çubuğun kendi yüksekliğinden
@@ -103,7 +112,7 @@ export function PanelShell({ children }: { children: React.ReactNode }) {
 
 
       {!user.emailVerified && (
-        <div className="mx-auto w-full max-w-6xl px-4 pt-4 md:px-6">
+        <div className="w-full px-4 pt-4 md:px-6">
           <Alert tone="warn">
             E-posta adresiniz doğrulanmamış. Numara satın alabilmek için
             e-postanıza gönderdiğimiz bağlantıya tıklayın.
@@ -111,8 +120,20 @@ export function PanelShell({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
+        {/*
+          GENİŞLİK TAVANI `max-w-12xl` (120rem / 1920px) — kullanıcı kararı,
+          10 Eylül 2026. Jeton `globals.css`'te tanımlı; Tailwind'in hazır
+          ölçeği `7xl`de biter ve tanımsız bir `max-w-12xl` sessizce hiçbir şey
+          yapmazdı.
+
+          TEK YERDE DURUYOR. Sayfaların her biri kendi `mx-auto max-w-*` kabını
+          açsaydı (eski hâl buydu: 2xl'den 6xl'e beş farklı değer) içerik
+          genişliği ekrandan ekrana zıplardı — §10 bunu bir kusur sayıyor.
+          Kabuk tek tavanı verir, sayfalar genişlik kabı AÇMAZ.
+        */}
       <main id="icerik"
-            className="mx-auto w-full min-w-0 max-w-6xl flex-1 px-4 py-5 pb-28 md:px-6 md:py-7 md:pb-10">
+            className="mx-auto w-full min-w-0 max-w-12xl flex-1 px-4 py-5 pb-28
+                       md:px-6 md:py-7 md:pb-10">
         {children}
         <PanelYardimciBaglantilar />
         </main>

@@ -1214,7 +1214,7 @@ func TestListUserOrdersCarriesServiceIcon(t *testing.T) {
 	}
 	ord := e.newPendingOrder(t)
 
-	rows, total, err := e.svc.List(ctx, e.userID, 20, 0)
+	rows, total, err := e.svc.List(ctx, e.userID, ordersvc.ListeSuzgeci{Limit: 20})
 	if err != nil {
 		t.Fatalf("liste: %v", err)
 	}
@@ -1244,7 +1244,7 @@ func TestListUserOrdersCarriesServiceIcon(t *testing.T) {
 		t.Fatalf("servis kodu değişimi: %v", err)
 	}
 
-	rows, total, err = e.svc.List(ctx, e.userID, 20, 0)
+	rows, total, err = e.svc.List(ctx, e.userID, ordersvc.ListeSuzgeci{Limit: 20})
 	if err != nil {
 		t.Fatalf("servis silindikten sonra liste: %v", err)
 	}
@@ -1255,4 +1255,137 @@ func TestListUserOrdersCarriesServiceIcon(t *testing.T) {
 	if rows[0].IconURL != "" {
 		t.Errorf("logosuz sipariş boş dize vermeli, %q geldi", rows[0].IconURL)
 	}
+}
+
+// TestListUserOrdersFiltreleri `?q=` ve `?status=` süzgeçlerini doğrular.
+//
+// ÜÇ İDDİA TEK TESTTE, çünkü üçü tek bir sorgunun ayrılamaz parçaları:
+//
+//  1. SÜZGEÇ SÜZER — serbest metin servis adı, ülke adı ve numarada arar.
+//  2. SAYIM LİSTEYLE AYNI SÜZGECİ ALIR. `CountUserOrders` süzgeçsiz kalsaydı
+//     her test yeşil görünürdü ama sayfalama "1–25 / 300" yazarken liste 1
+//     satır gösterirdi. Ayrı bir testte olsaydı bu ayrışma fark edilmezdi.
+//  3. SAHİPLİK SÜZGEÇTEN ÜSTÜNDÜR (değişmez #7). Başka kullanıcının siparişine
+//     BİREBİR uyan bir arama bile onu döndürmez.
+func TestListUserOrdersFiltreleri(t *testing.T) {
+	ctx := context.Background()
+	e := setup(t, 100_000)
+
+	a := e.newPendingOrder(t)
+	b := e.newPendingOrder(t)
+	c := e.newPendingOrder(t)
+
+	// Katalog anlık görüntüsü sipariş satırında durur; testte doğrudan yazmak
+	// üç ayrı servis/ülke kurmaktan kısa ve sorgunun okuduğu sütunlar bunlar.
+	ayirt := func(id int64, servis, ulke, numara string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			`UPDATE orders SET service_name=$2, country_name=$3, phone_number=$4 WHERE id=$1`,
+			id, servis, ulke, numara); err != nil {
+			t.Fatalf("sipariş ayrıştırma: %v", err)
+		}
+	}
+	ayirt(a.ID, "Whatsapp", "Türkiye", "905550000001")
+	ayirt(b.ID, "Telegram", "Almanya", "491710000002")
+	ayirt(c.ID, "Instagram", "Türkiye", "905550000003")
+
+	// c tamamlanmış olsun — durum süzgecinin süzecek bir şeyi olsun.
+	if _, err := pool.Exec(ctx,
+		`UPDATE orders SET status='COMPLETED', completed_at=now() WHERE id=$1`, c.ID); err != nil {
+		t.Fatalf("durum kurulumu: %v", err)
+	}
+
+	metin := func(v string) *string { return &v }
+	durum := func(v db.OrderStatus) *db.OrderStatus { return &v }
+
+	// Her çağrıda `total` ile satır sayısı BİRLİKTE kontrol edilir: iddia 2.
+	// Tek sayfaya sığan bir kümede ikisi eşit olmak ZORUNDADIR.
+	kontrol := func(ad string, f ordersvc.ListeSuzgeci, bekleyen ...string) {
+		t.Helper()
+		f.Limit = 20
+		rows, total, err := e.svc.List(ctx, e.userID, f)
+		if err != nil {
+			t.Fatalf("%s: liste: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountUserOrders süzgeci ListUserOrders ile aynı değil)", ad, total, len(rows))
+		}
+		if len(rows) != len(bekleyen) {
+			t.Fatalf("%s: %d satır bekleniyordu, %d geldi", ad, len(bekleyen), len(rows))
+		}
+		got := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			got[r.Order.ServiceName] = true
+		}
+		for _, ad2 := range bekleyen {
+			if !got[ad2] {
+				t.Errorf("%s: %q listede yok", ad, ad2)
+			}
+		}
+	}
+
+	kontrol("süzgeçsiz", ordersvc.ListeSuzgeci{}, "Whatsapp", "Telegram", "Instagram")
+	kontrol("servis adı", ordersvc.ListeSuzgeci{Q: metin("tele")}, "Telegram")
+	// ILIKE: büyük/küçük harf ayrımı YOK. Türkçe i/İ tuzağına girmeyen bir
+	// sözcük seçildi — buradaki iddia harf dönüşümü değil, ILIKE'ın kendisi.
+	kontrol("büyük harf", ordersvc.ListeSuzgeci{Q: metin("WHATS")}, "Whatsapp")
+	kontrol("ülke adı", ordersvc.ListeSuzgeci{Q: metin("Almanya")}, "Telegram")
+	kontrol("numara parçası", ordersvc.ListeSuzgeci{Q: metin("90555000000")}, "Whatsapp", "Instagram")
+	kontrol("eşleşmeyen", ordersvc.ListeSuzgeci{Q: metin("bulunmayan-sey")})
+	kontrol("durum", ordersvc.ListeSuzgeci{Status: durum(db.OrderStatusCOMPLETED)}, "Instagram")
+	kontrol("durum + metin",
+		ordersvc.ListeSuzgeci{Q: metin("türkiye"), Status: durum(db.OrderStatusPENDING)}, "Whatsapp")
+
+	// ─── `?active=true`: PENDING **veya** ACTIVE ───
+	//
+	// Tek durumlu `Status` bunu ifade edemez; ayrı bir süzgeç olmasının
+	// gerekçesi budur. `c` COMPLETED (yukarıda kuruldu), `a` PENDING kaldı;
+	// `b` ACTIVE yapılır ve İKİSİ birden gelmelidir.
+	//
+	// 🔴 `product_kind` DE YAZILIR: `order_active_is_rental` kısıtı ACTIVE
+	// durumunu YALNIZ kiralık siparişe bırakır (migration 00015) — bir
+	// aktivasyon siparişi ACTIVE'e düşerse iade işleri onu görmez ve
+	// kullanıcının parası sessizce askıda kalır. `refundable_until` de
+	// `order_rental_has_refund_window` gereğidir.
+	if _, err := pool.Exec(ctx, `
+		UPDATE orders SET status='ACTIVE', product_kind='SMS_RENTAL',
+		                  refundable_until=coalesce(refundable_until,
+		                                            created_at + interval '15 minutes')
+		WHERE id=$1`, b.ID); err != nil {
+		t.Fatalf("ACTIVE kurulumu: %v", err)
+	}
+	kontrol("sadece aktif", ordersvc.ListeSuzgeci{SadeceAktif: true}, "Whatsapp", "Telegram")
+	kontrol("aktif + metin", ordersvc.ListeSuzgeci{SadeceAktif: true, Q: metin("tele")}, "Telegram")
+	// `b` ACTIVE KALIR. PENDING'e geri çevrilmesi denendi ve VERİTABANI
+	// REDDETTİ: `orders_guard_transition` ACTIVE -> PENDING diye bir geçiş
+	// tanımıyor. Testin devamı da bunu gerektirmiyor — aşağıdaki sahiplik
+	// iddiası `b`'yi başka bir kullanıcıya DEVREDER ve devir bir durum
+	// geçişi değildir.
+
+	// ─── İddia 3: SAHİPLİK ───
+	//
+	// b BAŞKA bir kullanıcıya taşınır. Ona BİREBİR uyan `q` bile artık hiçbir
+	// şey döndürmemelidir; `user_id` koşulu süzgeçlerden önce gelir.
+	var digerID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO users (email, username, password_hash, status, email_verified_at)
+		VALUES ($1, $2, 'x', 'ACTIVE', now()) RETURNING id`,
+		fmt.Sprintf("o-diger-%d@test.local", time.Now().UnixNano()),
+		fmt.Sprintf("od%d", time.Now().UnixNano()%1e9)).Scan(&digerID); err != nil {
+		t.Fatalf("ikinci kullanıcı: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM order_messages WHERE order_id IN (SELECT id FROM orders WHERE user_id=$1)`, digerID)
+		_, _ = pool.Exec(bg, `DELETE FROM orders WHERE user_id=$1`, digerID)
+		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id=$1`, digerID)
+	})
+	if _, err := pool.Exec(ctx, `UPDATE orders SET user_id=$2 WHERE id=$1`, b.ID, digerID); err != nil {
+		t.Fatalf("sipariş devri: %v", err)
+	}
+
+	kontrol("başkasının siparişi — tam eşleşme", ordersvc.ListeSuzgeci{Q: metin("Telegram")})
+	kontrol("başkasının siparişi — numarası", ordersvc.ListeSuzgeci{Q: metin("491710000002")})
+	kontrol("devirden sonra süzgeçsiz", ordersvc.ListeSuzgeci{}, "Whatsapp", "Instagram")
 }

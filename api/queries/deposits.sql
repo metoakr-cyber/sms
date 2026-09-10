@@ -35,13 +35,25 @@ SELECT * FROM deposits WHERE public_id = @public_id;
 
 -- name: ListUserDeposits :many
 -- deposits_user_idx (user_id, created_at DESC) tam olarak bu sıralamayı kullanır.
+--
+-- Durum süzgeci `ListDepositsForAdmin` ile AYNI desendir: `sqlc.narg` NULL ise
+-- süzme yok. 🔴 `user_id` koşulu süzgeçten bağımsızdır ve kaldırılamaz —
+-- sahiplik sorgunun parçasıdır (değişmez #7).
 SELECT * FROM deposits
 WHERE user_id = @user_id
+  AND (sqlc.narg('status')::deposit_status IS NULL
+       OR status = sqlc.narg('status')::deposit_status)
 ORDER BY created_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountUserDeposits :one
-SELECT count(*) FROM deposits WHERE user_id = @user_id;
+-- 🔴 SÜZGEÇ `ListUserDeposits` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+-- yalan söyler (bkz. orders.sql, CountUserOrders notu).
+-- test: deposit_integration_test.go#TestListUserDepositsDurumSuzgeci
+SELECT count(*) FROM deposits
+WHERE user_id = @user_id
+  AND (sqlc.narg('status')::deposit_status IS NULL
+       OR status = sqlc.narg('status')::deposit_status);
 
 -- name: ListDepositsForAdmin :many
 -- Sayısal id dışarı verilmez: kullanıcı users.public_id ile gösterilir.
@@ -53,13 +65,23 @@ FROM deposits d
 JOIN users u ON u.id = d.user_id
 WHERE (sqlc.narg('status')::deposit_status IS NULL
        OR d.status = sqlc.narg('status')::deposit_status)
+  AND (sqlc.narg('q')::text IS NULL
+       OR u.email::text    ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.username::text ILIKE '%' || sqlc.narg('q')::text || '%')
 ORDER BY d.created_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountDepositsForAdmin :one
+-- 🔴 SÜZGEÇ VE JOIN, ListDepositsForAdmin İLE BİREBİR AYNI. `q` kullanıcı
+-- sütunlarında arandığı için sayım da `users`a katılmak ZORUNDA; katılmasaydı
+-- arama yapıldığında sayfalama yanlış toplam gösterirdi.
 SELECT count(*) FROM deposits d
+JOIN users u ON u.id = d.user_id
 WHERE (sqlc.narg('status')::deposit_status IS NULL
-       OR d.status = sqlc.narg('status')::deposit_status);
+       OR d.status = sqlc.narg('status')::deposit_status)
+  AND (sqlc.narg('q')::text IS NULL
+       OR u.email::text    ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.username::text ILIKE '%' || sqlc.narg('q')::text || '%');
 
 -- name: LockDepositForUpdate :one
 -- ÇAĞIRANIN TRANSACTION'I İÇİNDE çağrılmalıdır. Kilit commit'e kadar tutulur;

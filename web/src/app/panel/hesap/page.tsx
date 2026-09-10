@@ -46,18 +46,26 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { useSession } from '@/hooks/useSession';
-import { Card, Button, Badge, Alert, Empty, cx } from '@/components/ui';
+import { Card, Button, Badge, Alert, Empty, Field, cx } from '@/components/ui';
 import {
+  KayitSayaci,
+  SAYFA_BOYUTU,
   SayfaBasligi,
+  Sayfalama,
+  SuzgecCubugu,
   VeriTablosu,
   HataDurumu,
   apiHatasi,
+  useIstemciSuzgec,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { Sutun } from '@/components/yonetim';
 import type { Session } from '@/lib/types';
 
 export default function AccountPage() {
   const { user } = useSession();
+
+  const [arama, setArama] = React.useState('');
   const qc = useQueryClient();
   const [basari, setBasari] = React.useState('');
 
@@ -87,6 +95,18 @@ export default function AccountPage() {
    * dizesi taşır ve nowrap dayatan iki hücre (tarih, düğme) yanında IP için
    * yer kalmıyor. IP mobil kartta ve `lg:` üstünde duruyor — kaybolmuyor.
    */
+  /*
+   * Arama ve sayfalama İSTEMCİDE — ve bu doğrudur: `GET /me/sessions` sayfasız
+   * bir uçtur, kullanıcının açık oturumlarının TAMAMI elimizdedir. Ayrımın
+   * tamamı ve ne zaman yanlış olacağı `useIstemciSuzgec` başında yazılı.
+   */
+  const {
+    sayfadakiler,
+    toplam: toplamOturum,
+    offset: guvenliOffset,
+    setOffset,
+  } = useIstemciSuzgec(sessions.data?.items, arama, (o) => [o.userAgent, o.ip]);
+
   const sutunlar: ReadonlyArray<Sutun<Session>> = [
     {
       anahtar: 'cihaz',
@@ -162,7 +182,7 @@ export default function AccountPage() {
   ];
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <SayfaBasligi baslik="Hesabım" />
 
       <Card className="flex flex-col gap-6">
@@ -202,24 +222,67 @@ export default function AccountPage() {
         {basari && <Alert tone="ok">{basari}</Alert>}
         {kapatmaHatasi && <HataDurumu hata={kapatmaHatasi} />}
 
+        <SuzgecCubugu
+          etkinSayisi={arama ? 1 : 0}
+          onTemizle={() => {
+            setArama('');
+            setOffset(0);
+          }}
+          sag={<KayitSayaci toplam={toplamOturum} />}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={arama}
+              onChange={(e) => {
+                setArama(e.target.value);
+                setOffset(0);
+              }}
+              placeholder="Cihaz veya IP"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        </SuzgecCubugu>
+
         <VeriTablosu
           baslik="Açık oturumlar"
           sutunlar={sutunlar}
-          satirlar={sessions.data?.items}
+          satirlar={sayfadakiler}
           satirAnahtari={(s) => s.id}
           yukleniyor={sessions.isLoading}
           hata={apiHatasi(sessions.error)}
           iskeletSatir={2}
+          // Sayfalama kendi aralığını duyuruyor; iki canlı bölge aynı anda
+          // konuşmasın. Koşul bileşenden okunur, burada kopyalanmaz.
+          duyuru={!sayfalamaGorunur(toplamOturum)}
           bos={
-            /* Bu liste pratikte hiç boş olmaz (bu sayfayı görüyorsanız en az
+            /* §6.3: SÜZGEÇTEN DOLAYI BOŞ ≠ GERÇEKTEN BOŞ.
+               Süzgeçsiz hâl pratikte hiç olmaz (bu sayfayı görüyorsanız en az
                bir oturumunuz vardır), ama boş durum ZORUNLUDUR: bir sunucu
-               sürümü boş dizi döndürürse ekran "bir şey ters gitti" demek
-               yerine sessiz kalmamalı. */
-            <Empty
-              title="Açık oturum bulunamadı"
-              hint="Bu beklenmedik bir durum. Sayfayı yenileyin; sürerse destek talebi açın."
-            />
+               sürümü boş dizi döndürürse ekran sessiz kalmamalı. */
+            arama ? (
+              <Empty
+                title="Bu aramaya uyan oturum yok"
+                hint="Cihaz adının ya da IP adresinin bir parçasını yazmayı deneyin."
+              />
+            ) : (
+              <Empty
+                title="Açık oturum bulunamadı"
+                hint="Bu beklenmedik bir durum. Sayfayı yenileyin; sürerse destek talebi açın."
+              />
+            )
           }
+        />
+
+        <Sayfalama
+          offset={guvenliOffset}
+          limit={SAYFA_BOYUTU}
+          toplam={toplamOturum}
+          onDegis={setOffset}
         />
       </Card>
     </div>

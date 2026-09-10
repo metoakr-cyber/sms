@@ -31,7 +31,7 @@ func valid(t *testing.T) {
 		"MAIL_PROVIDER", "MAIL_FROM", "RESEND_API_KEY",
 		"RECAPTCHA_SITE_KEY", "RECAPTCHA_SECRET_KEY",
 		"WEBHOOK_HEROSMS_SECRET", "WEBHOOK_HEROSMS_ALLOWED_IPS",
-		"SENTRY_DSN", "METRICS_ENABLED",
+		"SENTRY_DSN", "METRICS_ENABLED", "RATE_LIMIT_FACTOR",
 	} {
 		t.Setenv(k, "")
 	}
@@ -295,5 +295,103 @@ func TestProductionRequiresTrustedProxies(t *testing.T) {
 	_, err := config.Load()
 	if err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXIES") {
 		t.Fatalf("üretimde boş TRUSTED_PROXIES kabul edildi: %v", err)
+	}
+}
+
+// TestRateLimitFactorIsDevelopmentOnly hız limiti katsayısının üretimde
+// gevşetilemediğini doğrular.
+//
+// 🔴 BU BİR PARA VE GÜVENLİK KORUMASIDIR. Katsayı geliştirmede var olduğu için
+// birinin onu üretim ortam dosyasına kopyalaması an meselesidir; o gün
+// `POST /orders` limiti sessizce 10 katına çıkar ve kimse fark etmez.
+// Kontrol AÇILIŞTA ve GÜRÜLTÜYLE düşer — sessiz bir varsayılana güvenilmez.
+func TestRateLimitFactorIsDevelopmentOnly(t *testing.T) {
+	t.Run("varsayılan 1", func(t *testing.T) {
+		valid(t)
+		c, err := config.Load()
+		if err != nil {
+			t.Fatalf("yükleme: %v", err)
+		}
+		if c.RateLimitFactor != 1 {
+			t.Fatalf("varsayılan katsayı = %d, 1 bekleniyordu", c.RateLimitFactor)
+		}
+	})
+
+	t.Run("geliştirmede gevşetilebilir", func(t *testing.T) {
+		valid(t)
+		t.Setenv("RATE_LIMIT_FACTOR", "10")
+		c, err := config.Load()
+		if err != nil {
+			t.Fatalf("geliştirmede katsayı reddedildi: %v", err)
+		}
+		if c.RateLimitFactor != 10 {
+			t.Fatalf("katsayı = %d, 10 bekleniyordu", c.RateLimitFactor)
+		}
+	})
+
+	t.Run("üretimde REDDEDİLİR", func(t *testing.T) {
+		valid(t)
+		t.Setenv("APP_ENV", "production")
+		t.Setenv("PUBLIC_BASE_URL", "https://onay360.com")
+		t.Setenv("MAIL_PROVIDER", "resend")
+		t.Setenv("RESEND_API_KEY", "re_test")
+		t.Setenv("RECAPTCHA_SITE_KEY", "site")
+		t.Setenv("RECAPTCHA_SECRET_KEY", "secret")
+		t.Setenv("WEBHOOK_HEROSMS_SECRET", "whsec")
+		t.Setenv("SENTRY_DSN", "https://x@sentry.io/1")
+		t.Setenv("UPLOAD_DIR", t.TempDir())
+		t.Setenv("RATE_LIMIT_FACTOR", "10")
+
+		_, err := config.Load()
+		if err == nil {
+			t.Fatal("🔴 üretimde hız limiti katsayısı KABUL EDİLDİ — koruma gevşetilebiliyor")
+		}
+		if !strings.Contains(err.Error(), "RATE_LIMIT_FACTOR") {
+			t.Fatalf("hata katsayıdan söz etmiyor: %v", err)
+		}
+	})
+
+	t.Run("üst sınır aşılamaz", func(t *testing.T) {
+		valid(t)
+		t.Setenv("RATE_LIMIT_FACTOR", "1000")
+		if _, err := config.Load(); err == nil {
+			t.Fatal("sınırsız katsayı kabul edildi")
+		}
+	})
+}
+
+// TestSessionTTLHasFloor oturum süresinin 60 dakikanın altına inemediğini
+// doğrular.
+//
+// 🔴 KISA OTURUM SESSİZ BİR ARIZADIR: kullanıcı numarayı alır, kodu beklerken
+// sekmeyi bırakır, döndüğünde oturumu kapanmıştır — siparişi ekrandan kaybolur
+// ve parası harcanmıştır. Taban bu yüzden bir öneri değil, açılış kontrolüdür.
+func TestSessionTTLHasFloor(t *testing.T) {
+	for _, tc := range []struct {
+		ttl     string
+		gecerli bool
+	}{
+		{"30m", false},
+		{"59m", false},
+		{"60m", true},
+		{"1h", true},
+		{"720h", true},
+	} {
+		t.Run(tc.ttl, func(t *testing.T) {
+			valid(t)
+			t.Setenv("SESSION_TTL", tc.ttl)
+			_, err := config.Load()
+			if tc.gecerli && err != nil {
+				t.Fatalf("%s reddedildi: %v", tc.ttl, err)
+			}
+			if !tc.gecerli {
+				if err == nil {
+					t.Fatalf("🔴 %s kabul edildi — 60 dakika tabanı delinebiliyor", tc.ttl)
+				}
+				if !strings.Contains(err.Error(), "SESSION_TTL") {
+					t.Fatalf("hata SESSION_TTL'den söz etmiyor: %v", err)
+				}
+			}
+		})
 	}
 }

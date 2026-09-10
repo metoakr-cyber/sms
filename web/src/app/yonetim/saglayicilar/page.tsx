@@ -28,7 +28,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { formatDateTime, formatMoney } from '@/lib/format';
+import { formatDateTime, formatDecimal, formatMoney, trimDecimal } from '@/lib/format';
 import { Alert, Badge, Button, Card, Empty, Field, cx } from '@/components/ui';
 import { Modal } from '@/components/modal';
 import {
@@ -41,6 +41,10 @@ import {
   apiHatasi,
   ikiliTon,
   type Sutun,
+  SAYFA_BOYUTU,
+  Sayfalama,
+  SuzgecCubugu,
+  useIstemciSuzgec,
 } from '@/components/yonetim';
 import type { AdminProvider } from '@/lib/types';
 
@@ -103,6 +107,7 @@ function OnayKutusu({
 
 export default function AdminProvidersPage() {
   const qc = useQueryClient();
+  const [arama, setArama] = React.useState('');
 
   const q = useQuery({
     queryKey: QUERY_KEY,
@@ -133,6 +138,17 @@ export default function AdminProvidersPage() {
 
   const syncErr = apiHatasi(sync.error);
   const items = q.data?.items ?? [];
+
+  /*
+   * Arama ve sayfalama İSTEMCİDE: `GET /admin/providers` sayfasızdır, yanıt
+   * `{items}` — tam liste elimizdedir. Ayrımın tamamı `useIstemciSuzgec`
+   * başında yazılı; sayfalı bir uçta bu kanca YANLIŞTIR.
+   */
+  const { sayfadakiler, toplam, offset, setOffset } = useIstemciSuzgec(
+    q.data?.items,
+    arama,
+    (p) => [p.name, p.protocol, p.baseUrl, ...p.capabilities],
+  );
 
   /* ── Sütunlar: TEK veri tanımı; mobil kart bundan türer (§6.1 kural 2) ── */
   const sutunlar: Array<Sutun<AdminProvider>> = [
@@ -208,9 +224,16 @@ export default function AdminProvidersPage() {
       oncelik: 3,
       hizala: 'sag',
       sayisal: true,
-      // Sunucudan STRING gelir ve string kalır: Number() ile çevirmek çarpanı
-      // yuvarlar ve çarpan doğrudan satış fiyatına girer.
-      hucre: (p) => p.costMultiplier,
+      /*
+        Sunucudan STRING gelir ve `Number()`a ÇEVRİLMEZ: çarpan doğrudan satış
+        fiyatı zincirine giriyor, kayan noktaya uğratmak sessiz bir yuvarlama
+        olurdu. `formatDecimal` dönüşümü tamamen metinsel yapar.
+
+        🔴 SUNUCUDAN GELDİĞİ GİBİ BASILMIYOR ARTIK. Eski hâl `4.0000` yazıyordu;
+        Türkçede `.` BİNLİK ayırıcı olduğu için kullanıcı bunu "4000" diye
+        okudu ve çarpanını yanlış sandı. Değer doğruydu, yazım yanlıştı.
+      */
+      hucre: (p) => formatDecimal(p.costMultiplier),
     },
     {
       anahtar: 'yetenekler',
@@ -267,7 +290,7 @@ export default function AdminProvidersPage() {
   ];
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <SayfaBasligi
         baslik="Sağlayıcılar"
         aciklama="Numara aldığımız üst sağlayıcılar, ayarları ve sağlayıcıdaki bakiyemiz."
@@ -287,29 +310,70 @@ export default function AdminProvidersPage() {
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-semibold">Tanımlı sağlayıcılar</h2>
-          <KayitSayaci toplam={items.length} />
+          <KayitSayaci toplam={toplam} />
         </div>
+
+        <SuzgecCubugu
+          className="mt-4"
+          etkinSayisi={arama ? 1 : 0}
+          onTemizle={() => {
+            setArama('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={arama}
+              onChange={(e) => {
+                setArama(e.target.value);
+                setOffset(0);
+              }}
+              placeholder="Ad, protokol veya yetenek"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        </SuzgecCubugu>
 
         <VeriTablosu<AdminProvider>
           className="mt-4"
           baslik="Tanımlı sağlayıcılar"
           sutunlar={sutunlar}
-          satirlar={q.data?.items}
+          satirlar={sayfadakiler}
           satirAnahtari={(p) => p.id}
           yukleniyor={q.isLoading}
           hata={apiHatasi(q.error)}
           iskeletSatir={3}
           bos={
-            // Boş durum ÖĞRETİR ve bir eylem sunar (§6.3). Buradaki liste
-            // süzgeçsizdir: boşsa gerçekten boştur, "sonuç yok" değil.
-            <div className="flex flex-col items-center pb-12">
+            // §6.3: SÜZGEÇTEN DOLAYI BOŞ ≠ GERÇEKTEN BOŞ. Sağlayıcısı olan ama
+            // aramasıyla eşleşme bulamayan yöneticiye "henüz sağlayıcı yok"
+            // demek yanlış olduğu gibi yanlış eyleme de iter.
+            arama ? (
               <Empty
-                title="Henüz sağlayıcı yok"
-                hint="Sağlayıcı ekleyip API anahtarını tanımladıktan sonra etkinleştirebilirsiniz."
+                title="Bu aramaya uyan sağlayıcı yok"
+                hint="Sağlayıcı adının, protokolün ya da bir yeteneğin parçasını yazmayı deneyin."
               />
-              <Button onClick={() => setCreating(true)}>Sağlayıcı ekle</Button>
-            </div>
+            ) : (
+              <div className="flex flex-col items-center pb-12">
+                <Empty
+                  title="Henüz sağlayıcı yok"
+                  hint="Sağlayıcı ekleyip API anahtarını tanımladıktan sonra etkinleştirebilirsiniz."
+                />
+                <Button onClick={() => setCreating(true)}>Sağlayıcı ekle</Button>
+              </div>
+            )
           }
+        />
+        <Sayfalama
+          className="mt-6"
+          offset={offset}
+          limit={SAYFA_BOYUTU}
+          toplam={toplam}
+          onDegis={setOffset}
         />
       </Card>
 
@@ -478,7 +542,10 @@ function ProviderSettingsForm({
   const [ortak, setOrtak] = React.useState<OrtakAlanDegerleri>({
     baseUrl: provider.baseUrl,
     priority: String(provider.priority),
-    costMultiplier: provider.costMultiplier,
+    // Düzenleme kutusuna SADE hâli konur (`4.0000` → `4`): ayırıcı nokta
+    // kalır, çünkü bu değer sunucuya aynen geri gidiyor ve Postgres `numeric`
+    // virgülü ayrıştıramaz.
+    costMultiplier: trimDecimal(provider.costMultiplier),
   });
   const [isActive, setIsActive] = React.useState(provider.isActive);
   const [errors, setErrors] = React.useState<Record<string, string>>({});

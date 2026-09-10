@@ -72,14 +72,17 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   }, [pathname]);
 
   /*
-   * Çekmece YALNIZ `md:` altında açılabilir (düğme `md:hidden`), ama ekran
-   * açıkken genişleyebilir: tablet dikeyden yataya döndüğünde 768px eşiği
-   * aşılır ve yan sütun görünür hale gelir. Kapatılmazsa kullanıcı, arkasında
+   * Çekmece YALNIZ `lg:` altında açılabilir (düğme `lg:hidden`), ama ekran
+   * açıkken genişleyebilir: tablet dikeyden yataya döndüğünde 1024px eşiği
+   * aşılır ve yan sütun görünür hale gelir.
+   * 🔴 EŞİK DÜĞMENİN KIRILMA NOKTASIYLA AYNI OLMAK ZORUNDA: yan sütun `lg`'de
+   * açılırken bu etki 768'de kapatsaydı, 768-1023 arasında kullanıcı ne
+   * çekmeceyi ne de yan sütunu görürdü — gezinti tamamen kaybolurdu. Kapatılmazsa kullanıcı, arkasında
    * zaten aynı menüyü taşıyan bir örtünün altında kalır.
    */
   React.useEffect(() => {
     if (!menuAcik || typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(min-width: 768px)');
+    const mq = window.matchMedia('(min-width: 1024px)');
     if (mq.matches) {
       setMenuAcik(false);
       return;
@@ -124,7 +127,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen-safe flex-col md:flex-row">
+    <div className="flex min-h-screen-safe flex-col lg:flex-row">
       {/* ─── Masaüstü yan sütunu ───
           Yapışkanlık için ÜÇÜ BİRDEN gerekir: `sticky` + `top-0` + sabit
           yükseklik + `self-start`. `self-start` olmadan esnek öğe kabı doldurur
@@ -140,7 +143,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           zaten sıfırdır. */}
       <aside
         className="hidden h-screen-safe w-60 shrink-0 flex-col border-r border-[var(--border)]
-                   md:sticky md:top-0 md:flex md:self-start"
+                   lg:sticky lg:top-0 lg:flex lg:self-start"
       >
         <div className="flex items-center gap-3 px-5 py-5">
           <Link href="/panel" aria-label="Panel" className="inline-flex min-h-11 items-center">
@@ -178,45 +181,84 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* ─── Mobil üst bar ─── */}
-      <header
-        className="sticky top-0 z-30 flex items-center justify-between gap-3
-                   border-b border-[var(--border)] bg-[var(--bg)]/90 px-4 py-3
-                   backdrop-blur md:hidden"
-      >
-        <button
-          type="button"
-          onClick={() => setMenuAcik(true)}
-          aria-haspopup="dialog"
-          aria-expanded={menuAcik}
-          className="flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-medium
-                     [transition-property:background-color]
-                     [transition-duration:var(--sure-hizli)]
-                     hover:bg-[var(--raised)]"
-        >
-          {/* Emoji/unicode DEĞİL, SVG (§9.2). Modal'ın kapatma ikonuyla aynı
-              çizgi kalınlığı (2) — açan ve kapatan denetim aynı dili konuşur. */}
-          <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor"
-               strokeWidth="2" strokeLinecap="round" aria-hidden>
-            <path d="M4 7h16M4 12h16M4 17h16" />
-          </svg>
-          Bölümler
-        </button>
-
-        <div className="flex shrink-0 items-center gap-2">
-          {/* Yan sütundakiyle aynı ton — gerekçe yukarıda. */}
-          <Badge tone="neutral">Yönetim</Badge>
-          <ThemeToggle />
-        </div>
-      </header>
-
       {/* `min-w-0`: içindeki geniş tablo esnek öğeyi şişirip yatay kaydırma
           üretmesin (mobilde yatay kaydırma yasak, CLAUDE.md #17). */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <main
-          id="icerik"
-          className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 pb-safe md:px-6 md:py-8"
-        >
+        {/*
+          ═══════════════════════════════════════════════════════════════════
+          ÜST ŞERİT — MÜŞTERİ PANELİYLE AYNI (kullanıcı kararı, 10 Eylül 2026)
+          ═══════════════════════════════════════════════════════════════════
+          Eski hâl `md:hidden` idi: masaüstünde yönetimde HİÇ üst şerit yoktu,
+          müşteri panelinde ise her genişlikte vardı. İki yüzey arasında geçen
+          aynı kişi için üst şeridin bir yüzeyde belirip diğerinde kaybolması,
+          "hangi paneldeyim" sorusunu her geçişte yeniden sordurur.
+
+          Kutu ölçüleri `panel-header.tsx` ile BİREBİR: `sticky top-0 z-20`,
+          `border-b`, düz `bg-[var(--bg)]` ve `px-4 py-2 md:px-6`. Eskiden
+          `bg-[var(--bg)]/90 + backdrop-blur + py-3` idi; saydamlık ve bulanıklık
+          panelde YOK, iki şerit yan yana konduğunda fark görünüyordu.
+
+          Menü düğmesi `< lg`'de: yan sütun artık `lg`'de açılıyor (panelle aynı
+          eşik), yani 768-1023 px arasında da çekmeceye ihtiyaç var.
+        */}
+        <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg)]">
+          <div className="flex items-center gap-2 px-4 py-2 md:px-6">
+            <button
+              type="button"
+              onClick={() => setMenuAcik(true)}
+              aria-haspopup="dialog"
+              aria-expanded={menuAcik}
+              className="flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-medium
+                         [transition-property:background-color]
+                         [transition-duration:var(--sure-hizli)]
+                         hover:bg-[var(--raised)] lg:hidden"
+            >
+              {/* Emoji/unicode DEĞİL, SVG (§9.2). Modal'ın kapatma ikonuyla aynı
+                  çizgi kalınlığı (2) — açan ve kapatan denetim aynı dili konuşur. */}
+              <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor"
+                   strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+              Bölümler
+            </button>
+
+            {/* Logo YALNIZ `< lg`: `≥ lg`'de yan sütun zaten taşıyor ve ikinci
+                kopya ekran okuyucuda iki "Panel" bağlantısı demektir. Panel
+                başlığındaki `lg:hidden` logosuyla aynı kural. */}
+            <Link href="/panel" aria-label="Panel"
+                  className="inline-flex min-h-11 shrink-0 items-center lg:hidden">
+              <Logo className="h-7" />
+            </Link>
+
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {/* Yan sütundakiyle aynı ton — gerekçe yukarıda. */}
+              <Badge tone="neutral">Yönetim</Badge>
+              <ThemeToggle />
+            </div>
+          </div>
+        </header>
+
+        {/*
+          İÇERİK TAVANI `max-w-12xl` (1920px) — panelle AYNI.
+          Panel `main`i 10 Eylül'de `max-w-6xl`den kurtarıldı; yönetim geride
+          kalmıştı ve aynı depoda iki farklı içerik genişliği vardı. Yönetim
+          tabloları (8 sütuna kadar) genişlikten en çok yararlanan yüzeydir.
+          Dolgu panelle birebir: `px-4 md:px-6`.
+        */}
+        {/*
+          GENİŞLİK TAVANI `max-w-12xl` (120rem / 1920px) — kullanıcı kararı,
+          10 Eylül 2026. Jeton `globals.css`'te tanımlı; Tailwind'in hazır
+          ölçeği `7xl`de biter ve tanımsız bir `max-w-12xl` sessizce hiçbir şey
+          yapmazdı.
+
+          TEK YERDE DURUYOR. Sayfaların her biri kendi `mx-auto max-w-*` kabını
+          açsaydı (eski hâl buydu: 2xl'den 6xl'e beş farklı değer) içerik
+          genişliği ekrandan ekrana zıplardı — §10 bunu bir kusur sayıyor.
+          Kabuk tek tavanı verir, sayfalar genişlik kabı AÇMAZ.
+        */}
+        <main id="icerik"
+              className="mx-auto w-full min-w-0 max-w-12xl flex-1 px-4 py-6 pb-safe
+                         md:px-6 md:py-8">
           {children}
         </main>
       </div>

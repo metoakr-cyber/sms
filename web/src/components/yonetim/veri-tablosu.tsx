@@ -261,7 +261,18 @@ export function VeriTablosu<T>({
                   </dl>
                 )}
 
-                {kartEylem && <div className="mt-4">{kartEylem.hucre(satir, 'kart')}</div>}
+                {/*
+                  🔴 KOŞUL HÜCRENİN DEĞERİNE BAKAR, SÜTUNUN VARLIĞINA DEĞİL.
+                  Önceden `kartEylem && …` yazıyordu: eylem sütunu TANIMLI ama
+                  o satır için hücre `null` döndüğünde (örn. `/panel/hesap`'ta
+                  "bu cihaz" satırının kapatma düğmesi yok) kartın altında
+                  16px'lik BOŞ bir blok kalıyordu. Hücre önce hesaplanır,
+                  sonuç boşsa blok hiç çizilmez.
+                */}
+                {(() => {
+                  const eylem = kartEylem?.hucre(satir, 'kart');
+                  return eylem ? <div className="mt-4">{eylem}</div> : null;
+                })()}
               </li>
             ))}
           </ul>

@@ -9,6 +9,7 @@ import { aramaAnahtari } from '@/lib/arama';
 import { useCountdown } from '@/hooks/useCountdown';
 import { useSession } from '@/hooks/useSession';
 import { Button, Badge, Alert, Skeleton, Empty, cx } from '@/components/ui';
+import { AramaliSecim } from '@/components/aramali-secim';
 import { ServiceIcon } from '@/components/service-icon';
 import { Modal } from '@/components/modal';
 import { CodeWaiter } from '@/components/code-waiter';
@@ -88,7 +89,7 @@ export default function BuyPage() {
   const kalan = filtered.length - gorunen.length;
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
+    <div className="flex flex-col gap-5">
       <div className="text-center">
         <h1 className="text-2xl font-bold uppercase tracking-wide md:text-3xl">Numara Al</h1>
         <p className="mt-1.5 text-sm text-muted">
@@ -298,6 +299,27 @@ function BuyModal({
     },
   });
 
+  /*
+   * Ülke seçenekleri — süzme işi `AramaliSecim`in içinde (select2 davranışı).
+   *
+   * Aranabilir anahtarlara ISO kodu ve telefon kodu da konur: "TR" ya da "90"
+   * yazan kullanıcı Türkiye'yi bulur. Stoksuz ülke listeden ÇIKARILMAZ,
+   * devre dışı bırakılır ve sebebi METİNLE yazılır — yoksa kullanıcı ülkenin
+   * hiç desteklenmediğini sanar.
+   */
+  const ulkeSecenekleri = React.useMemo(
+    () =>
+      (countries.data ?? []).map((c) => ({
+        deger: c.iso,
+        etiket: c.name,
+        ipucu: `+${c.phone}`,
+        devreDisi: !c.ok,
+        devreDisiNotu: c.ok ? undefined : 'stok yok',
+        ara: [c.iso, c.phone],
+      })),
+    [countries.data],
+  );
+
   function pickCountry(iso: string) {
     setCountryIso(iso);
     setDurationMinutes(0);
@@ -371,38 +393,18 @@ function BuyModal({
             </div>
           )}
 
-          <label className="relative flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Ülke Seçin</span>
-            <svg className="pointer-events-none absolute right-3 top-[2.35rem] size-4 text-[var(--muted)]"
-                 viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-            <select
-              data-autofocus
-              value={countryIso}
-              onChange={(e) => pickCountry(e.target.value)}
-              disabled={countries.isLoading || countries.isError}
-              /* 🔴 appearance-none ZORUNLU: WebKit'te yerel `menulist`
-                 görünümü min-h-12'yi YOK SAYAR ve kutu 25 px'e düşer —
-                 44 px dokunma hedefinin çok altında. iOS'ta tüm tarayıcılar
-                 WebKit olduğu için bu gerçek bir ihlaldir ve Chromium'da
-                 GÖRÜNMEZ. Görünüm kapatılınca ok elle çizilir (pr-10). */
-              className="raised min-h-12 w-full appearance-none rounded-xl border px-3 pr-10 text-base
-                         outline-none focus:border-brand-400 disabled:opacity-60"
-            >
-              <option value="">
-                {countries.isLoading ? 'Ülkeler yükleniyor…'
-                  : countries.isError ? 'Ülkeler yüklenemedi'
-                  : 'Ülke seçiniz…'}
-              </option>
-              {(countries.data ?? []).map((c) => (
-                <option key={c.iso} value={c.iso} disabled={!c.ok}>
-                  {c.name} (+{c.phone}){c.ok ? '' : ' — şu an stok yok'}
-                </option>
-              ))}
-            </select>
-          </label>
+          <AramaliSecim
+            otoOdak
+            etiket="Ülke Seçin"
+            deger={countryIso}
+            onDegis={pickCountry}
+            secenekler={ulkeSecenekleri}
+            yerTutucu="Ülke seçiniz…"
+            araYerTutucu="Ülke adı veya telefon kodu"
+            yukleniyor={countries.isLoading}
+            hata={countries.isError ? 'Ülkeler yüklenemedi' : undefined}
+            bosMetni="Bu aramaya uyan ülke yok."
+          />
 
           {/* ── Kiralama süresi ── */}
           {rental && countryIso && (

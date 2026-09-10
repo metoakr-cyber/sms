@@ -57,25 +57,46 @@ func (q *Queries) CountPendingReviews(ctx context.Context) (int64, error) {
 
 const countReviewsForAdmin = `-- name: CountReviewsForAdmin :one
 SELECT count(*) FROM reviews r
+JOIN users u ON u.id = r.user_id
 WHERE ($1::review_status IS NULL
        OR r.status = $1::review_status)
+  AND ($2::text IS NULL
+       OR r.body::text     ILIKE '%' || $2::text || '%'
+       OR u.email::text    ILIKE '%' || $2::text || '%'
+       OR u.username::text ILIKE '%' || $2::text || '%')
 `
+
+type CountReviewsForAdminParams struct {
+	Status *ReviewStatus
+	Q      *string
+}
 
 // Süzgeç koşulu ListReviewsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
 // sayfalama "23 kayıt" der ama 12 satır gösterir.
-func (q *Queries) CountReviewsForAdmin(ctx context.Context, status *ReviewStatus) (int64, error) {
-	row := q.db.QueryRow(ctx, countReviewsForAdmin, status)
+// `q` kullanıcı sütunlarında da arandığı için sayım `users`a katılmak zorunda.
+func (q *Queries) CountReviewsForAdmin(ctx context.Context, arg CountReviewsForAdminParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countReviewsForAdmin, arg.Status, arg.Q)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const countReviewsForUser = `-- name: CountReviewsForUser :one
-SELECT count(*) FROM reviews WHERE user_id = $1
+SELECT count(*) FROM reviews
+WHERE user_id = $1
+  AND ($2::review_status IS NULL
+       OR status = $2::review_status)
 `
 
-func (q *Queries) CountReviewsForUser(ctx context.Context, userID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countReviewsForUser, userID)
+type CountReviewsForUserParams struct {
+	UserID int64
+	Status *ReviewStatus
+}
+
+// 🔴 SÜZGEÇ `ListReviewsForUser` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+// yalan söyler (bkz. orders.sql, CountUserOrders notu).
+func (q *Queries) CountReviewsForUser(ctx context.Context, arg CountReviewsForUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countReviewsForUser, arg.UserID, arg.Status)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -279,15 +300,20 @@ FROM reviews r
 JOIN users u ON u.id = r.user_id
 WHERE ($1::review_status IS NULL
        OR r.status = $1::review_status)
+  AND ($2::text IS NULL
+       OR r.body::text     ILIKE '%' || $2::text || '%'
+       OR u.email::text    ILIKE '%' || $2::text || '%'
+       OR u.username::text ILIKE '%' || $2::text || '%')
 ORDER BY (r.status = 'PENDING') DESC,
          CASE WHEN r.status = 'PENDING' THEN r.created_at END ASC,
          r.created_at DESC,
          r.id DESC
-LIMIT $3 OFFSET $2
+LIMIT $4 OFFSET $3
 `
 
 type ListReviewsForAdminParams struct {
 	Status *ReviewStatus
+	Q      *string
 	Off    int32
 	Lim    int32
 }
@@ -317,7 +343,12 @@ type ListReviewsForAdminRow struct {
 // sırada olmalı. Karara bağlanmışlar en yeni önce: yönetici son ne yaptığına
 // bakar. Tek bir sıralama ikisini de doğru yapamaz.
 func (q *Queries) ListReviewsForAdmin(ctx context.Context, arg ListReviewsForAdminParams) ([]ListReviewsForAdminRow, error) {
-	rows, err := q.db.Query(ctx, listReviewsForAdmin, arg.Status, arg.Off, arg.Lim)
+	rows, err := q.db.Query(ctx, listReviewsForAdmin,
+		arg.Status,
+		arg.Q,
+		arg.Off,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -354,19 +385,30 @@ func (q *Queries) ListReviewsForAdmin(ctx context.Context, arg ListReviewsForAdm
 const listReviewsForUser = `-- name: ListReviewsForUser :many
 SELECT id, public_id, user_id, rating, body, status, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at FROM reviews
 WHERE user_id = $1
+  AND ($2::review_status IS NULL
+       OR status = $2::review_status)
 ORDER BY created_at DESC, id DESC
-LIMIT $3 OFFSET $2
+LIMIT $4 OFFSET $3
 `
 
 type ListReviewsForUserParams struct {
 	UserID int64
+	Status *ReviewStatus
 	Off    int32
 	Lim    int32
 }
 
 // Kullanıcının KENDİ yorumları ve durumları. En yeni üstte.
+//
+// Durum süzgeci: `sqlc.narg` NULL ise süzme yok.
+// 🔴 `user_id` koşulu süzgeçten bağımsızdır (değişmez #7).
 func (q *Queries) ListReviewsForUser(ctx context.Context, arg ListReviewsForUserParams) ([]Review, error) {
-	rows, err := q.db.Query(ctx, listReviewsForUser, arg.UserID, arg.Off, arg.Lim)
+	rows, err := q.db.Query(ctx, listReviewsForUser,
+		arg.UserID,
+		arg.Status,
+		arg.Off,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

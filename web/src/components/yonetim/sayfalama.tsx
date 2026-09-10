@@ -26,6 +26,24 @@ import { Button, cx } from '@/components/ui';
  */
 export const SAYFA_BOYUTU = 25;
 
+/**
+ * `Sayfalama` bu toplamla kendini ÇİZER Mİ?
+ *
+ * Ekranlar bunu bilmek ZORUNDA: `Sayfalama` da `VeriTablosu` da
+ * `aria-live="polite"` taşır ve ikisi aynı anda konuşursa ekran okuyucu iki
+ * cümleyi sıraya alır (§7.4: tek olay, tek duyuru). Ekran, şerit görünürken
+ * tablonun duyurusunu susturur: `duyuru={!sayfalamaGorunur(toplam)}`.
+ *
+ * 🔴 KOŞUL BURADA DURUYOR, ÇAĞRI YERLERİNDE DEĞİL. Önce her ekran
+ * `toplam > SAYFA_BOYUTU` yazıyordu — bileşenin O GÜNKÜ gizlenme kuralının
+ * kopyasıydı. Kural değişince (tek sayfalık listede de çiziliyor) o kopyaların
+ * hepsi sessizce yanlış oldu ve 25'in altındaki her listede İKİ canlı bölge
+ * birden konuşmaya başladı. Tek kaynak bunu bir daha yaşatmaz.
+ */
+export function sayfalamaGorunur(toplam: number): boolean {
+  return toplam > 0;
+}
+
 export function Sayfalama({
   offset,
   limit,
@@ -43,9 +61,24 @@ export function Sayfalama({
   const oncekiVar = offset > 0;
   const sonrakiVar = offset + limit < toplam;
 
-  // Tek sayfaya sığan liste için kontrol GÖSTERİLMEZ: iki devre dışı düğme,
-  // hiçbir düğme olmamasından daha çok gürültüdür.
-  if (!oncekiVar && !sonrakiVar) return null;
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * TEK SAYFALIK LİSTEDE DE ÇİZİLİR — kullanıcı kararı, 10 Eylül 2026
+   * ══════════════════════════════════════════════════════════════════════
+   * Eskiden `!oncekiVar && !sonrakiVar` iken `null` dönüyordu; gerekçe "iki
+   * devre dışı düğme gürültüdür" idi. Ölçülen sonuç bunun tersi oldu:
+   * `Sipariş geçmişi`, `Hesap ekstresi` ve `Destek` ekranlarında sayfalama
+   * ŞERİDİ HİÇ GÖRÜNMEDİĞİ için kullanıcı "sayfalama yok" diye bildirdi —
+   * kayıt sayısı 25'in altında olduğu her ekranda şerit yok oluyordu.
+   *
+   * Şerit yalnız bir gezinti aracı değil, aynı zamanda "N–M / T" SAYACIDIR:
+   * "kaç kaydım var, hangilerine bakıyorum" sorusunu cevaplayan tek yer odur
+   * ve o soru tek sayfalık listede de sorulur.
+   *
+   * TEK GİZLENME HÂLİ: hiç kayıt yok. O zaman zaten boş durum çiziliyor ve
+   * "0–0 / 0" yazan bir şerit ona hiçbir şey eklemez.
+   */
+  if (toplam <= 0) return null;
 
   const ilk = toplam === 0 ? 0 : offset + 1;
   const son = Math.min(offset + limit, toplam);

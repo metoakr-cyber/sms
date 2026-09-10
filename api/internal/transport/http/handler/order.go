@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -97,7 +98,32 @@ func (h *Order) List(c *gin.Context) {
 		return
 	}
 	limit, offset := pagination(c, 20, 100)
-	rows, total, err := h.svc.List(c.Request.Context(), userID, limit, offset)
+
+	// SÜZGEÇLER — `?q=` serbest metin, `?status=` tam durum eşleşmesi.
+	//
+	// Boş dize NIL'e çevrilir: "süzme" ile "boş dizeyle eşleş" farklı şeylerdir
+	// ve istemci temizlenmiş bir arama kutusunu boş parametre olarak gönderir.
+	f := ordersvc.ListeSuzgeci{Limit: limit, Offset: offset}
+	if v := strings.TrimSpace(c.Query("q")); v != "" {
+		f.Q = &v
+	}
+	// 🔴 GEÇERSİZ DURUM SESSİZCE YOK SAYILMAZ: yok sayılsaydı `?status=TAMAMLANDI`
+	// (yanlış yazım) süzgeçsiz TÜM listeyi döndürür ve kullanıcı bunu "süzgeç
+	// çalıştı" sanardı. `ListUsers` ve `AdminList` de aynı şekilde 422 döner.
+	if v := strings.TrimSpace(c.Query("status")); v != "" {
+		var st db.OrderStatus
+		if err := st.Scan(v); err != nil {
+			h.r.FailField(c, []dto.FieldError{{Field: "status", Message: "Geçersiz durum süzgeci."}})
+			return
+		}
+		f.Status = &st
+	}
+	// `?active=true` — "kodu bekleyen ya da süren" siparişler. Özet ekranı
+	// bunu kullanır; tek durumlu `?status=` ile ifade edilemez (PENDING VEYA
+	// ACTIVE). Eksik/`false` ise süzgeç uygulanmaz.
+	f.SadeceAktif = c.Query("active") == "true"
+
+	rows, total, err := h.svc.List(c.Request.Context(), userID, f)
 	if err != nil {
 		h.r.Fail(c, err)
 		return

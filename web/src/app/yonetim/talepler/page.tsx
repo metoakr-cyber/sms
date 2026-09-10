@@ -44,6 +44,7 @@ import {
   VeriTablosu,
   apiHatasi,
   type Sutun,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { AdminDeposit, DepositStatus, Money } from '@/lib/types';
 
@@ -123,11 +124,25 @@ export default function AdminDepositsPage() {
   const [offset, setOffset] = React.useState(0);
   const [selected, setSelected] = React.useState<AdminDeposit | null>(null);
 
+
+  // İKİ AYRI DURUM: `aramaGirdisi` kutuya yazılan, `arama` sunucuya giden.
+  // 350 ms — panelin ve yönetimin her yerinde aynı gecikme.
+  const [aramaGirdisi, setAramaGirdisi] = React.useState('');
+  const [arama, setArama] = React.useState('');
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setArama(aramaGirdisi.trim());
+      setOffset(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [aramaGirdisi]);
+
   const q = useQuery({
-    queryKey: ['admin-deposits', { status, limit: SAYFA_BOYUTU, offset }],
+    queryKey: ['admin-deposits', { status, arama, limit: SAYFA_BOYUTU, offset }],
     queryFn: () => {
       const qs = new URLSearchParams({ limit: String(SAYFA_BOYUTU), offset: String(offset) });
       if (status) qs.set('status', status);
+      if (arama) qs.set('q', arama);
       return apiFetch<AdminDepositList>(`/admin/deposits?${qs.toString()}`);
     },
     // Sayfa/süzgeç değişince liste boşalıp zıplamasın.
@@ -138,17 +153,12 @@ export default function AdminDepositsPage() {
   const listErr = apiHatasi(q.error);
 
   /*
-   * `Sayfalama` GÖRÜNÜR MÜ? — tek sayfaya sığan listede o bileşen kendini hiç
-   * çizmez, yani bu ifade "sayfalama ekranda var mı" ile aynı şeydir.
-   *
-   * Duyuru `false` yerine `!sayfali`: kapalı bırakmak, `Sayfalama`nın da
-   * görünmediği kısa listede (varsayılan süzgeç "Onay bekleyenler" çoğu gün
-   * 25 kaydın altındadır) ekran okuyucuyu SÜZGEÇ DEĞİŞİMİNDE tamamen sessiz
-   * bırakıyordu — çift duyuruyu çözerken tek duyuruyu da kaldırmıştı.
-   * `kullanicilar` ve `denetim` zaten bu ifadeyi kullanıyor; beş ekranın beşi
-   * artık aynı kuralda (§9.2 "ekranlar arası tutarsız bileşen dili").
+   * `Sayfalama` GÖRÜNÜR MÜ? Koşul bileşenin kendisinden okunur
+   * (`sayfalamaGorunur`), burada kopyalanmaz — kopya, bileşenin gizlenme
+   * kuralı değiştiği gün sessizce yanlış olur ve iki canlı bölge birden
+   * konuşmaya başlar.
    */
-  const sayfali = total > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(total);
 
   /*
    * SÜTUNLAR — tek tanım, iki sunum.
@@ -264,17 +274,42 @@ export default function AdminDepositsPage() {
   const suzgecli = status !== 'PENDING';
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <SayfaBasligi
         baslik="Bakiye talepleri"
         aciklama="Kullanıcıların bildirdiği ödemeleri inceleyip onaylayın veya reddedin."
       />
 
       <Card>
-        <SuzgecCubugu sag={<KayitSayaci toplam={total} />}>
-          {/* `onTemizle` VERİLMEDİ: tek bir açılır listede varsayılana dönüş
-              zaten listenin kendisidir. Süzgeçten boşalan sonuçta "Tümünü
-              göster" eylemi ayrıca sunulur (§6.3). */}
+        <SuzgecCubugu
+          sag={<KayitSayaci toplam={total} />}
+          /* `onTemizle` ARTIK VAR: eskiden tek bir açılır liste vardı ve
+             varsayılana dönüş listenin kendisiydi. Arama kutusu eklenince iki
+             süzgeç oldu; ikisini tek tek temizletmek §6.3'ün "süzgeci
+             temizleme yolu her ekranda aynı yerde" kuralını bozardı. */
+          etkinSayisi={(status ? 1 : 0) + (arama ? 1 : 0)}
+          onTemizle={() => {
+            setStatus('');
+            setAramaGirdisi('');
+            setArama('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={aramaGirdisi}
+              onChange={(e) => setAramaGirdisi(e.target.value)}
+              placeholder="E-posta veya kullanıcı adı"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              hint="Yazmayı bıraktığınızda arama kendiliğinden yapılır."
+            />
+          </div>
+
           <Secim
             etiket="Durum"
             className="sm:w-64"

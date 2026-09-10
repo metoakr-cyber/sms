@@ -21,6 +21,10 @@ const GENEL_SAYFALAR = [
 const PANEL_SAYFALARI = [
   '/panel', '/panel/numara-al', '/panel/siparisler',
   '/panel/cuzdan', '/panel/bakiye-yukle', '/panel/destek', '/panel/hesap',
+  // Hukuki metinlerin panel kopyaları. Genel sürümleri zaten yukarıda ölçülüyor
+  // ama kap farklı: panelde içerik tam genişliktir ve sol yan sütun/alt gezinti
+  // eklenir — yani 320 px'teki taşma riski aynı metin için ayrı bir sorudur.
+  '/panel/kullanim-sartlari', '/panel/gizlilik',
 ];
 
 const YONETIM_SAYFALARI = [

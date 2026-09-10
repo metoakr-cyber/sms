@@ -62,14 +62,46 @@ type ListeSatiri struct {
 	IconURL string
 }
 
+// ListeSuzgeci sipariş geçmişi süzgeçleri.
+//
+// `Q` ve `Status` NIL ise o süzgeç UYGULANMAZ — boş dize "hiçbir şeyle eşleşme"
+// demek değildir, "süzme" demektir. Bu ayrımı taşımak için işaretçi kullanılır;
+// transport katmanı boş sorgu parametresini nil'e çevirir.
+type ListeSuzgeci struct {
+	Q      *string
+	Status *db.OrderStatus
+	// SadeceAktif "kodu bekleyen ya da süren" siparişler: PENDING **veya**
+	// ACTIVE. Tek durumlu `Status` ile ifade EDİLEMEZ; ayrı alan olmasının
+	// gerekçesi queries/orders.sql başındaki nottadır.
+	SadeceAktif bool
+	Limit       int32
+	Offset      int32
+}
+
 // List kullanıcının sipariş geçmişi.
-func (s *Service) List(ctx context.Context, userID int64, limit, offset int32) ([]ListeSatiri, int64, error) {
+//
+// 🔴 `userID` SÜZGEÇTEN AYRI BİR PARAMETREDİR ve sorguya her zaman girer
+// (değişmez #7). Süzgeç yapısına konulsaydı, çağıranın onu doldurmayı
+// unutması bütün kullanıcıların siparişlerini döndürürdü; ayrı parametre
+// bunu derleme zamanında imkânsız kılar.
+//
+// Çalışma zamanı tarafı da bağlıdır: başka kullanıcının siparişine BİREBİR
+// uyan bir `q` bile onu döndürmez.
+// test: order_integration_test.go#TestListUserOrdersFiltreleri
+func (s *Service) List(ctx context.Context, userID int64, f ListeSuzgeci) ([]ListeSatiri, int64, error) {
 	q := s.tx.Queries()
-	rows, err := q.ListUserOrders(ctx, db.ListUserOrdersParams{UserID: userID, Lim: limit, Off: offset})
+	rows, err := q.ListUserOrders(ctx, db.ListUserOrdersParams{
+		UserID: userID, Q: f.Q, Status: f.Status, OnlyActive: f.SadeceAktif,
+		Lim: f.Limit, Off: f.Offset,
+	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
-	total, err := q.CountUserOrders(ctx, userID)
+	// Sayım listeyle AYNI süzgeci alır; ayrışırsa sayfalama yalan söyler
+	// (bkz. queries/orders.sql, CountUserOrders notu).
+	total, err := q.CountUserOrders(ctx, db.CountUserOrdersParams{
+		UserID: userID, Q: f.Q, Status: f.Status, OnlyActive: f.SadeceAktif,
+	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}

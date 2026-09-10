@@ -4,6 +4,8 @@
 *.local
 
 # derleme çıktıları
+# /bin/ — deploy/kurulum.sh api, worker ve cli ikililerini buraya derler.
+/bin/
 /api/bin/
 /api/tmp/
 *.test

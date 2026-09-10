@@ -8,6 +8,7 @@ package handler
 // arkasındadır, sitedeki liste ise oturumsuzdur (router.go).
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -97,7 +98,20 @@ func (h *Review) Mine(c *gin.Context) {
 		return
 	}
 	limit, offset := pagination(c, 20, 100)
-	rows, total, err := h.svc.List(c.Request.Context(), userID, limit, offset)
+
+	// `?status=` — geçersiz değer SESSİZCE YOK SAYILMAZ (bkz. `AdminList`).
+	var status *reviewdom.Status
+	if raw := strings.TrimSpace(c.Query("status")); raw != "" {
+		st, ok := reviewdom.ParseStatus(raw)
+		if !ok {
+			h.r.FailField(c, []dto.FieldError{
+				{Field: "status", Message: "Geçersiz durum süzgeci."}})
+			return
+		}
+		status = &st
+	}
+
+	rows, total, err := h.svc.List(c.Request.Context(), userID, status, limit, offset)
 	if err != nil {
 		h.r.Fail(c, err)
 		return
@@ -145,6 +159,9 @@ func (h *Review) AdminList(c *gin.Context) {
 			return
 		}
 		filter.Status = &s
+	}
+	if v := strings.TrimSpace(c.Query("q")); v != "" {
+		filter.Q = &v
 	}
 
 	limit, offset := pagination(c, 20, 100)

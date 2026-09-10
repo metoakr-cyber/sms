@@ -38,6 +38,11 @@ import {
   apiHatasi,
   ikiliTon,
   type Sutun,
+  KayitSayaci,
+  SAYFA_BOYUTU,
+  Sayfalama,
+  SuzgecCubugu,
+  useIstemciSuzgec,
 } from '@/components/yonetim';
 import type { DepositMethod } from '@/lib/types';
 
@@ -129,6 +134,7 @@ type Dialog =
 export default function DepositMethodsPage() {
   const qc = useQueryClient();
   const [dialog, setDialog] = React.useState<Dialog>(null);
+  const [arama, setArama] = React.useState('');
 
   const q = useQuery({
     queryKey: ['admin-deposit-methods'],
@@ -150,6 +156,17 @@ export default function DepositMethodsPage() {
   // Aktifleştirme reddi `fields` DEĞİL, düz bir mesajdır (handler/admin.go).
   const activeErr = apiHatasi(setActive.error);
   const items = q.data?.items;
+
+  /*
+   * Arama ve sayfalama İSTEMCİDE: `GET /admin/deposit-methods` sayfasızdır
+   * (yanıt `{items}`, total/limit/offset YOK) — tam liste elimizdedir.
+   * Sayfalı bir uçta bu kanca YANLIŞTIR; gerekçe `useIstemciSuzgec` başında.
+   */
+  const { sayfadakiler, toplam, offset, setOffset } = useIstemciSuzgec(
+    items,
+    arama,
+    (m) => [m.name, m.code, m.kind],
+  );
 
   /*
    * SÜTUNLAR — tek tanım, iki sunum.
@@ -292,7 +309,7 @@ export default function DepositMethodsPage() {
   ];
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       {/*
         "Yeni yöntem" düğmesi kart başlığından SAYFA BAŞLIĞINA taşındı.
         Gerekçe: birincil ekleme eylemi tüm yönetim ekranlarında AYNI YERDE
@@ -319,13 +336,43 @@ export default function DepositMethodsPage() {
       {activeErr && <HataDurumu hata={activeErr} />}
 
       <Card>
-        <h2 className="text-lg font-semibold">Tanımlı yöntemler</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold">Tanımlı yöntemler</h2>
+          {/* Sayaç kardeş yönetim ekranlarıyla aynı yerde: başlığın sağında. */}
+          <KayitSayaci toplam={toplam} />
+        </div>
+
+        <SuzgecCubugu
+          className="mt-4"
+          etkinSayisi={arama ? 1 : 0}
+          onTemizle={() => {
+            setArama('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={arama}
+              onChange={(e) => {
+                setArama(e.target.value);
+                setOffset(0);
+              }}
+              placeholder="Yöntem adı, kod veya tip"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        </SuzgecCubugu>
 
         <VeriTablosu
           className="mt-5"
           baslik="Tanımlı ödeme yöntemleri"
           sutunlar={sutunlar}
-          satirlar={items}
+          satirlar={sayfadakiler}
           satirAnahtari={(m) => m.id}
           yukleniyor={q.isLoading}
           hata={listErr}
@@ -333,19 +380,35 @@ export default function DepositMethodsPage() {
           bos={
             /*
               BOŞ DURUM ÖĞRETİR VE BİR EYLEM SUNAR (§6.3 · operate.md:35).
-              Burada süzgeç yoktur, yani "sonuç yok" değil GERÇEKTEN BOŞ
-              durumudur — doğru metin "ilk kaydı oluştur"dur.
+              §6.3'ün diğer yarısı: SÜZGEÇTEN DOLAYI BOŞ ≠ GERÇEKTEN BOŞ.
+              Yöntemi olan ama aramasıyla eşleşme bulamayan yöneticiye
+              "kullanıcılar bakiye yükleyemez" demek YANLIŞ BİR ALARMDIR.
               🔴 `Empty` bileşeninin eylem (CTA) yuvası YOK; bu yüzden düğme
               dışarıdan ekleniyor. Katman raporuna yazıldı.
             */
-            <div className="flex flex-col items-center gap-4">
+            arama ? (
               <Empty
-                title="Henüz yöntem yok"
-                hint="Kullanıcılar bakiye yükleyemez. En az bir yöntem ekleyip bilgilerini doldurun."
+                title="Bu aramaya uyan yöntem yok"
+                hint="Yöntem adının, kodunun ya da tipinin bir parçasını yazmayı deneyin."
               />
-              <Button onClick={() => setDialog({ kind: 'create' })}>İlk yöntemi ekle</Button>
-            </div>
+            ) : (
+              <div className="flex flex-col items-center gap-4">
+                <Empty
+                  title="Henüz yöntem yok"
+                  hint="Kullanıcılar bakiye yükleyemez. En az bir yöntem ekleyip bilgilerini doldurun."
+                />
+                <Button onClick={() => setDialog({ kind: 'create' })}>İlk yöntemi ekle</Button>
+              </div>
+            )
           }
+        />
+
+        <Sayfalama
+          className="mt-6"
+          offset={offset}
+          limit={SAYFA_BOYUTU}
+          toplam={toplam}
+          onDegis={setOffset}
         />
       </Card>
 

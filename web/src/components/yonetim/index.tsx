@@ -27,7 +27,9 @@ export type {
 
 export { SayfaBasligi } from './sayfa-basligi';
 export { HataDurumu, apiHatasi } from './hata-durumu';
-export { Sayfalama, SAYFA_BOYUTU } from './sayfalama';
+export { Sayfalama, SAYFA_BOYUTU, sayfalamaGorunur } from './sayfalama';
+export { useIstemciSuzgec } from './istemci-suzgec';
+export type { IstemciSuzgecSonucu } from './istemci-suzgec';
 export { DurumRozeti, durumTonu, ikiliTon } from './durum-rozeti';
 export type { DurumTonu } from './durum-rozeti';
 export { SuzgecCubugu, KayitSayaci } from './suzgec-cubugu';

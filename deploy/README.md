@@ -1,5 +1,53 @@
 # Üretim dağıtımı
 
+İki yol var. **Aynı Caddyfile'ı ve aynı ortam değişkenlerini** kullanırlar;
+fark yalnız süreçlerin nerede koştuğudur.
+
+| Yol | Ne zaman | Nasıl |
+|---|---|---|
+| **Docker'sız** (`kurulum.sh`) | Tek VPS, en az katman, sistem paketleriyle | `sudo bash deploy/kurulum.sh` |
+| **Docker Compose** | Konteyner tercih ediliyorsa, birden çok ortam | `make prod-build && make prod-up` |
+
+---
+
+## Docker'sız kurulum — tek komut
+
+```bash
+git clone <depo> /opt/onay360 && cd /opt/onay360
+sudo bash deploy/kurulum.sh
+```
+
+Betik **sorular sorar** (alan adı, yönetici hesabı, portlar, veritabanı parolası,
+HeroSMS anahtarı), özeti onaylatır ve gerisini kendisi yapar: PostgreSQL 16,
+Redis, Go, Node ve Caddy'yi kurar; veritabanını açar; sırları `openssl rand`
+ile üretip `.env` yazar; API/worker/CLI ve ön yüzü derler; migration'ları
+uygular; **yönetici hesabını, sağlayıcıyı, kuru ve katalogu tohumlar**; systemd
+birimlerini yazıp başlatır; sağlık kontrolü yapar.
+
+**Tekrar çalıştırılabilir.** Yarıda kalan bir kurulumu baştan başlatmak veriyi
+silmez: veritabanı varsa korunur, `.env` varsa **sırlar korunur**. Bu ikincisi
+kritik: `ENCRYPTION_KEY` yeniden üretilirse veritabanındaki şifreli sağlayıcı
+API anahtarları bir daha açılamaz. Güncelleme de aynı komuttur:
+
+```bash
+cd /opt/onay360 && git pull && sudo bash deploy/kurulum.sh
+```
+
+Kurulan servisler: `onay360-api`, `onay360-web`, `caddy`. Arka plan işleri
+varsayılan olarak API sürecinde koşar (`WORKERS_IN_PROCESS=true`);
+`onay360-worker.service` yazılır ama **etkinleştirilmez** — ikisi birden
+koşarsa sağlayıcıya çift istek gider.
+
+```bash
+systemctl status onay360-api onay360-web caddy
+journalctl -u onay360-api -f
+/opt/onay360/bin/cli help
+```
+
+---
+
+## Docker Compose ile
+
 Tek VPS · Docker Compose · Caddy (otomatik TLS). Bu dizindeki dosyalar üretim
 yığınının tamamıdır.
 
@@ -8,7 +56,8 @@ yığınının tamamıdır.
 | `Dockerfile.api` | Go imajı: `server` + `worker` + `cli` + `goose` + migration'lar. Açılışta `goose up`. |
 | `Dockerfile.web` | Next.js standalone imajı. `NEXT_PUBLIC_*` **derleme anında** gömülür. |
 | `docker-compose.prod.yml` | caddy · api · worker · web · postgres · redis |
-| `Caddyfile` | TLS, HTTP/2+3, `/api/*` → api, gerisi → web, SSE için ayrı blok |
+| `Caddyfile` | TLS, HTTP/2+3, `/api/*` → api, gerisi → web, SSE için ayrı blok. Yukarı akış adresleri `{$API_UPSTREAM}` / `{$WEB_UPSTREAM}` ile değişir; **iki topoloji de bu dosyayı kullanır**. |
+| `kurulum.sh` | Docker'sız Ubuntu kurulumu — soru sorar, tohumlar, systemd birimlerini yazar |
 | `.env.prod.example` | Uygulamanın okuduğu her değişken, açıklamalı |
 | `scripts/yedekle.sh` | Şifreli günlük yedek + doğrulama + saklama |
 | `scripts/geri-yukle.sh` | Onay isteyen geri yükleme / tatbikat |

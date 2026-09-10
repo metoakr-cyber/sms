@@ -59,39 +59,52 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime, formatMoney } from '@/lib/format';
 import { useSession } from '@/hooks/useSession';
-import { Button, Card, cx } from '@/components/ui';
+import { Button, Card, Field, cx } from '@/components/ui';
 import { ServiceIcon } from '@/components/service-icon';
-import { DurumRozeti, SayfaBasligi, VeriTablosu, apiHatasi } from '@/components/yonetim';
+import {
+  DurumRozeti,
+  KayitSayaci,
+  SAYFA_BOYUTU,
+  SayfaBasligi,
+  Sayfalama,
+  SuzgecCubugu,
+  VeriTablosu,
+  apiHatasi,
+} from '@/components/yonetim';
 import type { Sutun } from '@/components/yonetim';
 import type { LedgerEntry, Money, Order, OrderList, Statement } from '@/lib/types';
 
-/** Özette gösterilen hareket sayısı. Tümü için cüzdana gidilir. */
-const SON_HAREKET = 5;
+/**
+ * İskelet satır sayısı.
+ *
+ * Listeler artık `SAYFA_BOYUTU` (25) kadar satır taşıyor ama İSKELET 25 satır
+ * çizmez: yükleme sırasında ekranı bir sayfa boyu uzatıp veri gelince
+ * kısaltmak, düzenin ZIPLAMASININ en görünür biçimidir. Beş satır, kartın
+ * gerçek yüksekliğine yeterince yakın bir yer tutucudur.
+ */
+const ISKELET_SATIR = 5;
 
 /**
- * Aktif sipariş taraması.
+ * ══════════════════════════════════════════════════════════════════════════
+ * AKTİF SİPARİŞ SÜZGECİ SUNUCUYA TAŞINDI — bir hatayı da kapattı
+ * ══════════════════════════════════════════════════════════════════════════
+ * Eski hâl: `/orders?limit=20` çekilip istemcide `AKTIF_DURUMLAR` kümesine
+ * göre süzülüyordu.
  *
- * 20 SEÇİLDİ ÇÜNKÜ `/panel/siparisler` DE 20 KULLANIYOR (`siparisler/page.tsx:22`).
- * Aynı `queryKey` şekli → TanStack Query ÖNBELLEĞİ PAYLAŞILIR: özetten
- * siparişlere geçen kullanıcı ikinci bir istek beklemez. Değer orada değişirse
- * paylaşım kaybolur, ama bu bir hata değil yalnız kaçırılmış bir kazançtır.
- */
-const SIPARIS_TARAMA = 20;
-
-/**
- * Terminal OLMAYAN sipariş durumları — `api/internal/domain/order/order.go:74-87`.
+ * 🔴 BU SESSİZCE YANLIŞTI. Süzgeç yalnız İLK 20 SİPARİŞE bakıyordu: 20
+ * tamamlanmış siparişi olan bir kullanıcının kodu bekleyen 21. siparişi
+ * özette HİÇ GÖRÜNMÜYORDU. Kullanıcının en acil ihtiyacı ("bekleyen siparişim
+ * var mı?") tam da en çok sipariş veren kullanıcıda çalışmıyordu.
  *
- * COMPLETED ve REFUNDED terminaldir. CANCELLED ve FAILED birer GEÇİŞTİR ama
- * kullanıcı açısından iş bitmiştir (ikisinin de oku REFUNDED'a çıkar), bu
- * yüzden "aktif" sayılmazlar. ACTIVE ise kiralık siparişin süren dönemidir ve
- * DAHİLDİR: /panel/numara-al kiralama satıyor, süren bir kiralamayı özette
- * gizlemek kullanıcıyı yanıltırdı.
+ * Yeni hâl: `GET /orders?active=true`. "Aktif" = PENDING **veya** ACTIVE ve
+ * bu tek durumlu `?status=` ile ifade edilemediği için sunucuda ayrı bir
+ * süzgeç olarak duruyor (bkz. queries/orders.sql). Toplam sayı da sunucudan
+ * geldiği için sayfalama artık GERÇEK.
  */
-const AKTIF_DURUMLAR = new Set(['PENDING', 'ACTIVE']);
 
 /**
  * Durum kodu → Türkçe etiket.
@@ -230,30 +243,88 @@ const HAREKET_SUTUNLARI: ReadonlyArray<Sutun<LedgerEntry>> = [
 export default function OzetPage() {
   const { user } = useSession();
 
+  // İki listenin süzgeçleri BAĞIMSIZDIR: biri aranırken diğeri sayfa
+  // değiştirmemeli. Bu yüzden ayrı state, ayrı sorgu anahtarı.
+  const [siparisAramaGirdisi, setSiparisAramaGirdisi] = React.useState('');
+  const [siparisArama, setSiparisArama] = React.useState('');
+  const [siparisOffset, setSiparisOffset] = React.useState(0);
+
+  const [hareketAramaGirdisi, setHareketAramaGirdisi] = React.useState('');
+  const [hareketArama, setHareketArama] = React.useState('');
+  const [hareketOffset, setHareketOffset] = React.useState(0);
+
+  // 350 ms — panelin her yerinde aynı gecikme.
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setSiparisArama(siparisAramaGirdisi.trim());
+      setSiparisOffset(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [siparisAramaGirdisi]);
+
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setHareketArama(hareketAramaGirdisi.trim());
+      setHareketOffset(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [hareketAramaGirdisi]);
+
   const siparisler = useQuery({
-    queryKey: ['orders', { limit: SIPARIS_TARAMA, offset: 0 }],
-    queryFn: () => apiFetch<OrderList>(`/orders?limit=${SIPARIS_TARAMA}&offset=0`),
+    queryKey: ['orders', { active: true, limit: SAYFA_BOYUTU, offset: siparisOffset, arama: siparisArama }],
+    queryFn: () => {
+      const p = new URLSearchParams({
+        active: 'true',
+        limit: String(SAYFA_BOYUTU),
+        offset: String(siparisOffset),
+      });
+      if (siparisArama) p.set('q', siparisArama);
+      return apiFetch<OrderList>(`/orders?${p.toString()}`);
+    },
+    placeholderData: keepPreviousData,
   });
 
+  /*
+   * "HİÇ SİPARİŞİ VAR MI?" — ayrı ve ucuz bir sorgu (`limit=1`).
+   *
+   * Süzgeç sunucuya taşınınca `siparisler.data.total` artık YALNIZ AKTİF
+   * siparişlerin sayısıdır; "bu kullanıcı hiç sipariş vermiş mi" sorusunu
+   * cevaplayamaz. Cevaplayamadığı hâlde ona güvenmek, ilk kez giren
+   * kullanıcıya "bekleyen siparişiniz yok" dedirtirdi — oysa ona öğretilmesi
+   * gereken şey siparişin NASIL verildiğidir (§6.3 · operate.md:35).
+   * Tek satır çekilir, yalnız `total` okunur.
+   */
+  const hicSiparis = useQuery({
+    queryKey: ['orders', { limit: 1, offset: 0 }],
+    queryFn: () => apiFetch<OrderList>('/orders?limit=1&offset=0'),
+  });
+  const hicSiparisYok = (hicSiparis.data?.total ?? 0) === 0;
+
   const hareketler = useQuery({
-    queryKey: ['statement', { limit: SON_HAREKET }],
-    queryFn: () => apiFetch<Statement>(`/wallet/entries?limit=${SON_HAREKET}&offset=0`),
+    queryKey: ['statement', { limit: SAYFA_BOYUTU, offset: hareketOffset, arama: hareketArama }],
+    queryFn: () => {
+      const p = new URLSearchParams({
+        limit: String(SAYFA_BOYUTU),
+        offset: String(hareketOffset),
+      });
+      if (hareketArama) p.set('q', hareketArama);
+      return apiFetch<Statement>(`/wallet/entries?${p.toString()}`);
+    },
+    placeholderData: keepPreviousData,
   });
 
   // Yüklenirken `undefined` KALIR (boş dizi değil): `VeriTablosu` boş diziyi
   // "sonuç yok" sayar ve iskeletin yerine boş durumu çizerdi.
-  const aktif = siparisler.data?.items.filter((o) => AKTIF_DURUMLAR.has(o.status));
-
-  // §6.3: SÜZGEÇTEN DOLAYI boş ile GERÇEKTEN boş farklı metinlerdir.
-  // `total` sunucudan gelir; ekranda sayı olarak GÖSTERİLMEZ, yalnız hangi
-  // boş durumun doğru olduğunu seçer.
-  const hicSiparisYok = (siparisler.data?.total ?? 0) === 0;
+  const aktif = siparisler.data?.items;
+  const aktifToplam = siparisler.data?.total ?? 0;
+  const hareketToplam = hareketler.data?.total ?? 0;
 
   return (
-    // `max-w-5xl`: kardeş panel ekranlarıyla (`siparisler`, `cuzdan`) AYNI
-    // genişlik. Kabuğun `main`i `max-w-6xl` verir; burada daraltmak sayfalar
-    // arası zıplamayı önler (§10 "içerik genişliği panelin geri kalanıyla aynı").
-    <div className="mx-auto flex max-w-5xl flex-col gap-6 md:gap-8">
+    // GENİŞLİK KABI YOK: kabuğun `main`i artık tam genişliktir ve her panel
+    // ekranı aynı sol/sağ kenarı paylaşır (`panel-shell.tsx` yerleşim notu).
+    // §10'un istediği "içerik genişliği panelin geri kalanıyla aynı" kuralı
+    // böyle sağlanır — daraltarak değil, hiç daraltmayarak.
+    <div className="flex flex-col gap-6 md:gap-8">
       <SayfaBasligi
         baslik={user ? `Merhaba, ${user.username}` : 'Özet'}
         aciklama="Hesabınızın özeti."
@@ -267,6 +338,30 @@ export default function OzetPage() {
       </SayfaBasligi>
 
       <Bolum baslik="Aktif siparişler" href="/panel/siparisler" bagEtiket="Tüm siparişler">
+        <SuzgecCubugu
+          etkinSayisi={siparisArama ? 1 : 0}
+          onTemizle={() => {
+            setSiparisAramaGirdisi('');
+            setSiparisArama('');
+            setSiparisOffset(0);
+          }}
+          sag={<KayitSayaci toplam={aktifToplam} />}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={siparisAramaGirdisi}
+              onChange={(e) => setSiparisAramaGirdisi(e.target.value)}
+              placeholder="Numara, servis veya ülke"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        </SuzgecCubugu>
+
         <VeriTablosu<Order>
           baslik="Kodu bekleyen siparişleriniz"
           sutunlar={AKTIF_SUTUNLAR}
@@ -274,11 +369,16 @@ export default function OzetPage() {
           satirAnahtari={(o) => o.id}
           yukleniyor={siparisler.isLoading}
           hata={apiHatasi(siparisler.error)}
-          // Bu blok genelde 0-2 satırdır; 5 iskelet satırı veri gelince
-          // sayfayı gereksiz yere kısaltır.
           iskeletSatir={2}
           bos={
-            hicSiparisYok ? (
+            siparisArama ? (
+              <BosDurum
+                baslik="Bu aramaya uyan aktif sipariş yok"
+                ipucu="Arama metnini kısaltmayı deneyin. Tamamlanmış siparişler bu listede değil, Siparişler ekranındadır."
+                eylem="Tüm siparişler"
+                href="/panel/siparisler"
+              />
+            ) : hicSiparisYok ? (
               <BosDurum
                 baslik="Henüz siparişiniz yok"
                 ipucu="Servis ve ülke seçip numara aldığınızda, gelen kodu bu ekrandan takip edersiniz."
@@ -295,9 +395,40 @@ export default function OzetPage() {
             )
           }
         />
+
+        <Sayfalama
+          offset={siparisOffset}
+          limit={SAYFA_BOYUTU}
+          toplam={aktifToplam}
+          onDegis={setSiparisOffset}
+        />
       </Bolum>
 
       <Bolum baslik="Son hareketler" href="/panel/cuzdan" bagEtiket="Tüm hareketler">
+        <SuzgecCubugu
+          etkinSayisi={hareketArama ? 1 : 0}
+          onTemizle={() => {
+            setHareketAramaGirdisi('');
+            setHareketArama('');
+            setHareketOffset(0);
+          }}
+          sag={<KayitSayaci toplam={hareketToplam} />}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={hareketAramaGirdisi}
+              onChange={(e) => setHareketAramaGirdisi(e.target.value)}
+              placeholder="Açıklama veya referans"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        </SuzgecCubugu>
+
         <VeriTablosu<LedgerEntry>
           baslik="Son para hareketleriniz"
           sutunlar={HAREKET_SUTUNLARI}
@@ -305,7 +436,7 @@ export default function OzetPage() {
           satirAnahtari={(e) => e.id}
           yukleniyor={hareketler.isLoading}
           hata={apiHatasi(hareketler.error)}
-          iskeletSatir={SON_HAREKET}
+          iskeletSatir={ISKELET_SATIR}
           /* 🔴 TEK CANLI DUYURU: iki liste aynı anda yüklenir ve ikisi de
              duyurursa ekran okuyucu bağlamsız iki cümle üst üste okur
              ("2 kayıt listelendi" / "5 kayıt listelendi") — hangisi hangisi
@@ -314,13 +445,29 @@ export default function OzetPage() {
              aktif sipariş listesinde bırakıldı. */
           duyuru={false}
           bos={
-            <BosDurum
-              baslik="Henüz hareket yok"
-              ipucu="Bakiye yüklediğinizde ve numara aldığınızda hareketleriniz burada görünür."
-              eylem="Bakiye yükle"
-              href="/panel/bakiye-yukle"
-            />
+            hareketArama ? (
+              <BosDurum
+                baslik="Bu aramaya uyan hareket yok"
+                ipucu="Arama açıklama ve referans alanlarında yapılır. Metni kısaltmayı deneyin."
+                eylem="Tüm hareketler"
+                href="/panel/cuzdan"
+              />
+            ) : (
+              <BosDurum
+                baslik="Henüz hareket yok"
+                ipucu="Bakiye yüklediğinizde ve numara aldığınızda hareketleriniz burada görünür."
+                eylem="Bakiye yükle"
+                href="/panel/bakiye-yukle"
+              />
+            )
           }
+        />
+
+        <Sayfalama
+          offset={hareketOffset}
+          limit={SAYFA_BOYUTU}
+          toplam={hareketToplam}
+          onDegis={setHareketOffset}
         />
       </Bolum>
     </div>
@@ -364,7 +511,10 @@ function Bolum({
           {bagEtiket}
         </Link>
       </div>
-      <div className="mt-4">{children}</div>
+      {/* Üç parça gelir: süzgeç çubuğu, tablo, sayfalama. Aralarındaki
+          boşluk BURADA verilir ki her çağrı yeri `mt-*` yazmak zorunda
+          kalmasın — biri unutulursa bölümler arası ritim bozulur. */}
+      <div className="mt-4 flex flex-col gap-6">{children}</div>
     </Card>
   );
 }

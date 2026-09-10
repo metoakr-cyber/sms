@@ -61,6 +61,11 @@ func (h *Wallet) Statement(c *gin.Context) {
 	if t := c.Query("type"); t != "" {
 		f.Type = db.LedgerType(t)
 	}
+	// Boş dize NIL'e çevrilir: temizlenmiş bir arama kutusu boş parametre
+	// gönderir ve bu "süzme" demektir, "boş dizeyle eşleş" değil.
+	if v := strings.TrimSpace(c.Query("q")); v != "" {
+		f.Q = &v
+	}
 	if v := c.Query("from"); v != "" {
 		if ts, err := time.Parse(time.RFC3339, v); err == nil {
 			f.From = &ts

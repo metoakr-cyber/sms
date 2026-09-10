@@ -8,7 +8,10 @@ import (
 
 // StatementFilter hareket dökümü filtresi.
 type StatementFilter struct {
-	Type   db.LedgerType
+	Type db.LedgerType
+	// Q serbest metin araması (not + referans kimliği). NIL ise aranmaz;
+	// boş dize "hiçbir şeyle eşleşme" değil, "arama yok" demektir.
+	Q      *string
 	From   *time.Time
 	To     *time.Time
 	Limit  int32

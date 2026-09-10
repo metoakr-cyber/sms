@@ -136,11 +136,34 @@ func (q *Queries) CountOrderMessages(ctx context.Context, orderID int64) (int64,
 }
 
 const countUserOrders = `-- name: CountUserOrders :one
-SELECT count(*) FROM orders WHERE user_id = $1
+SELECT count(*) FROM orders o
+WHERE o.user_id = $1
+  AND ($2::order_status IS NULL OR o.status = $2::order_status)
+  AND (NOT $3::boolean OR o.status IN ('PENDING', 'ACTIVE'))
+  AND ($4::text IS NULL
+       OR o.service_name::text ILIKE '%' || $4::text || '%'
+       OR o.phone_number::text ILIKE '%' || $4::text || '%'
+       OR o.country_name::text ILIKE '%' || $4::text || '%')
 `
 
-func (q *Queries) CountUserOrders(ctx context.Context, userID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countUserOrders, userID)
+type CountUserOrdersParams struct {
+	UserID     int64
+	Status     *OrderStatus
+	OnlyActive bool
+	Q          *string
+}
+
+// 🔴 SÜZGEÇLER `ListUserOrders` İLE BİREBİR AYNI OLMAK ZORUNDA. Ayrışırsa
+// sayfalama yalan söyler: "1–25 / 300" yazarken liste 4 satır gösterir ve
+// "Sonraki" boş sayfa açar. İki sorgu tek bir kavramın iki yarısıdır.
+// test: order_integration_test.go#TestListUserOrdersFiltreleri
+func (q *Queries) CountUserOrders(ctx context.Context, arg CountUserOrdersParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUserOrders,
+		arg.UserID,
+		arg.Status,
+		arg.OnlyActive,
+		arg.Q,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -1465,14 +1488,23 @@ SELECT o.id, o.public_id, o.user_id, o.provider_id, o.remote_order_id, o.provide
 FROM orders o
 LEFT JOIN services s ON s.code = o.service_code
 WHERE o.user_id = $1
+  AND ($2::order_status IS NULL OR o.status = $2::order_status)
+  AND (NOT $3::boolean OR o.status IN ('PENDING', 'ACTIVE'))
+  AND ($4::text IS NULL
+       OR o.service_name::text ILIKE '%' || $4::text || '%'
+       OR o.phone_number::text ILIKE '%' || $4::text || '%'
+       OR o.country_name::text ILIKE '%' || $4::text || '%')
 ORDER BY o.created_at DESC
-LIMIT $3 OFFSET $2
+LIMIT $6 OFFSET $5
 `
 
 type ListUserOrdersParams struct {
-	UserID int64
-	Off    int32
-	Lim    int32
+	UserID     int64
+	Status     *OrderStatus
+	OnlyActive bool
+	Q          *string
+	Off        int32
+	Lim        int32
 }
 
 type ListUserOrdersRow struct {
@@ -1500,8 +1532,39 @@ type ListUserOrdersRow struct {
 // tipi bekleyen tüm çağrı yerleri kırılır. `embed` `db.Order`'ı olduğu gibi
 // korur, `icon_url`'i yanına ekler — ve şemaya sütun eklendiğinde bu sorgu
 // kendiliğinden güncel kalır.
+//
+// SÜZGEÇLER — `sqlc.narg()` + "NULL ise süzme" deseni (CLAUDE.md sqlc kuralları).
+//
+// ÜÇ SÜZGEÇ VARDIR VE `only_active` AYRI DURMAK ZORUNDADIR:
+//
+//	status       → TEK durum eşleşmesi ("İptal edilenleri göster")
+//	only_active  → "AKTİF" = PENDING **veya** ACTIVE, yani tek durum DEĞİL
+//	q            → serbest metin
+//
+// `ListTicketsForAdmin`'deki `only_pending` ile aynı gerekçe: bir kullanıcı
+// kavramı ("aktif siparişim") birden çok duruma karşılık geliyorsa, onu tek
+// durumlu süzgece sıkıştırmak listeyi sessizce eksiltir. ACTIVE, kiralık
+// siparişin süren dönemidir ve özet ekranında gizlenemez.
+// Go'da string birleştirerek SQL kurulmaz; `ListUsers` ile AYNI desen.
+//
+// 🔴 `user_id` KOŞULU HER İKİ SÜZGEÇTEN ÖNCE GELİR ve kaldırılamaz: sahiplik
+// sorgunun parçasıdır (değişmez #7). Hiçbir `q`/`status` bileşimi başka bir
+// kullanıcının siparişini döndüremez.
+//
+// İNDEKS EKLENMEDİ: `ILIKE '%...%'` bir btree indeksi kullanamaz zaten, ama
+// tarama `user_id` ile ZATEN daraltılmış küçük bir kümede olur (bir kullanıcının
+// kendi siparişleri) — planlayıcı `orders_user_idx` (user_id, created_at DESC) ile satırları
+// getirir, süzgeç o küme üzerinde çalışır. Gerçek bir sorun ölçülürse çare
+// `pg_trgm` GIN indeksidir, gövdede string birleştirmek değil.
 func (q *Queries) ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]ListUserOrdersRow, error) {
-	rows, err := q.db.Query(ctx, listUserOrders, arg.UserID, arg.Off, arg.Lim)
+	rows, err := q.db.Query(ctx, listUserOrders,
+		arg.UserID,
+		arg.Status,
+		arg.OnlyActive,
+		arg.Q,
+		arg.Off,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

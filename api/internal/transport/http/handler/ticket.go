@@ -8,6 +8,7 @@ package handler
 // arkasındadır (router.go).
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -72,7 +73,26 @@ func (h *Ticket) List(c *gin.Context) {
 		return
 	}
 	limit, offset := pagination(c, 20, 100)
-	rows, total, err := h.svc.List(c.Request.Context(), userID, limit, offset)
+
+	// `?status=` — geçersiz değer SESSİZCE YOK SAYILMAZ; yok sayılsaydı yanlış
+	// yazılmış bir süzgeç TÜM listeyi döndürür ve kullanıcı bunu "süzgeç
+	// çalıştı" sanardı. `AdminList` ile aynı davranış.
+	var status *ticketdom.Status
+	if raw := strings.TrimSpace(c.Query("status")); raw != "" {
+		st, ok := ticketdom.ParseStatus(raw)
+		if !ok {
+			h.r.FailField(c, []dto.FieldError{{Field: "status", Message: "Geçersiz durum süzgeci."}})
+			return
+		}
+		status = &st
+	}
+
+	var ara *string
+	if v := strings.TrimSpace(c.Query("q")); v != "" {
+		ara = &v
+	}
+
+	rows, total, err := h.svc.List(c.Request.Context(), userID, status, ara, limit, offset)
 	if err != nil {
 		h.r.Fail(c, err)
 		return
@@ -163,6 +183,9 @@ func (h *Ticket) AdminList(c *gin.Context) {
 		filter.Status = &s
 	}
 	filter.OnlyPending = c.Query("pending") == "true"
+	if v := strings.TrimSpace(c.Query("q")); v != "" {
+		filter.Q = &v
+	}
 
 	limit, offset := pagination(c, 20, 100)
 	rows, total, err := h.svc.AdminList(c.Request.Context(), filter, limit, offset)

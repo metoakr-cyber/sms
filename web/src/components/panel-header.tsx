@@ -67,82 +67,26 @@ import { Logo } from './logo';
 import { Spinner, cx } from './ui';
 import type { User } from '@/lib/types';
 
-/* ────────────────────────── İkon yardımcısı ────────────────────────── */
-
-/**
- * Tek yollu SVG ikon. Emoji/unicode DEĞİL (`tasarim-sistemi.md §9.2`):
- * tek kütüphane, tek çizgi kalınlığı (1.8).
- */
-const I = (d: string) => (
-  <svg viewBox="0 0 24 24" className="size-5 shrink-0" fill="none" stroke="currentColor"
-       strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d={d} />
-  </svg>
-);
-
-/* ────────────────────────── Renk ────────────────────────── */
-
-/**
- * Gezinti maddelerinin vurgu renkleri.
+/* ──────────────────── Gezinti görsel dili — ORTAK ──────────────────── */
+/*
+ * İkon yardımcısı, renk ailesi ve dört sınıf haritası artık
+ * `components/gezinti-stil.tsx` içinde ve `/yonetim` gezintisiyle PAYLAŞILIYOR
+ * (kullanıcı kararı: iki yüzeyin gezinti butonları aynı dili konuşsun).
+ * Buradaki yerel kopyalar kaldırıldı — kopya kalsaydı bir renk ailesi
+ * değiştiğinde iki dosyadan biri unutulur ve yüzeyler sessizce ayrışırdı.
  *
- * 🔴 YENİ RENK UYDURULMADI. `globals.css`'teki ölçülmüş vurgu ailelerinden
- * (`--v-*-zemin` / `--v-*-metin`) alındı; her çift iki temada da ≥4.5:1
- * (globals.css:125 yorumu). Bu değerler kendi ZEMİNİ üstünde ölçüldü; sayfa
- * zemininde (`--bg`) kontrast daha da yükselir — yani ölçüm güvenli tarafta.
- *
- * 🔴 RENK İKONU TAŞIR, METNİ DEĞİL. Etiket her zaman `--muted` ya da `--text`,
- * yani renk seçimi metin kontrastını hiçbir durumda değiştirmez. Ve renk TEK
- * BAŞINA anlam taşımaz (§7.1): etkin madde ayrıca `aria-current="page"`,
- * `font-semibold` ve ölçülmüş zemin tonunu taşır — üç kanal.
- *
- * Sınıf dizgileri STATİK yazılır. Tailwind kaynağı metin olarak tarar;
- * `` `md:${degisken}` `` gibi çalışma anında kurulan bir sınıf üretilen CSS'te
- * HİÇ OLUŞMAZ ve sessizce renksiz kalır.
+ * `_LG` varyantları: bu şeritte `< lg` altında gezinti bir ALT ÇUBUKtur ve
+ * orada ikon karosu yoktur (72px'lik slotta 32px'lik karo etiketi ezer).
+ * `/yonetim` her genişlikte dikey liste olduğu için öneksiz haritaları kullanır.
  */
-type Renk = 'mavi' | 'mor' | 'yesil' | 'turuncu' | 'pembe' | 'deniz';
-
-const IKON_RENK: Record<Renk, string> = {
-  mavi:    'text-[var(--v-mavi-metin)]',
-  mor:     'text-[var(--v-mor-metin)]',
-  yesil:   'text-[var(--v-yesil-metin)]',
-  turuncu: 'text-[var(--v-turuncu-metin)]',
-  pembe:   'text-[var(--v-pembe-metin)]',
-  deniz:   'text-[var(--v-deniz-metin)]',
-};
-
-/**
- * İkon karosunun zemini — YALNIZ `≥ lg` (yan sütun).
- * Sınıflar STATİK yazılır; `lg:${degisken}` gibi çalışma anında kurulan bir
- * sınıf Tailwind çıktısında HİÇ oluşmaz ve karo sessizce renksiz kalır.
- */
-const KARO_ZEMIN: Record<Renk, string> = {
-  mavi:    'lg:bg-[var(--v-mavi-zemin)]',
-  mor:     'lg:bg-[var(--v-mor-zemin)]',
-  yesil:   'lg:bg-[var(--v-yesil-zemin)]',
-  turuncu: 'lg:bg-[var(--v-turuncu-zemin)]',
-  pembe:   'lg:bg-[var(--v-pembe-zemin)]',
-  deniz:   'lg:bg-[var(--v-deniz-zemin)]',
-};
-
-/** Etkin maddenin SOL VURGU ÇUBUĞU — ikon rengiyle aynı aile. */
-const VURGU_CUBUK: Record<Renk, string> = {
-  mavi:    'lg:before:bg-[var(--v-mavi-metin)]',
-  mor:     'lg:before:bg-[var(--v-mor-metin)]',
-  yesil:   'lg:before:bg-[var(--v-yesil-metin)]',
-  turuncu: 'lg:before:bg-[var(--v-turuncu-metin)]',
-  pembe:   'lg:before:bg-[var(--v-pembe-metin)]',
-  deniz:   'lg:before:bg-[var(--v-deniz-metin)]',
-};
-
-/** Etkin maddenin zemini — ikon rengiyle ÖLÇÜLMÜŞ çift. */
-const ETKIN_ZEMIN: Record<Renk, string> = {
-  mavi:    'bg-[var(--v-mavi-zemin)]',
-  mor:     'bg-[var(--v-mor-zemin)]',
-  yesil:   'bg-[var(--v-yesil-zemin)]',
-  turuncu: 'bg-[var(--v-turuncu-zemin)]',
-  pembe:   'bg-[var(--v-pembe-zemin)]',
-  deniz:   'bg-[var(--v-deniz-zemin)]',
-};
+import {
+  Ikon as I,
+  IKON_RENK,
+  ETKIN_ZEMIN,
+  KARO_ZEMIN_LG as KARO_ZEMIN,
+  VURGU_CUBUK_LG as VURGU_CUBUK,
+  type Renk,
+} from './gezinti-stil';
 
 /* ────────────────────────── Gezinti verisi ────────────────────────── */
 
@@ -206,13 +150,20 @@ export const GEZINTI: readonly Madde[] = [
  *   1) profil menüsü (her genişlikte)
  *   2) sayfa altındaki yardımcı şerit (her genişlikte, düz `<a>`)
  * Profil menüsü bir düğmeye bağlıdır; menü açılmazsa alttaki şerit hâlâ orada.
+ *
+ * 🔴 HUKUKİ METİNLER PANEL SÜRÜMÜNE GİDER (`/panel/...`), genel siteye değil
+ * (kullanıcı isteği): panelde çalışan kullanıcı sözleşmeyi okumak için kabuğu
+ * — üst başlık, gezinti, bakiye — kaybetmemeli. Metin ikiye AYRILMADI; iki
+ * yüzey de `components/yasal/*` içindeki tek kaynağı çiziyor.
+ * Panel DIŞINDAKİ bağlantılar (`site-nav.tsx` altbilgisi, kayıt formu) genel
+ * sürümde kalır — onlar indekslenen sayfalardır.
  */
 export const IKINCIL = [
   { href: '/panel/yorumlarim', etiket: 'Yorumlarım',
     ikon: I('M12 3l2.7 5.5 6 .9-4.3 4.2 1 6-5.4-2.8-5.4 2.8 1-6L5.3 9.4l6-.9z') },
-  { href: '/kullanim-sartlari', etiket: 'Kullanım Şartları',
+  { href: '/panel/kullanim-sartlari', etiket: 'Kullanım Şartları',
     ikon: I('M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5') },
-  { href: '/gizlilik', etiket: 'Gizlilik',
+  { href: '/panel/gizlilik', etiket: 'Gizlilik',
     ikon: I('M5 11h14v10H5zM8 11V7a4 4 0 1 1 8 0v4') },
 ] as const;
 

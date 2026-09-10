@@ -71,23 +71,46 @@ func (q *Queries) ApproveDeposit(ctx context.Context, arg ApproveDepositParams) 
 
 const countDepositsForAdmin = `-- name: CountDepositsForAdmin :one
 SELECT count(*) FROM deposits d
+JOIN users u ON u.id = d.user_id
 WHERE ($1::deposit_status IS NULL
        OR d.status = $1::deposit_status)
+  AND ($2::text IS NULL
+       OR u.email::text    ILIKE '%' || $2::text || '%'
+       OR u.username::text ILIKE '%' || $2::text || '%')
 `
 
-func (q *Queries) CountDepositsForAdmin(ctx context.Context, status *DepositStatus) (int64, error) {
-	row := q.db.QueryRow(ctx, countDepositsForAdmin, status)
+type CountDepositsForAdminParams struct {
+	Status *DepositStatus
+	Q      *string
+}
+
+// 🔴 SÜZGEÇ VE JOIN, ListDepositsForAdmin İLE BİREBİR AYNI. `q` kullanıcı
+// sütunlarında arandığı için sayım da `users`a katılmak ZORUNDA; katılmasaydı
+// arama yapıldığında sayfalama yanlış toplam gösterirdi.
+func (q *Queries) CountDepositsForAdmin(ctx context.Context, arg CountDepositsForAdminParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDepositsForAdmin, arg.Status, arg.Q)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const countUserDeposits = `-- name: CountUserDeposits :one
-SELECT count(*) FROM deposits WHERE user_id = $1
+SELECT count(*) FROM deposits
+WHERE user_id = $1
+  AND ($2::deposit_status IS NULL
+       OR status = $2::deposit_status)
 `
 
-func (q *Queries) CountUserDeposits(ctx context.Context, userID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countUserDeposits, userID)
+type CountUserDepositsParams struct {
+	UserID int64
+	Status *DepositStatus
+}
+
+// 🔴 SÜZGEÇ `ListUserDeposits` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+// yalan söyler (bkz. orders.sql, CountUserOrders notu).
+// test: deposit_integration_test.go#TestListUserDepositsDurumSuzgeci
+func (q *Queries) CountUserDeposits(ctx context.Context, arg CountUserDepositsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUserDeposits, arg.UserID, arg.Status)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -279,12 +302,16 @@ FROM deposits d
 JOIN users u ON u.id = d.user_id
 WHERE ($1::deposit_status IS NULL
        OR d.status = $1::deposit_status)
+  AND ($2::text IS NULL
+       OR u.email::text    ILIKE '%' || $2::text || '%'
+       OR u.username::text ILIKE '%' || $2::text || '%')
 ORDER BY d.created_at DESC
-LIMIT $3 OFFSET $2
+LIMIT $4 OFFSET $3
 `
 
 type ListDepositsForAdminParams struct {
 	Status *DepositStatus
+	Q      *string
 	Off    int32
 	Lim    int32
 }
@@ -316,7 +343,12 @@ type ListDepositsForAdminRow struct {
 
 // Sayısal id dışarı verilmez: kullanıcı users.public_id ile gösterilir.
 func (q *Queries) ListDepositsForAdmin(ctx context.Context, arg ListDepositsForAdminParams) ([]ListDepositsForAdminRow, error) {
-	rows, err := q.db.Query(ctx, listDepositsForAdmin, arg.Status, arg.Off, arg.Lim)
+	rows, err := q.db.Query(ctx, listDepositsForAdmin,
+		arg.Status,
+		arg.Q,
+		arg.Off,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -361,19 +393,31 @@ func (q *Queries) ListDepositsForAdmin(ctx context.Context, arg ListDepositsForA
 const listUserDeposits = `-- name: ListUserDeposits :many
 SELECT id, public_id, user_id, method_id, method_name, amount_minor, credited_minor, status, tx_hash, network, receipt_path, user_note, admin_note, rejection_reason, reviewed_by_user_id, reviewed_at, created_at, updated_at, idempotency_key FROM deposits
 WHERE user_id = $1
+  AND ($2::deposit_status IS NULL
+       OR status = $2::deposit_status)
 ORDER BY created_at DESC
-LIMIT $3 OFFSET $2
+LIMIT $4 OFFSET $3
 `
 
 type ListUserDepositsParams struct {
 	UserID int64
+	Status *DepositStatus
 	Off    int32
 	Lim    int32
 }
 
 // deposits_user_idx (user_id, created_at DESC) tam olarak bu sıralamayı kullanır.
+//
+// Durum süzgeci `ListDepositsForAdmin` ile AYNI desendir: `sqlc.narg` NULL ise
+// süzme yok. 🔴 `user_id` koşulu süzgeçten bağımsızdır ve kaldırılamaz —
+// sahiplik sorgunun parçasıdır (değişmez #7).
 func (q *Queries) ListUserDeposits(ctx context.Context, arg ListUserDepositsParams) ([]Deposit, error) {
-	rows, err := q.db.Query(ctx, listUserDeposits, arg.UserID, arg.Off, arg.Lim)
+	rows, err := q.db.Query(ctx, listUserDeposits,
+		arg.UserID,
+		arg.Status,
+		arg.Off,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

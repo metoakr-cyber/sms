@@ -67,10 +67,28 @@ import {
   CokSatir,
   Sayfalama,
   SAYFA_BOYUTU,
+  Secim,
+  SuzgecCubugu,
   DurumRozeti,
   HataDurumu,
+  VeriTablosu,
   apiHatasi,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
+import type { Sunum, Sutun } from '@/components/yonetim';
+
+/**
+ * Durum süzgeci seçenekleri — `GET /reviews/mine?status=`.
+ *
+ * 🔴 SATIR ETİKETLERİ SUNUCUDAN gelir (`statusLabel`); bu liste onları ÜRETMEZ.
+ * Kaynak: `api/internal/transport/http/handler/review.go#reviewStatusLabel`.
+ */
+const DURUM_SUZGECLERI: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'Tüm durumlar' },
+  { value: 'PENDING', label: 'Onay bekliyor' },
+  { value: 'APPROVED', label: 'Yayında' },
+  { value: 'REJECTED', label: 'Yayımlanmadı' },
+];
 
 /* ═══════════════════════ Sunucu sözleşmesi ═══════════════════════ */
 /*
@@ -173,15 +191,66 @@ function PuanSecici({
   );
 }
 
+/**
+ * Yorumun gövdesi + duruma özgü notlar — tablo hücresi ve mobil kart için TEK
+ * tanım.
+ *
+ * 🔴 `sunum` YALNIZ HİZALAMA İÇİN OKUNUR, metin ikisinde de aynıdır. Mobil
+ * kartta bu hücre bir `<dd>` içine düşer ve `VeriTablosu` `<dd>`'yi sağa
+ * hizalar — kısa değerler için doğru, ÇOK SATIRLI DÜZ METİN için yanlıştır:
+ * sağa yaslı bir paragrafın sol kenarı tırtıklı olur ve okuma hızını düşürür.
+ * `sunum`'a bakıp farklı METİN yazmak yasaktır; farklı HİZA vermek bileşenin
+ * açıkça izin verdiği kullanımdır.
+ */
+function YorumGovdesi({ yorum, sunum }: { yorum: Review; sunum: Sunum }) {
+  return (
+    <div className={sunum === 'kart' ? 'text-left font-normal' : undefined}>
+      {/* 65-75ch bandı (§3.4), kısaltma YOK. `whitespace-pre-wrap` satır
+          sonlarını korur, HTML yorumlamaz. `break-anywhere`: boşluksuz uzun
+          bir dize 320px'te yatay kaydırma üretirdi. */}
+      <p className="max-w-[70ch] whitespace-pre-wrap break-anywhere leading-relaxed">
+        {yorum.body}
+      </p>
+
+      {yorum.status === 'REJECTED' && yorum.rejectionReason && (
+        <Alert tone="warn" duyur={false} className="mt-4">
+          <p className="font-medium">Yayımlanmama nedeni</p>
+          <p className="mt-1 max-w-[70ch] whitespace-pre-wrap break-anywhere">
+            {yorum.rejectionReason}
+          </p>
+          <p className="mt-2">Dilerseniz yeni bir yorum yazabilirsiniz.</p>
+        </Alert>
+      )}
+
+      {yorum.status === 'PENDING' && (
+        <p className="mt-3 text-sm text-muted">
+          Bu yorum henüz sitede görünmüyor; onaydan sonra yayımlanacak.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ═══════════════════════ Sayfa ═══════════════════════ */
 
 export default function YorumlarimPage() {
   const [offset, setOffset] = React.useState(0);
   const [creating, setCreating] = React.useState(false);
 
+  const [durum, setDurum] = React.useState('');
+
   const q = useQuery({
-    queryKey: ['reviews', 'mine', { limit: SAYFA_BOYUTU, offset }],
-    queryFn: () => apiFetch<ReviewList>(`/reviews/mine?limit=${SAYFA_BOYUTU}&offset=${offset}`),
+    queryKey: ['reviews', 'mine', { limit: SAYFA_BOYUTU, offset, durum }],
+    queryFn: () => {
+      // Süzgeç SUNUCUDA uygulanır; istemcide süzmek yalnız bu sayfadaki 25
+      // satırı görürdü.
+      const p = new URLSearchParams({
+        limit: String(SAYFA_BOYUTU),
+        offset: String(offset),
+      });
+      if (durum) p.set('status', durum);
+      return apiFetch<ReviewList>(`/reviews/mine?${p.toString()}`);
+    },
     // Sayfa değişince liste boşalıp zıplamasın.
     placeholderData: keepPreviousData,
   });
@@ -196,35 +265,76 @@ export default function YorumlarimPage() {
   const bekleyen = items?.some((r) => r.status === 'PENDING') ?? false;
 
   /*
-   * `Sayfalama` tek sayfaya sığan listede kendini hiç çizmez; bu ifade
-   * "sayfalama ekranda var mı" ile aynı şeydir.
+   * `Sayfalama` GÖRÜNÜR MÜ? Koşul bileşenin kendisinden okunur
+   * (`sayfalamaGorunur`), burada kopyalanmaz — kopya, bileşenin gizlenme
+   * kuralı değiştiği gün sessizce yanlış olur ve iki canlı bölge birden
+   * konuşmaya başlar.
    */
-  const sayfali = total > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(total);
 
   /*
-   * Canlı bölge — `VeriTablosu`nun yaptığı işin kart listesi karşılığı (§7.4).
-   * Bölge DAİMA DOM'da durur: koşullu render edilirse ekran okuyucu onu "yeni
-   * içerik" saymaz ve hiçbir şey duyurulmaz. Bu yüzden bölge değil, İÇERİĞİ
-   * susturulur.
+   * KENDİ CANLI BÖLGESİ KALKTI. Liste artık `VeriTablosu` ile çiziliyor ve
+   * duyuruyu O yapıyor (`duyuru` prop'u). İkisi birden dursaydı ekran okuyucu
+   * aynı olayı iki kez duyururdu.
    *
-   * 🔴 SAYFALIYKEN SUSAR — iki hatayı birden kapatır: (1) `Sayfalama`nın kendi
-   * `aria-live`'ı zaten konuşuyor, iki polite duyuru sıraya girerdi; (2)
-   * `items.length` SAYFADAKİ sayıdır — 87 kayıtlık listede her sayfada
-   * "25 yorum listelendi" derdi. Tek sayfalık listede sayfadaki sayı ZATEN
-   * toplamdır, yani duyuru konuştuğu her yerde doğrudur.
+   * `Sayfalama` tek sayfaya sığan listede kendini hiç çizmez; `sayfali`
+   * "sayfalama ekranda var mı" ile aynı şeydir ve sayfalıyken duyuruyu ONA
+   * bırakırız: `items.length` SAYFADAKİ sayıdır, 87 kayıtlık listede her
+   * sayfada "25 yorum listelendi" derdi.
    */
-  const duyuru = q.isLoading
-    ? ''
-    : listErr
-      ? 'Liste yüklenemedi.'
-      : !items || items.length === 0
-        ? 'Henüz yorumunuz yok.'
-        : sayfali
-          ? ''
-          : `${items.length} yorum listelendi.`;
+
+  /*
+   * SÜTUNLAR — tek veri tanımı (§6.1 kural 2). Ekran eskiden elle bir kart
+   * listesi çiziyordu; `VeriTablosu` masaüstünde gerçek tablo, `< md` altında
+   * kart üretir ve ikisi AYNI tanımdan gelir.
+   */
+  const sutunlar = React.useMemo<ReadonlyArray<Sutun<Review>>>(
+    () => [
+      {
+        anahtar: 'puan',
+        baslik: 'Puan',
+        mobilRol: 'baslik',
+        hucre: (r) => <Yildizlar puan={r.rating} />,
+      },
+      {
+        anahtar: 'durum',
+        baslik: 'Durum',
+        mobilRol: 'rozet',
+        hucre: (r) => <DurumRozeti durum={r.status} etiket={r.statusLabel} />,
+      },
+      {
+        anahtar: 'yorum',
+        baslik: 'Yorum',
+        hucre: (r, sunum) => <YorumGovdesi yorum={r} sunum={sunum} />,
+      },
+      {
+        anahtar: 'tarih',
+        baslik: 'Gönderildi',
+        hizala: 'sag',
+        // Tarih veridir: `tabular-nums` olmadan alt alta gelen tarihler kayar.
+        sayisal: true,
+        // Dört sütun 768px'e sığar ama yorum gövdesi genişliğin çoğunu ister;
+        // tarih `lg:` üstüne alındı — mobil kartta yine tam metinle var.
+        oncelik: 3,
+        hucre: (r) => (
+          <span className="text-muted">
+            {formatDateTime(r.createdAt)}
+            {r.reviewedAt && (
+              <>
+                {' · '}
+                {r.status === 'APPROVED' ? 'Yayımlandı' : 'Karar'}:{' '}
+                {formatDateTime(r.reviewedAt)}
+              </>
+            )}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <SayfaBasligi
         baslik="Yorumlarım"
         aciklama="Deneyiminizi yazın. Yorumunuz ekibimizin onayından sonra sitede yayımlanır."
@@ -255,87 +365,64 @@ export default function YorumlarimPage() {
           <KayitSayaci toplam={total} />
         </div>
 
-        <p aria-live="polite" aria-atomic="true" className="sr-only">{duyuru}</p>
+        {/* Süzgeç liste kartının İÇİNDE: "Yorum yaz" düğmesi zaten sayfa
+            başlığında duruyor, araya üçüncü bir kart girmez. */}
+        <SuzgecCubugu
+          etkinSayisi={durum ? 1 : 0}
+          onTemizle={() => {
+            setDurum('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-60 sm:self-start">
+            <Secim
+              etiket="Durum"
+              value={durum}
+              onChange={(e) => {
+                setDurum(e.target.value);
+                // Süzgeç değişince 3. sayfada kalmak BOŞ ekran gösterir.
+                setOffset(0);
+              }}
+            >
+              {DURUM_SUZGECLERI.map((d) => (
+                <option key={d.value || 'tumu'} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </Secim>
+          </div>
+        </SuzgecCubugu>
 
-        {q.isLoading ? (
-          /* Yükleme İSKELETLE (§5.1). İskelet gerçek kartın şemasından türer:
-             üst satır (yıldız + rozet), üç satırlık paragraf, alt bilgi —
-             böylece veri geldiğinde düzen ZIPLAMAZ. */
-          <ul className="flex flex-col gap-4">
-            {[0, 1, 2].map((i) => (
-              <li key={i} className="raised rounded-xl border p-4 md:p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <Skeleton className="h-5 w-28" />
-                  <Skeleton className="h-5 w-24" />
-                </div>
-                <div className="mt-4 flex flex-col gap-2">
-                  <Skeleton className="h-4 w-full" />
-                  <Skeleton className="h-4 w-4/5" />
-                </div>
-                <Skeleton className="mt-4 h-4 w-40" />
-              </li>
-            ))}
-          </ul>
-        ) : listErr ? (
-          <HataDurumu hata={listErr} />
-        ) : !items?.length ? (
-          /* Boş durum ÖĞRETİR (§5.1). Bu liste süzgeçsizdir: boş olmasının tek
-             anlamı GERÇEKTEN boş olmasıdır (§6.3). */
-          <Empty
-            title="Henüz yorum yazmadınız"
-            hint="Hizmetimizle ilgili düşüncelerinizi paylaşırsanız, onaydan sonra sitede kullanıcı adınızla yayımlanır."
-          />
-        ) : (
-          <ul className="flex flex-col gap-4">
-            {items.map((r) => (
-              /* İÇ İÇE KART YOK (§9.2): bu bir `<li>` satırıdır, ikinci bir
-                 `Card` değil; derinlik değil KENARLIK kullanır (§2.4). */
-              <li key={r.id} className="raised rounded-xl border p-4 md:p-5">
-                {/* `flex-wrap`, `shrink-0` DEĞİL: 320px'te yıldızlar + rozet tek
-                    satıra sığmayabilir. Sığmayan blok SARMALIDIR; sabitlenirse
-                    kart yatay taşar. */}
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <Yildizlar puan={r.rating} />
-                  <DurumRozeti durum={r.status} etiket={r.statusLabel} />
-                </div>
-
-                {/* Yorumun kendisi: 65-75ch bandında (§3.4), kısaltma YOK.
-                    `whitespace-pre-wrap` satır sonlarını korur, HTML yorumlamaz.
-                    `break-anywhere`: boşluksuz uzun bir dize 320px'te yatay
-                    kaydırma üretirdi. */}
-                <p className="mt-4 max-w-[70ch] whitespace-pre-wrap break-anywhere
-                              text-sm leading-relaxed">
-                  {r.body}
-                </p>
-
-                {/* `text-sm` + `tabular-nums`: tarih veridir, dipnot değil
-                    (§3.2/§3.5 — eskiden `text-xs` idi ve rakamlar kayıyordu). */}
-                <p className="mt-4 text-sm tabular-nums text-muted">
-                  Gönderildi: {formatDateTime(r.createdAt)}
-                  {r.reviewedAt && (
-                    <> · {r.status === 'APPROVED' ? 'Yayımlandı' : 'Karar'}: {formatDateTime(r.reviewedAt)}</>
-                  )}
-                </p>
-
-                {r.status === 'REJECTED' && r.rejectionReason && (
-                  <Alert tone="warn" duyur={false} className="mt-4">
-                    <p className="font-medium">Yayımlanmama nedeni</p>
-                    <p className="mt-1 max-w-[70ch] whitespace-pre-wrap break-anywhere">
-                      {r.rejectionReason}
-                    </p>
-                    <p className="mt-2">Dilerseniz yeni bir yorum yazabilirsiniz.</p>
-                  </Alert>
-                )}
-
-                {r.status === 'PENDING' && (
-                  <p className="mt-4 text-sm text-muted">
-                    Bu yorum henüz sitede görünmüyor; onaydan sonra yayımlanacak.
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
+        <VeriTablosu
+          baslik="Gönderdiğim yorumlar"
+          sutunlar={sutunlar}
+          satirlar={items}
+          satirAnahtari={(r) => r.id}
+          yukleniyor={q.isLoading}
+          hata={listErr}
+          // İskelet satırı gerçek satır yüksekliğinden türer; üç satır, eski
+          // elle yazılmış iskeletle aynı sayı.
+          iskeletSatir={3}
+          // Sayfalama kendi aralığını duyuruyor; iki canlı bölge aynı anda
+          // konuşmasın (veri-tablosu.tsx `duyuru` notu).
+          duyuru={!sayfali}
+          bos={
+            /* Boş durum ÖĞRETİR (§5.1). §6.3: SÜZGEÇTEN DOLAYI BOŞ ≠ GERÇEKTEN
+               BOŞ — yorumu olan ama seçtiği durumda kaydı olmayan kullanıcıya
+               "Henüz yorum yazmadınız" demek yanlıştır ve yanlış eyleme iter. */
+            durum ? (
+              <Empty
+                title="Bu durumda yorum yok"
+                hint="Durumu “Tüm durumlar” yaparak gönderdiğiniz bütün yorumları görebilirsiniz."
+              />
+            ) : (
+              <Empty
+                title="Henüz yorum yazmadınız"
+                hint="Hizmetimizle ilgili düşüncelerinizi paylaşırsanız, onaydan sonra sitede kullanıcı adınızla yayımlanır."
+              />
+            )
+          }
+        />
 
         <Sayfalama offset={offset} limit={SAYFA_BOYUTU} toplam={total} onDegis={setOffset} />
       </Card>

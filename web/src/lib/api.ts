@@ -34,10 +34,11 @@ export class ApiError extends Error {
   /** Sunucunun {error:{code,message,requestId}} + isteğe bağlı {fields:[]} zarfı. */
   static fromBody(body: unknown, status: number, retryAfterMs?: number): ApiError {
     const b = body as { error?: { code?: string; message?: string; requestId?: string }; fields?: FieldError[] };
+    // Sunucu Türkçe, kullanıcıya gösterilebilir metin döner (design.md §11).
+    const sunucuMesaji = b?.error?.message ?? 'Beklenmeyen bir hata oluştu.';
     return new ApiError({
       code: b?.error?.code ?? 'UNKNOWN',
-      // Sunucu Türkçe, kullanıcıya gösterilebilir metin döner (design.md §11).
-      message: b?.error?.message ?? 'Beklenmeyen bir hata oluştu.',
+      message: bekleyisiEkle(sunucuMesaji, status, retryAfterMs),
       status,
       requestId: b?.error?.requestId,
       fields: b?.fields,
@@ -127,6 +128,10 @@ export async function apiFetch<T>(path: string, init: ApiInit = {}): Promise<T> 
       cache: init.cache ?? (isMutating(method) ? 'no-store' : 'default'),
     });
 
+    // (7b) OTURUM BİTTİYSE DOĞRUDAN GİRİŞE. Ayrıntı ve muafiyetler
+    //      `oturumBittiyseGirisEGonder` başında.
+    if (res.status === 401) oturumBittiyseGirisEGonder(path);
+
     // (8) 204'te res.json() SyntaxError atar.
     if (res.status === 204) return undefined as T;
 
@@ -162,6 +167,90 @@ export async function apiFetch<T>(path: string, init: ApiInit = {}): Promise<T> 
     clearTimeout(timer);
     init.signal?.removeEventListener('abort', onOuterAbort);
   }
+}
+
+/**
+ * Oturum bittiyse kullanıcıyı GİRİŞ sayfasına gönderir.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * NEDEN
+ * ══════════════════════════════════════════════════════════════════════════
+ * Kabuklar (`panel-shell`, `admin-shell`) zaten yönlendiriyordu — ama YALNIZ
+ * `/me` sorgusu 401 döndüğünde. Kullanıcı panelde dururken oturumu biterse ve
+ * bir düğmeye basarsa, o isteğin 401'i ekranda bir HATA KUTUSU olarak
+ * belirir: "Bu işlem için giriş yapmalısınız." Kullanıcı giriş yapmak ister
+ * ama nereye tıklayacağını bilmez; sayfa hâlâ paneldir, veriler hâlâ ekrandadır.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ÜÇ MUAFİYET — üçü de zorunlu
+ * ══════════════════════════════════════════════════════════════════════════
+ *  1. `/me` — 401 burada NORMAL cevaptır (giriş yapmamış ziyaretçi). Oturum
+ *     kancası onu zaten "anonim" diye okuyor; yönlendirsek ana sayfaya giren
+ *     HERKES giriş ekranına atılırdı.
+ *  2. `/auth/*` — yanlış parolayla giriş denemesi de 401'dir. Yönlendirmek,
+ *     kullanıcıyı hatasını görmeden aynı sayfaya geri atmak olurdu.
+ *  3. Yalnız `/panel` ve `/yonetim` altında çalışır. Herkese açık bir sayfada
+ *     401 alan bir istek varsa kullanıcının oturumu zaten yoktur ve onu giriş
+ *     ekranına sürüklemek istemediği bir yere götürmektir.
+ *
+ * `replace` kullanılır, `assign` DEĞİL: geri tuşu oturumu bitmiş ölü sayfaya
+ * dönmemeli. `devam` parametresi girişten sonra kullanıcıyı kaldığı yere
+ * geri getirir — kabukların kullandığı biçimin aynısı.
+ */
+const OTURUM_MUAF = ['/me', '/auth/'] as const;
+const KORUMALI_ALANLAR = ['/panel', '/yonetim'] as const;
+
+function oturumBittiyseGirisEGonder(path: string): void {
+  if (typeof window === 'undefined') return;
+  if (OTURUM_MUAF.some((m) => path.startsWith(m))) return;
+
+  const yol = window.location.pathname;
+  if (!KORUMALI_ALANLAR.some((k) => yol.startsWith(k))) return;
+  // Döngü koruması: giriş sayfasındayken tekrar giriş sayfasına gönderilmez.
+  if (yol.startsWith('/giris')) return;
+
+  const devam = encodeURIComponent(yol + window.location.search);
+  window.location.replace(`/giris?sebep=oturum&devam=${devam}`);
+}
+
+/**
+ * 429 mesajına GERÇEK bekleme süresini ekler.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * NEDEN
+ * ══════════════════════════════════════════════════════════════════════════
+ * Sunucunun mesajı "Çok fazla istek gönderdiniz. Lütfen biraz bekleyin."
+ * — "biraz" ne kadar? Kullanıcı bilmediği için saniyede bir tekrar deniyor,
+ * her deneme limiti yeniden dolduruyor ve bekleme UZUYOR. Süreyi söylemek
+ * yalnız nezaket değil, sorunun kendisini çözer.
+ *
+ * Süre SUNUCUDAN gelir (`Retry-After` başlığı, `middleware/ratelimit.go`);
+ * istemci tahmin etmez. Başlık yoksa mesaj olduğu gibi kalır.
+ *
+ * 🔴 MESAJ EKLENMEZ, DEĞİŞTİRİLİR — ve yalnız 429'da, yalnız süre bilindiğinde.
+ * Sunucunun cümlesi zaten "Lütfen biraz bekleyin." diyor; sonuna "18 saniye
+ * sonra tekrar deneyin." eklemek aynı şeyi iki kez söylerdi. Belirsiz yarı
+ * atılır, yerine kesin olanı konur.
+ *
+ * Bu, istemcide ikinci bir hata sözlüğü kurmak DEĞİLDİR (CLAUDE.md #12):
+ * tek bir hata kodunun (RATE_LIMITED) metnini, yalnız sunucunun kendi
+ * gönderdiği veriyle (`Retry-After`) kesinleştiriyoruz. Başlık yoksa sunucu
+ * metni olduğu gibi kalır — istemci hiçbir şey uydurmaz.
+ *
+ * Değer ANLIK bir görüntüdür: hata gösterildiği andaki kalan süredir, geri
+ * sayan bir sayaç değildir. Sayaç kurmak her hata kutusuna zamanlayıcı
+ * eklemek demekti; kullanıcının ihtiyacı "18 saniye mi, 10 dakika mı"
+ * sorusunun cevabı, saniye saniye takip değil.
+ */
+function bekleyisiEkle(mesaj: string, status: number, retryAfterMs?: number): string {
+  if (status !== 429 || retryAfterMs === undefined) return mesaj;
+  const saniye = Math.ceil(retryAfterMs / 1000);
+  if (saniye <= 0) return mesaj;
+  const sure =
+    saniye < 60
+      ? `${saniye} saniye`
+      : `${Math.ceil(saniye / 60)} dakika`;
+  return `Çok fazla istek gönderdiniz. ${sure} sonra tekrar deneyin.`;
 }
 
 /** Retry-After hem saniye hem HTTP tarihi olabilir; ikisini de kabul ederiz. */

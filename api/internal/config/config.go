@@ -67,6 +67,22 @@ type Config struct {
 	// ama sağlayıcıya iki kat istek giderdi — bkz. cmd/worker/main.go.
 	WorkersInProcess bool
 
+	// RateLimitFactor tüm hız limitlerini çarpar (varsayılan 1 = değişiklik yok).
+	//
+	// 🔴 YALNIZ GELİŞTİRME İÇİNDİR ve ÜRETİMDE 1 OLMAK ZORUNDADIR (aşağıdaki
+	// ortam kontrolü 1 dışındaki değeri açılışta REDDEDER).
+	// // test: config_test.go#TestRateLimitFactorIsDevelopmentOnly
+	//
+	// Neden var: `POST /orders` dakikada 20 ile sınırlı ve bu sınır bilinçli
+	// olarak dardır — her istek gerçek para harcar. Ama geliştirici bir akışı
+	// denerken bu sınırı dakikalar içinde tüketiyor ve testin ortasında
+	// kalıyor. Limitleri tek tek gevşetmek yerine tek bir katsayı var: oranlar
+	// korunur, üretim davranışı hiç değişmez.
+	//
+	// Katsayının kendisi ÜST SINIRLIDIR (100): "sınırsız" bir değer, korumayı
+	// fiilen kaldırırdı ve o karar bir yapılandırma satırına bırakılamaz.
+	RateLimitFactor int
+
 	WebhookHeroSMSSecret     string
 	WebhookHeroSMSAllowedIPs []string
 
@@ -155,6 +171,9 @@ func Load() (*Config, error) {
 
 		WorkersInProcess: v.boolean("WORKERS_IN_PROCESS", true),
 
+		// Hız limiti katsayısı — YALNIZ GELİŞTİRME İÇİN. Bkz. alan yorumu.
+		RateLimitFactor: v.count("RATE_LIMIT_FACTOR", 1, 1, 100),
+
 		WebhookHeroSMSSecret:     v.str("WEBHOOK_HEROSMS_SECRET", ""),
 		WebhookHeroSMSAllowedIPs: v.csv("WEBHOOK_HEROSMS_ALLOWED_IPS"),
 		TrustedProxies:           v.cidrs("TRUSTED_PROXIES", "127.0.0.1/32", "::1/128"),
@@ -168,6 +187,22 @@ func Load() (*Config, error) {
 
 		SentryDSN:      v.str("SENTRY_DSN", ""),
 		MetricsEnabled: v.boolean("METRICS_ENABLED", true),
+	}
+
+	// ─── Oturum süresi TABANI: 60 dakika (kullanıcı kararı, 10 Eylül 2026) ───
+	//
+	// 🔴 KISA OTURUM SESSİZ BİR ARIZADIR. Kullanıcı numara alır, kodu bekler,
+	// sekmeyi bir süre bırakır; döndüğünde oturumu kapanmışsa siparişi
+	// ekranda kaybolur ve ne olduğunu anlamaz — üstelik para harcanmıştır.
+	// Sipariş TTL'i sağlayıcıdan geliyor ve saatlerce sürebiliyor; oturumun
+	// ondan kısa olması akışı ortasından keser.
+	//
+	// Taban KONTROL EDİLİR, sessizce düzeltilmez: yanlış yapılandırma
+	// açılışta görünür olmalı (bu dosyanın geri kalanıyla aynı ilke).
+	// test: config_test.go#TestSessionTTLHasFloor
+	if c.SessionTTL < time.Hour {
+		v.fail("SESSION_TTL",
+			fmt.Sprintf("en az 60 dakika olmalı (verilen: %s)", c.SessionTTL))
 	}
 
 	// ─── Sağlayıcıya bağlı zorunluluklar ───
@@ -185,6 +220,14 @@ func Load() (*Config, error) {
 	// ─── Ortama bağlı zorunluluklar ───
 	// Üretimde sessizce devre dışı kalabilecek hiçbir güvenlik özelliği kabul edilmez.
 	if c.Env.IsProduction() {
+		// Hız limiti bir GÜVENLİK ve PARA korumasıdır; üretimde gevşetilmesi
+		// sessizce değil, açılışta ve gürültüyle reddedilir.
+		// // test: config_test.go#TestRateLimitFactorIsDevelopmentOnly
+		if c.RateLimitFactor != 1 {
+			v.fail("RATE_LIMIT_FACTOR",
+				fmt.Sprintf("üretimde 1 olmalı (verilen: %d) — hız limiti gevşetilemez",
+					c.RateLimitFactor))
+		}
 		v.require("RECAPTCHA_SITE_KEY", c.RecaptchaSiteKey)
 		v.require("RECAPTCHA_SECRET_KEY", c.RecaptchaSecretKey)
 		v.require("WEBHOOK_HEROSMS_SECRET", c.WebhookHeroSMSSecret)
@@ -361,6 +404,24 @@ func (v *validator) port(key string, def int) int {
 	}
 	if n < 1 || n > 65535 {
 		v.fail(key, fmt.Sprintf("port 1–65535 aralığında olmalı: %d", n))
+		return def
+	}
+	return n
+}
+
+// count sınırları belli bir tam sayı okur.
+func (v *validator) count(key string, def, min, max int) int {
+	s := v.str(key, "")
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		v.fail(key, fmt.Sprintf("tam sayı değil: %q", s))
+		return def
+	}
+	if n < min || n > max {
+		v.fail(key, fmt.Sprintf("%d–%d aralığında olmalı: %d", min, max, n))
 		return def
 	}
 	return n

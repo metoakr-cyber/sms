@@ -151,6 +151,7 @@ func (s *Service) Statement(ctx context.Context, userID int64, filter StatementF
 	rows, err := q.ListLedgerEntries(ctx, db.ListLedgerEntriesParams{
 		UserID:    userID,
 		EntryType: typeFilter,
+		Q:         filter.Q,
 		FromTs:    filter.From,
 		ToTs:      filter.To,
 		Lim:       filter.Limit,
@@ -160,9 +161,14 @@ func (s *Service) Statement(ctx context.Context, userID int64, filter StatementF
 		return nil, 0, apperr.Internal(err)
 	}
 
+	// 🔴 SAYIM LİSTEYLE AYNI SÜZGECİ ALIR. Önceden `FromTs`/`ToTs` burada
+	// YOKTU: tarih aralığı verildiğinde sayfalama yanlış toplam gösterirdi.
 	total, err := q.CountLedgerEntries(ctx, db.CountLedgerEntriesParams{
 		UserID:    userID,
 		EntryType: typeFilter,
+		Q:         filter.Q,
+		FromTs:    filter.From,
+		ToTs:      filter.To,
 	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)

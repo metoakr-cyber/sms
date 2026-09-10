@@ -577,7 +577,14 @@ func (h *Deposit) AdminList(c *gin.Context) {
 		status = &st
 	}
 
-	rows, total, err := h.svc.ListForAdmin(c.Request.Context(), status, limit, offset)
+	// `?q=` — kullanıcı e-postası/adı. Boş dize NIL'e çevrilir: temizlenmiş bir
+	// arama kutusu boş parametre gönderir ve bu "arama yok" demektir.
+	var ara *string
+	if v := strings.TrimSpace(c.Query("q")); v != "" {
+		ara = &v
+	}
+
+	rows, total, err := h.svc.ListForAdmin(c.Request.Context(), status, ara, limit, offset)
 	if err != nil {
 		h.r.Fail(c, err)
 		return

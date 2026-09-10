@@ -17,8 +17,8 @@
 import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { formatDateTime, formatMoney } from '@/lib/format';
-import { Button, Card, Empty } from '@/components/ui';
+import { formatDateTime, formatMoney, formatPhone } from '@/lib/format';
+import { Button, Card, Empty, Field } from '@/components/ui';
 import { Modal } from '@/components/modal';
 import { CodeWaiter } from '@/components/code-waiter';
 import { ServiceIcon } from '@/components/service-icon';
@@ -29,7 +29,10 @@ import {
   Sayfalama,
   SAYFA_BOYUTU,
   SayfaBasligi,
+  Secim,
+  SuzgecCubugu,
   VeriTablosu,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { DurumTonu, Sunum, Sutun } from '@/components/yonetim';
 import type { Order, OrderList } from '@/lib/types';
@@ -55,6 +58,20 @@ const BILINMEYEN: { etiket: string; ton: DurumTonu } = {
   etiket: 'Bilinmeyen durum',
   ton: 'neutral',
 };
+
+/**
+ * Durum süzgeci seçenekleri.
+ *
+ * 🔴 ETİKETLER `DURUM`DAN OKUNUR, ELLE YAZILMAZ. İki liste ayrı yazılsaydı
+ * süzgeçte "İptal" seçip listede "İptal edildi" rozeti görürdünüz — bu panelin
+ * ölçülmüş ve kapatılmış hatası tam olarak budur (bkz. `veri-tablosu.tsx`).
+ * Sıra `DURUM`un tanım sırasıdır: kullanıcının en sık aradığı "Kod bekleniyor"
+ * başta durur.
+ */
+const DURUM_SUZGECLERI: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'Tüm durumlar' },
+  ...Object.entries(DURUM).map(([kod, d]) => ({ value: kod, label: d.etiket })),
+];
 
 /**
  * FAILED DIŞARIDA: `CodeWaiter` yalnız COMPLETED/CANCELLED/REFUNDED'ı "bitmiş"
@@ -101,6 +118,31 @@ export default function OrdersPage() {
   const [offset, setOffset] = React.useState(0);
   const [acik, setAcik] = React.useState<Order | null>(null);
 
+  // İKİ AYRI DURUM: `aramaGirdisi` kutuya yazılan, `arama` sunucuya giden.
+  // Tek durum kullanılsaydı her tuşa basış bir istek olurdu.
+  const [aramaGirdisi, setAramaGirdisi] = React.useState('');
+  const [arama, setArama] = React.useState('');
+  const [durum, setDurum] = React.useState('');
+
+  // 350 ms: `/yonetim/kullanicilar` ile AYNI gecikme. Yazmayı bırakınca arama
+  // kendiliğinden yapılır; ayrı bir "Ara" düğmesi yoktur.
+  // `setOffset(0)`: süzgeç değişince 3. sayfada kalmak, sonucu olan bir aramada
+  // BOŞ ekran gösterir — kullanıcı bunu "sonuç yok" sanar.
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setArama(aramaGirdisi.trim());
+      setOffset(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [aramaGirdisi]);
+
+  const suzgecTemizle = React.useCallback(() => {
+    setAramaGirdisi('');
+    setArama('');
+    setDurum('');
+    setOffset(0);
+  }, []);
+
   // Modal içinde durum değişmiş olabilir: kod geldi, sipariş iptal edildi,
   // süre doldu. Kapanışta tazelemezsek liste hâlâ "Kod bekleniyor" gösterir.
   const detayiKapat = React.useCallback(() => {
@@ -115,15 +157,28 @@ export default function OrdersPage() {
   // §6.3 "tek bileşen, tek `limit`": aynı panelde iki sayfa boyutu, "kaç kayıt
   // kaldı" sorusunun ekrandan ekrana farklı cevaplanmasıdır.
   const q = useQuery({
-    queryKey: ['orders', { limit: SAYFA_BOYUTU, offset }],
-    queryFn: () => apiFetch<OrderList>(`/orders?limit=${SAYFA_BOYUTU}&offset=${offset}`),
+    queryKey: ['orders', { limit: SAYFA_BOYUTU, offset, arama, durum }],
+    queryFn: () => {
+      // 🔴 SÜZGEÇ SUNUCUDA UYGULANIR (`GET /orders?q=&status=`), istemcide
+      // DEĞİL. İstemcide süzmek yalnız o sayfadaki 25 satırı arardı: kullanıcı
+      // "numaram yok" sonucunu alır, oysa numara 2. sayfadadır. Sayfalı bir
+      // listede istemci araması yanlış cevap veren bir aramadır.
+      const p = new URLSearchParams({
+        limit: String(SAYFA_BOYUTU),
+        offset: String(offset),
+      });
+      if (arama) p.set('q', arama);
+      if (durum) p.set('status', durum);
+      return apiFetch<OrderList>(`/orders?${p.toString()}`);
+    },
     // Sayfa değişince liste boşalıp zıplamasın; eski veri yenisi gelene dek kalır.
     placeholderData: keepPreviousData,
   });
 
   const toplam = q.data?.total ?? 0;
   const hata = apiHatasi(q.error);
-  const sayfali = toplam > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(toplam);
+  const etkinSuzgec = (arama ? 1 : 0) + (durum ? 1 : 0);
 
   /*
    * SÜTUNLAR — tek veri tanımı. Özgün dosyada aynı altı alan İKİ KEZ yazılıydı
@@ -167,7 +222,12 @@ export default function OrdersPage() {
         // numaralar kayar (§3.5). Hizası SOLDA kalır — bu bir kimlik, tutar değil.
         sayisal: true,
         // `select-text`: mobilde uzun basıp kopyalamak en yaygın yol.
-        hucre: (o) => <span className="select-text font-medium">{o.phoneNumber}</span>,
+        // Gruplu gösterim (`+90 534 794 92 67`): kesintisiz 12 hane taranamaz.
+        hucre: (o) => (
+          <span className="select-text font-medium">
+            {formatPhone(o.phoneNumber, o.phoneCode)}
+          </span>
+        ),
       },
       {
         anahtar: 'tutar',
@@ -200,8 +260,56 @@ export default function OrdersPage() {
   );
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
+    <div className="flex flex-col gap-5">
       <SayfaBasligi baslik="Siparişlerim" aciklama="Aldığınız numaralar ve gelen kodlar." />
+
+      {/*
+        SÜZGEÇ ÇUBUĞU AYRI KARTTA — `/yonetim/kullanicilar` ile aynı yerleşim.
+        Liste kartının içine konsaydı, uzun bir listede süzgeç yukarı kayıp
+        ekrandan çıkardı ve "arama nerede?" sorusu doğardı.
+      */}
+      <Card>
+        <SuzgecCubugu etkinSayisi={etkinSuzgec} onTemizle={suzgecTemizle}>
+          {/*
+            `sm:self-start`: `SuzgecCubugu` tabana hizalar (`items-end`); `Field`
+            ipucu metnini kutunun ALTINA koyduğu için arama kutusu seçim
+            kutusundan ~18px yukarı kayar. Tepeden hizalamak farkı 2px'e indirir.
+          */}
+          <div className="w-full sm:w-80 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={aramaGirdisi}
+              onChange={(e) => setAramaGirdisi(e.target.value)}
+              placeholder="Numara, servis veya ülke"
+              // Numara girilen bir kutuda iOS'un ilk harfi büyütmesi ve
+              // otomatik düzeltmesi yalnız zarar verir.
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              hint="Yazmayı bıraktığınızda arama kendiliğinden yapılır."
+            />
+          </div>
+
+          <div className="w-full sm:w-56 sm:self-start">
+            <Secim
+              etiket="Durum"
+              value={durum}
+              onChange={(e) => {
+                setDurum(e.target.value);
+                setOffset(0);
+              }}
+            >
+              {DURUM_SUZGECLERI.map((d) => (
+                <option key={d.value || 'tumu'} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </Secim>
+          </div>
+        </SuzgecCubugu>
+      </Card>
 
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -223,13 +331,27 @@ export default function OrdersPage() {
           // konuşmasın (`veri-tablosu.tsx` `duyuru` notu).
           duyuru={!sayfali}
           bos={
-            // §6.3: burada süzgeç YOK, yani boş liste her zaman "gerçekten
-            // boş"tur. İpucu ikinci bir düğme eklemez, üstteki gezintiyi adıyla
-            // gösterir — aynı işi yapan iki kontrol tutarsızlık üretir (§9.2).
-            <Empty
-              title="Henüz siparişiniz yok"
-              hint="Üstteki “Numara al” bölümünden bir numara aldığınızda siparişleriniz burada listelenir."
-            />
+            /*
+              §6.3: "SÜZGEÇTEN DOLAYI BOŞ" İLE "GERÇEKTEN BOŞ" AYNI EKRAN
+              DEĞİLDİR. Siparişi olan ama aramasıyla eşleşme bulamayan bir
+              kullanıcıya "Henüz siparişiniz yok" demek, doğru olmadığı gibi
+              yanlış eylemi de önerir: yapması gereken numara almak değil,
+              süzgeci temizlemektir. Doğru eylem `SuzgecCubugu`'nun kendi
+              "Süzgeçleri temizle" düğmesidir — burada ikinci bir kontrol
+              açılmaz, aynı işi yapan iki düğme tutarsızlık üretir (§9.2).
+            */
+            etkinSuzgec > 0 ? (
+              <Empty
+                title="Bu aramaya uyan sipariş yok"
+                hint="Arama metnini kısaltmayı ya da durum süzgecini “Tüm durumlar” yapmayı deneyin."
+              />
+            ) : (
+              // İpucu ikinci bir düğme eklemez, üstteki gezintiyi adıyla gösterir.
+              <Empty
+                title="Henüz siparişiniz yok"
+                hint="Üstteki “Numara al” bölümünden bir numara aldığınızda siparişleriniz burada listelenir."
+              />
+            )
           }
         />
 

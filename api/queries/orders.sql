@@ -79,15 +79,55 @@ WHERE provider_id = @provider_id AND remote_order_id = @remote_order_id;
 -- tipi bekleyen tüm çağrı yerleri kırılır. `embed` `db.Order`'ı olduğu gibi
 -- korur, `icon_url`'i yanına ekler — ve şemaya sütun eklendiğinde bu sorgu
 -- kendiliğinden güncel kalır.
+--
+-- SÜZGEÇLER — `sqlc.narg()` + "NULL ise süzme" deseni (CLAUDE.md sqlc kuralları).
+--
+-- ÜÇ SÜZGEÇ VARDIR VE `only_active` AYRI DURMAK ZORUNDADIR:
+--   status       → TEK durum eşleşmesi ("İptal edilenleri göster")
+--   only_active  → "AKTİF" = PENDING **veya** ACTIVE, yani tek durum DEĞİL
+--   q            → serbest metin
+-- `ListTicketsForAdmin`'deki `only_pending` ile aynı gerekçe: bir kullanıcı
+-- kavramı ("aktif siparişim") birden çok duruma karşılık geliyorsa, onu tek
+-- durumlu süzgece sıkıştırmak listeyi sessizce eksiltir. ACTIVE, kiralık
+-- siparişin süren dönemidir ve özet ekranında gizlenemez.
+-- Go'da string birleştirerek SQL kurulmaz; `ListUsers` ile AYNI desen.
+--
+-- 🔴 `user_id` KOŞULU HER İKİ SÜZGEÇTEN ÖNCE GELİR ve kaldırılamaz: sahiplik
+-- sorgunun parçasıdır (değişmez #7). Hiçbir `q`/`status` bileşimi başka bir
+-- kullanıcının siparişini döndüremez.
+--
+-- İNDEKS EKLENMEDİ: `ILIKE '%...%'` bir btree indeksi kullanamaz zaten, ama
+-- tarama `user_id` ile ZATEN daraltılmış küçük bir kümede olur (bir kullanıcının
+-- kendi siparişleri) — planlayıcı `orders_user_idx` (user_id, created_at DESC) ile satırları
+-- getirir, süzgeç o küme üzerinde çalışır. Gerçek bir sorun ölçülürse çare
+-- `pg_trgm` GIN indeksidir, gövdede string birleştirmek değil.
 SELECT sqlc.embed(o), coalesce(s.icon_url, '')::text AS icon_url
 FROM orders o
 LEFT JOIN services s ON s.code = o.service_code
 WHERE o.user_id = @user_id
+  AND (sqlc.narg('status')::order_status IS NULL OR o.status = sqlc.narg('status')::order_status)
+  AND (NOT sqlc.arg('only_active')::boolean OR o.status IN ('PENDING', 'ACTIVE'))
+  AND (sqlc.narg('q')::text IS NULL
+       OR o.service_name::text ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR o.phone_number::text ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR o.country_name::text ILIKE '%' || sqlc.narg('q')::text || '%')
 ORDER BY o.created_at DESC
 LIMIT @lim OFFSET @off;
 
 -- name: CountUserOrders :one
-SELECT count(*) FROM orders WHERE user_id = @user_id;
+--
+-- 🔴 SÜZGEÇLER `ListUserOrders` İLE BİREBİR AYNI OLMAK ZORUNDA. Ayrışırsa
+-- sayfalama yalan söyler: "1–25 / 300" yazarken liste 4 satır gösterir ve
+-- "Sonraki" boş sayfa açar. İki sorgu tek bir kavramın iki yarısıdır.
+-- test: order_integration_test.go#TestListUserOrdersFiltreleri
+SELECT count(*) FROM orders o
+WHERE o.user_id = @user_id
+  AND (sqlc.narg('status')::order_status IS NULL OR o.status = sqlc.narg('status')::order_status)
+  AND (NOT sqlc.arg('only_active')::boolean OR o.status IN ('PENDING', 'ACTIVE'))
+  AND (sqlc.narg('q')::text IS NULL
+       OR o.service_name::text ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR o.phone_number::text ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR o.country_name::text ILIKE '%' || sqlc.narg('q')::text || '%');
 
 -- name: SetOrderStatus :one
 -- Durum yazımı — YALNIZ domain/order.Transition doğruladıktan sonra çağrılır.

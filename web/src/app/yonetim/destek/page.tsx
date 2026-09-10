@@ -31,7 +31,7 @@ import * as React from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
-import { Card, Button, Alert, Badge, Skeleton, Empty } from '@/components/ui';
+import { Card, Button, Alert, Badge, Skeleton, Empty, Field } from '@/components/ui';
 import { Modal } from '@/components/modal';
 import {
   SayfaBasligi,
@@ -45,6 +45,7 @@ import {
   DurumRozeti,
   HataDurumu,
   apiHatasi,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { Sutun } from '@/components/yonetim';
 
@@ -105,12 +106,15 @@ const FILTERS: Array<{ value: Filter; label: string }> = [
   { value: 'all', label: 'Tümü' },
 ];
 
-function queryFor(f: Filter, offset: number): string {
+function queryFor(f: Filter, offset: number, ara: string): string {
   // Sayfa boyutu artık ekranın değil, katmanın kararı: tek panelde tek `limit`
   // (§6.3). Yerel `PAGE = 20` sabiti silindi.
   const qs = new URLSearchParams({ limit: String(SAYFA_BOYUTU), offset: String(offset) });
   if (f === 'pending') qs.set('pending', 'true');
   else if (f !== 'all') qs.set('status', f);
+  // Boş dize GÖNDERİLMEZ: sunucuda "arama yok" ile "boş dizeyle eşleş" farklı
+  // şeylerdir ve boş parametre ikincisine benzer.
+  if (ara) qs.set('q', ara);
   return qs.toString();
 }
 
@@ -121,31 +125,34 @@ export default function AdminTicketsPage() {
   const [offset, setOffset] = React.useState(0);
   const [openId, setOpenId] = React.useState<string | null>(null);
 
+
+  // İKİ AYRI DURUM: `aramaGirdisi` kutuya yazılan, `arama` sunucuya giden.
+  // 350 ms — panelin ve yönetimin her yerinde aynı gecikme.
+  const [aramaGirdisi, setAramaGirdisi] = React.useState('');
+  const [arama, setArama] = React.useState('');
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setArama(aramaGirdisi.trim());
+      setOffset(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [aramaGirdisi]);
+
   const q = useQuery({
-    queryKey: ['admin-tickets', { filter, offset }],
-    queryFn: () => apiFetch<AdminTicketList>(`/admin/tickets?${queryFor(filter, offset)}`),
+    queryKey: ['admin-tickets', { filter, arama, offset }],
+    queryFn: () => apiFetch<AdminTicketList>(`/admin/tickets?${queryFor(filter, offset, arama)}`),
     placeholderData: keepPreviousData,
   });
 
   const total = q.data?.total ?? 0;
 
   /*
-   * `Sayfalama` GÖRÜNÜR MÜ? — `sayfalama.tsx` tek sayfaya sığan listede kendini
-   * hiç çizmez, yani bu ifade "sayfalama ekranda var mı" sorusunun aynısıdır.
-   * İki yerde birden kullanılıyor ve ikisi de AYNI hatayı kapatıyor:
-   *
-   *  1. ÇİFT CANLI BÖLGE. `VeriTablosu` ("12 kayıt listelendi.") ve `Sayfalama`
-   *     ("1–25 / 87") ikisi de `aria-live="polite"`. Süzgeç değişince ekran
-   *     okuyucu iki duyuruyu sıraya alır; ikincisi birincinin üstüne biner.
-   *     `kullanicilar` ve `denetim` bunu `duyuru={!sayfali}` ile çözmüştü, bu
-   *     ekran kuralın dışında kalmıştı.
-   *  2. YANLIŞ SAYI. `VeriTablosu`nun duyurusu SAYFADAKİ satır sayısıdır; 87
-   *     kayıtlık listede her sayfada "25 kayıt listelendi" der. Sayfalı liste
-   *     tam olarak bu ifadenin yanlış olduğu durumdur — ve orada susuyor.
-   *     Kalan durumda (tek sayfa) sayfadaki sayı ZATEN toplama eşittir, yani
-   *     duyuru açık kaldığı her yerde doğrudur.
+   * `Sayfalama` GÖRÜNÜR MÜ? Koşul bileşenin kendisinden okunur
+   * (`sayfalamaGorunur`), burada kopyalanmaz — kopya, bileşenin gizlenme
+   * kuralı değiştiği gün sessizce yanlış olur ve iki canlı bölge birden
+   * konuşmaya başlar.
    */
-  const sayfali = total > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(total);
 
   /*
    * SÜTUN TANIMI = TEK VERİ KAYNAĞI (§6.1 kural 2).
@@ -238,14 +245,40 @@ export default function AdminTicketsPage() {
   ];
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <SayfaBasligi
         baslik="Destek talepleri"
         aciklama="Kullanıcı taleplerini okuyun, yanıtlayın ve sonuçlananları kapatın."
       />
 
       <Card className="flex flex-col gap-6">
-        <SuzgecCubugu sag={<KayitSayaci toplam={total} />}>
+        <SuzgecCubugu
+          sag={<KayitSayaci toplam={total} />}
+          etkinSayisi={(filter === 'pending' ? 0 : 1) + (arama ? 1 : 0)}
+          onTemizle={() => {
+            // Varsayılan görünüm 'pending' — "temizle" onu geri getirir,
+            // `all` yapmaz: yöneticinin kuyruğu varsayılan ekrandır.
+            setFilter('pending');
+            setAramaGirdisi('');
+            setArama('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={aramaGirdisi}
+              onChange={(e) => setAramaGirdisi(e.target.value)}
+              placeholder="Konu, e-posta veya kullanıcı adı"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              hint="Yazmayı bıraktığınızda arama kendiliğinden yapılır."
+            />
+          </div>
+
           <Secim
             etiket="Görünüm"
             className="sm:w-64"

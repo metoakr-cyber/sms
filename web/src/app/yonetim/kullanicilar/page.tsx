@@ -30,6 +30,7 @@ import {
   Secim,
   SuzgecCubugu,
   VeriTablosu,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { DurumTonu, Sunum, Sutun } from '@/components/yonetim';
 import type { AdminUser } from '@/lib/types';
@@ -245,7 +246,7 @@ export default function AdminUsersPage() {
   const toplam = q.data?.total ?? 0;
   const satirlar = q.data?.items;
   const etkinSuzgec = (arama ? 1 : 0) + (durum ? 1 : 0);
-  const sayfali = toplam > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(toplam);
 
   /*
    * SÜTUNLAR — tek veri tanımı.

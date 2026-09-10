@@ -33,6 +33,7 @@ import {
   SAYFA_BOYUTU,
   SayfaBasligi,
   VeriTablosu,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { Sunum, Sutun } from '@/components/yonetim';
 import type { AuditLog } from '@/lib/types';
@@ -414,7 +415,7 @@ export default function AdminAuditPage() {
   const toplam = q.data?.total ?? 0;
   const satirlar = q.data?.items;
   const suzgecSayisi = Object.keys(uygulanan).length;
-  const sayfali = toplam > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(toplam);
 
   /*
    * `apiFetch` her hatayı `ApiError`'a normalize eder; yine de sorgu katmanı

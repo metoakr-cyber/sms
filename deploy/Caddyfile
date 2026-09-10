@@ -7,6 +7,17 @@
 # {$DOMAIN} ve {$ACME_EMAIL} caddy servisinin ortam değişkenlerinden gelir
 # (deploy/docker-compose.prod.yml). Sertifika, HTTP→HTTPS yönlendirmesi ve
 # yenileme Caddy'nin varsayılanıdır; elle yazılmaz.
+#
+# ─── YUKARI AKIŞ ADRESLERİ İKİ TOPOLOJİYE BİRDEN HİZMET EDER ───
+# Docker'da servis adları (`api:8080`), tekil Ubuntu sunucuda yerel portlar
+# (`127.0.0.1:8091`). Varsayılanlar docker içindir; `deploy/kurulum.sh`
+# systemd biriminde {$API_UPSTREAM} ve {$WEB_UPSTREAM} değişkenlerini
+# geçirerek aynı dosyayı Docker'sız kuruluma uydurur.
+#
+# 🔴 DOSYA KOPYALANMADI, DEĞİŞKENLEŞTİRİLDİ. İkinci bir Caddyfile, SSE
+# tamponlaması ve güvenlik başlıkları gibi bu dosyadaki ölçülmüş kararların
+# yalnız birinde güncellenmesi demekti — ve o kararların sessizce kaybolması
+# bu projedeki en pahalı arıza sınıfıdır (bkz. flush_interval notu).
 {
 	email {$ACME_EMAIL}
 
@@ -151,7 +162,7 @@ www.{$DOMAIN} {
 		# ve yanlışlıkla silinemeyeceğini görünür kılar.
 		@akis path_regexp ^/api/v1/orders/[^/]+/stream$
 		handle @akis {
-			import api_vekil api:8080
+			import api_vekil {$API_UPSTREAM:api:8080}
 		}
 
 		# ─── API ───
@@ -159,17 +170,17 @@ www.{$DOMAIN} {
 		# Next'e düşer, Next'in kendi rewrite'ı üzerinden İKİNCİ bir vekil
 		# atlanır ve SSE o yolda Next tarafından tamponlanır.
 		handle /api/* {
-			import api_vekil api:8080
+			import api_vekil {$API_UPSTREAM:api:8080}
 		}
 
 		# Sağlık uçları yük dengeleyici / izleme için dışarıdan erişilebilir.
 		# /healthz canlılık (bağımlılığa bakmaz), /readyz hazırlık
 		# (postgres + redis ping).
 		handle /healthz {
-			import api_vekil api:8080
+			import api_vekil {$API_UPSTREAM:api:8080}
 		}
 		handle /readyz {
-			import api_vekil api:8080
+			import api_vekil {$API_UPSTREAM:api:8080}
 		}
 
 		# ─── /metrics ve /debug DIŞARIYA KAPALI ───
@@ -185,7 +196,7 @@ www.{$DOMAIN} {
 
 		# ─── Ön yüz ───
 		handle {
-			reverse_proxy web:3000
+			reverse_proxy {$WEB_UPSTREAM:web:3000}
 		}
 	}
 

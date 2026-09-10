@@ -298,15 +298,21 @@ func (s *Service) Reject(ctx context.Context, in RejectInput) (ReviewResult, err
 /* ═══════════════════════ Yönetim listesi ═══════════════════════ */
 
 // ListForAdmin talepleri duruma göre süzer ve sayfalar.
-func (s *Service) ListForAdmin(ctx context.Context, status *db.DepositStatus, limit, offset int32) ([]db.ListDepositsForAdminRow, int64, error) {
+// `ara` NIL ise arama uygulanmaz. Sayım listeyle AYNI süzgeci alır; ayrışırsa
+// sayfalama yalan söyler (queries/deposits.sql notu).
+func (s *Service) ListForAdmin(
+	ctx context.Context, status *db.DepositStatus, ara *string, limit, offset int32,
+) ([]db.ListDepositsForAdminRow, int64, error) {
 	q := s.tx.Queries()
 	rows, err := q.ListDepositsForAdmin(ctx, db.ListDepositsForAdminParams{
-		Status: status, Lim: limit, Off: offset,
+		Status: status, Q: ara, Lim: limit, Off: offset,
 	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
-	total, err := q.CountDepositsForAdmin(ctx, status)
+	total, err := q.CountDepositsForAdmin(ctx, db.CountDepositsForAdminParams{
+		Status: status, Q: ara,
+	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}

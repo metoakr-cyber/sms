@@ -233,6 +233,28 @@ teyit etmediyse sipariş KAPALI SAYILMAZ (F6); iptal reddedildiyse iade ALINMIŞ
 KARARI savunur) var. Biri atlanabilir yolları (veri taşıma, admin kaydı, ileride `prolong`),
 diğeri kısıtın düşürüldüğü/unutulduğu durumu kapatır.
 
+### 2026-09-10 · Hukuki metinler panelde de açılıyor — metin TEK kaynakta
+
+Kullanıcı kararı: panelde çalışan müşteri, Kullanım Şartları ve Gizlilik Politikası'nı okumak
+için paneli terk etmesin. İki yeni rota açıldı — `/panel/kullanim-sartlari` ve `/panel/gizlilik`
+— ve panel içindeki bağlantılar (profil menüsü + sayfa altı yardımcı şerit, ikisi de
+`panel-header.tsx` içindeki `IKINCIL` dizisinden okur) artık bunlara gidiyor. Panel **dışındaki**
+bağlantılar (altbilgi `site-nav.tsx`, kayıt formu) genel sürümde kaldı: indekslenen sayfalar
+onlar.
+
+**Metin kopyalanmadı.** Gövde `web/src/components/yasal/{kullanim-sartlari,gizlilik}.tsx` içine
+taşındı; iki yüzey de aynı bileşeni çiziyor. Sayfa dosyalarında yalnız üstveri, `h1` ve yerleşim
+kabı kaldı.
+
+Ayrıştırmanın sınırı bilinçli: **veri değil, sunumla birlikte paylaşıldı.** Metnin içinde bölüm
+NUMARASIYLA atıf var ("6. bölümdeki kurallar", "7. bölüm") ve o numaralar sunum sırasında dizi
+indisinden üretiliyor. Yalnız dizileri paylaşsaydık, bir yüzeyde sıra/numaralandırma değiştiği
+anda atıflar sessizce başka bölümü işaret ederdi — ne tip denetimi ne test görür. `h1` bileşenin
+dışında bırakıldı (genel sayfa pazarlama başlığını, panel `SayfaBasligi`yi çiziyor).
+
+Kardeş hukuki bağlantı (şartlar ↔ gizlilik) yüzeye göre `yasal/yuzey.ts` içindeki `yasalYol()`
+ile kuruluyor; `/sss` ve `/iletisim` her yüzeyde genel siteye gidiyor (panel karşılıkları yok).
+
 ---
 
 ## 2. Domain sözlüğü

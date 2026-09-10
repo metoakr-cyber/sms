@@ -78,13 +78,33 @@ import {
   SAYFA_BOYUTU,
   SayfaBasligi,
   Sayfalama,
+  Secim,
+  SuzgecCubugu,
   VeriTablosu,
   apiHatasi,
   type Sutun,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { Deposit, PublicDepositMethod } from '@/lib/types';
 
 const depositsKey = ['wallet', 'deposits'] as const;
+
+/**
+ * Durum süzgeci seçenekleri — `GET /wallet/deposits?status=`.
+ *
+ * 🔴 SATIR ETİKETLERİ HÂLÂ SUNUCUDAN GELİR (`statusLabel`); bu liste onları
+ * ÜRETMEZ, yalnız "hangi durumlar süzülebilir" sorusunu cevaplar — bir seçim
+ * kutusu `<option>` metni olmadan kurulamaz.
+ * Kaynak: `api/internal/transport/http/handler/deposit.go#depositStatusLabel`.
+ * Oraya yeni bir durum eklenirse buraya da eklenmelidir.
+ */
+const DURUM_SUZGECLERI: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'Tüm durumlar' },
+  { value: 'PENDING', label: 'Onay bekliyor' },
+  { value: 'COMPLETED', label: 'Onaylandı' },
+  { value: 'REJECTED', label: 'Reddedildi' },
+  { value: 'REFUNDED', label: 'İade edildi' },
+];
 
 /** Dekont sınırları — sunucudaki `storage.MaxReceiptBytes` ve sihirli bayt kontrolü ile aynı. */
 const MAX_RECEIPT_BYTES = 5 * 1024 * 1024;
@@ -341,10 +361,19 @@ export default function BakiyeYukleSayfasi() {
   });
 
   const [offset, setOffset] = React.useState(0);
+  const [durum, setDurum] = React.useState('');
   const liste = useQuery({
-    queryKey: [...depositsKey, { limit: SAYFA_BOYUTU, offset }],
-    queryFn: () =>
-      apiFetch<TalepListesi>(`/wallet/deposits?limit=${SAYFA_BOYUTU}&offset=${offset}`),
+    queryKey: [...depositsKey, { limit: SAYFA_BOYUTU, offset, durum }],
+    queryFn: () => {
+      // Süzgeç SUNUCUDA uygulanır; istemcide süzmek yalnız bu sayfadaki 25
+      // satırı görürdü ve "talebim yok" sonucunu verirdi.
+      const p = new URLSearchParams({
+        limit: String(SAYFA_BOYUTU),
+        offset: String(offset),
+      });
+      if (durum) p.set('status', durum);
+      return apiFetch<TalepListesi>(`/wallet/deposits?${p.toString()}`);
+    },
     placeholderData: keepPreviousData,
   });
 
@@ -452,7 +481,7 @@ export default function BakiyeYukleSayfasi() {
   const yontemHatasi = apiHatasi(yontemler.error);
 
   const toplam = liste.data?.total ?? 0;
-  const sayfali = toplam > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(toplam);
 
   const configAnahtarlari = yontem
     ? [...CONFIG_ORDER.filter((k) => yontem.config[k]),
@@ -599,15 +628,15 @@ export default function BakiyeYukleSayfasi() {
   ];
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       {/*
         ═══════════════════ İKİ ZON, TEK SOL KENAR ═══════════════════
-        Sayfa `max-w-5xl` (1024px) — `/panel/cuzdan`, `/panel/siparisler`,
-        `/panel/numara-al` ve `/yonetim/talepler` ile AYNI. Eskiden `max-w-3xl`
-        idi ve paneldeki EN DAR ekrandı; §10 kontrol listesi içerik genişliğinin
-        ekrandan ekrana zıplamasını bir kusur sayıyor.
+        Sayfa artık kendi genişlik kabını AÇMAZ; kabuğun `main`i tam
+        genişliktir ve bütün panel ekranları aynı sol/sağ kenarı paylaşır
+        (`panel-shell.tsx` yerleşim notu). §10 kontrol listesi içerik
+        genişliğinin ekrandan ekrana zıplamasını bir kusur sayıyor.
 
-        Ama sayfanın tamamı 1024'e açılmaz: giriş akışı (okuma + form + IBAN)
+        Ama sayfanın tamamı kenardan kenara açılmaz: giriş akışı (okuma + form + IBAN)
         `max-w-3xl` bir sütunda kalır, YALNIZ tablo tam genişliği kullanır.
         Gerekçe ölçülmüş, ikisi de ekran görüntüsüyle görüldü:
           · 704 px'lik tabloda "Yöntem" sütunu 55 px'e düşüyor ve
@@ -865,6 +894,38 @@ export default function BakiyeYukleSayfasi() {
           <KayitSayaci toplam={toplam} />
         </div>
 
+        {/*
+          SÜZGEÇ LİSTE KARTININ İÇİNDE — ayrı kart AÇILMAZ. Bu sayfada üstte
+          zaten yükleme formu var; üçüncü bir kart formla liste arasına girip
+          "yükleme yap" akışını böler. Tek seçim kutusu kendi kartını hak etmez.
+        */}
+        <SuzgecCubugu
+          className="mt-4"
+          etkinSayisi={durum ? 1 : 0}
+          onTemizle={() => {
+            setDurum('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-60 sm:self-start">
+            <Secim
+              etiket="Durum"
+              value={durum}
+              onChange={(e) => {
+                setDurum(e.target.value);
+                // Süzgeç değişince 3. sayfada kalmak BOŞ ekran gösterir.
+                setOffset(0);
+              }}
+            >
+              {DURUM_SUZGECLERI.map((d) => (
+                <option key={d.value || 'tumu'} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </Secim>
+          </div>
+        </SuzgecCubugu>
+
         <VeriTablosu
           className="mt-6"
           baslik="Yükleme talepleriniz"
@@ -875,13 +936,24 @@ export default function BakiyeYukleSayfasi() {
           hata={apiHatasi(liste.error)}
           duyuru={!sayfali}
           bos={
-            /* Süzgeç YOK, yani tek bir boş hâl var ve öğretmesi gereken şey
-               akışın kendisi: önce para gönderilir, sonra talep bildirilir
-               (§6.3). Eylem sunulmaz — form zaten bu sayfanın üstünde duruyor. */
-            <Empty
-              title="Henüz talep yok"
-              hint="Yukarıdaki formla ilk yükleme talebinizi oluşturduğunuzda, durumu ve dekontu bu listede takip edersiniz."
-            />
+            /* §6.3: SÜZGEÇTEN DOLAYI BOŞ ≠ GERÇEKTEN BOŞ. Talebi olan ama
+               seçtiği durumda kaydı olmayan kullanıcıya "Henüz talep yok"
+               demek yanlıştır ve yanlış eylemi önerir. Gerçekten boşta
+               öğretilmesi gereken şey akışın kendisidir: önce para gönderilir,
+               sonra talep bildirilir. İki hâlde de ayrı bir düğme sunulmaz —
+               form zaten bu sayfanın üstünde, temizleme düğmesi süzgeç
+               çubuğunun içinde duruyor (§9.2). */
+            durum ? (
+              <Empty
+                title="Bu durumda talep yok"
+                hint="Durumu “Tüm durumlar” yaparak bütün yükleme taleplerinizi görebilirsiniz."
+              />
+            ) : (
+              <Empty
+                title="Henüz talep yok"
+                hint="Yukarıdaki formla ilk yükleme talebinizi oluşturduğunuzda, durumu ve dekontu bu listede takip edersiniz."
+              />
+            )
           }
         />
 

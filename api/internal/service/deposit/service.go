@@ -239,15 +239,26 @@ func (s *Service) Get(ctx context.Context, userID int64, publicID uuid.UUID) (db
 }
 
 // List kullanıcının kendi taleplerini sayfalı döner.
-func (s *Service) List(ctx context.Context, userID int64, limit, offset int32) ([]db.Deposit, int64, error) {
+//
+// `status` NIL ise durum süzgeci UYGULANMAZ. Sayım listeyle AYNI süzgeci alır;
+// ayrışırsa sayfalama yalan söyler (queries/deposits.sql notu).
+//
+// 🔴 `userID` süzgeçten AYRI bir parametredir ve sorguya her zaman girer
+// (değişmez #7); hiçbir `status` değeri başkasının talebini döndüremez.
+// test: deposit_integration_test.go#TestListUserDepositsDurumSuzgeci
+func (s *Service) List(
+	ctx context.Context, userID int64, status *db.DepositStatus, limit, offset int32,
+) ([]db.Deposit, int64, error) {
 	q := s.tx.Queries()
 	rows, err := q.ListUserDeposits(ctx, db.ListUserDepositsParams{
-		UserID: userID, Lim: limit, Off: offset,
+		UserID: userID, Status: status, Lim: limit, Off: offset,
 	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
-	total, err := q.CountUserDeposits(ctx, userID)
+	total, err := q.CountUserDeposits(ctx, db.CountUserDepositsParams{
+		UserID: userID, Status: status,
+	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}

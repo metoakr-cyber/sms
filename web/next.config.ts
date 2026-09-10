@@ -80,6 +80,15 @@ const config: NextConfig = {
   // hiçbir sorun yokken. check.sh bu yüzden NEXT_DIST_DIR ile ayrı bir dizine
   // derler.
   distDir: process.env.NEXT_DIST_DIR ?? '.next',
+  // Next'in geliştirme rozetini (sol altta duran "N" göstergesi) kapatır.
+  //
+  // Sürüm notu: `buildActivity` ve `appIsrStatus` alanları 15.2'de kullanım
+  // dışı bırakıldı; bu sürümde tek kapatma yolu `false` vermektir
+  // (next/dist/server/config-shared.d.ts:891 — "To disable, set
+  // `devIndicators` to `false`"). Eski alanları yazmak sessizce etkisiz kalır.
+  //
+  // Yalnız geliştirmeyi etkiler; üretim derlemesinde bu gösterge zaten yoktur.
+  devIndicators: false,
   reactStrictMode: true,
   poweredByHeader: false,
   async rewrites() {

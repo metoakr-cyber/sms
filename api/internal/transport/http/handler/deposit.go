@@ -107,7 +107,21 @@ func (h *Deposit) List(c *gin.Context) {
 		return
 	}
 	limit, offset := pagination(c, 20, 100)
-	rows, total, err := h.svc.List(c.Request.Context(), userID, limit, offset)
+
+	// `?status=` — geçersiz değer SESSİZCE YOK SAYILMAZ: yok sayılsaydı yanlış
+	// yazılmış bir süzgeç, süzgeçsiz TÜM listeyi döndürür ve kullanıcı bunu
+	// "süzgeç çalıştı" sanardı. `GET /orders` ile aynı davranış.
+	var status *db.DepositStatus
+	if v := strings.TrimSpace(c.Query("status")); v != "" {
+		var st db.DepositStatus
+		if err := st.Scan(v); err != nil {
+			h.r.FailField(c, []dto.FieldError{{Field: "status", Message: "Geçersiz durum süzgeci."}})
+			return
+		}
+		status = &st
+	}
+
+	rows, total, err := h.svc.List(c.Request.Context(), userID, status, limit, offset)
 	if err != nil {
 		h.r.Fail(c, err)
 		return

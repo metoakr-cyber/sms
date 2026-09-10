@@ -68,11 +68,28 @@ import {
   VeriTablosu,
   Sayfalama,
   SAYFA_BOYUTU,
+  SuzgecCubugu,
   DurumRozeti,
   HataDurumu,
   apiHatasi,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 import type { Sutun } from '@/components/yonetim';
+
+/**
+ * Durum süzgeci seçenekleri — `GET /tickets?status=`.
+ *
+ * 🔴 SATIR ETİKETLERİ SUNUCUDAN gelir (`statusLabel`); bu liste onları ÜRETMEZ,
+ * yalnız "hangi durumlar süzülebilir" sorusunu cevaplar.
+ * Kaynak: `api/internal/transport/http/handler/ticket.go#ticketStatusLabel`.
+ */
+const DURUM_SUZGECLERI: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'Tüm durumlar' },
+  { value: 'OPEN', label: 'Açık' },
+  { value: 'ANSWERED', label: 'Yanıtlandı' },
+  { value: 'USER_REPLIED', label: 'Yanıtınız iletildi' },
+  { value: 'CLOSED', label: 'Kapatıldı' },
+];
 
 /* ═══════════════════════ Sunucu sözleşmesi ═══════════════════════ */
 /*
@@ -137,9 +154,32 @@ export default function SupportPage() {
   const [creating, setCreating] = React.useState(false);
   const [openId, setOpenId] = React.useState<string | null>(null);
 
+  const [durum, setDurum] = React.useState('');
+  const [aramaGirdisi, setAramaGirdisi] = React.useState('');
+  const [arama, setArama] = React.useState('');
+
+  // 350 ms — panelin her yerinde aynı gecikme.
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setArama(aramaGirdisi.trim());
+      setOffset(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [aramaGirdisi]);
+
   const q = useQuery({
-    queryKey: ['tickets', { limit: SAYFA_BOYUTU, offset }],
-    queryFn: () => apiFetch<TicketList>(`/tickets?limit=${SAYFA_BOYUTU}&offset=${offset}`),
+    queryKey: ['tickets', { limit: SAYFA_BOYUTU, offset, durum, arama }],
+    queryFn: () => {
+      // Süzgeç SUNUCUDA uygulanır; istemcide süzmek yalnız bu sayfadaki 25
+      // satırı görürdü ve eski bir talebi "yok" gösterirdi.
+      const p = new URLSearchParams({
+        limit: String(SAYFA_BOYUTU),
+        offset: String(offset),
+      });
+      if (durum) p.set('status', durum);
+      if (arama) p.set('q', arama);
+      return apiFetch<TicketList>(`/tickets?${p.toString()}`);
+    },
     // Sayfa değişince liste boşalıp zıplamasın.
     placeholderData: keepPreviousData,
   });
@@ -147,16 +187,12 @@ export default function SupportPage() {
   const total = q.data?.total ?? 0;
 
   /*
-   * `Sayfalama` GÖRÜNÜR MÜ? — `sayfalama.tsx` tek sayfaya sığan listede kendini
-   * hiç çizmez, yani bu ifade "sayfalama ekranda var mı" sorusunun aynısıdır.
-   * İKİ CANLI BÖLGE aynı anda konuşmasın diye kullanılır: `VeriTablosu`
-   * ("12 kayıt listelendi.") ve `Sayfalama` ("1–25 / 87") ikisi de
-   * `aria-live="polite"`. Üstelik `VeriTablosu`nun sayısı SAYFADAKİ satır
-   * sayısıdır; 87 kayıtlık listede her sayfada "25 kayıt listelendi" derdi.
-   * Tek sayfalık listede ise sayfadaki sayı ZATEN toplamdır — duyuru
-   * konuştuğu her yerde doğru.
+   * `Sayfalama` GÖRÜNÜR MÜ? Koşul bileşenin kendisinden okunur
+   * (`sayfalamaGorunur`), burada kopyalanmaz — kopya, bileşenin gizlenme
+   * kuralı değiştiği gün sessizce yanlış olur ve iki canlı bölge birden
+   * konuşmaya başlar.
    */
-  const sayfali = total > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(total);
 
   /*
    * SÜTUN TANIMI = TEK VERİ KAYNAĞI (§6.1 kural 2). Kart sunumu buradan
@@ -233,7 +269,7 @@ export default function SupportPage() {
   ];
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <SayfaBasligi
         baslik="Destek"
         aciklama="Sorununuzu yazın, destek ekibimiz yanıtlasın. Yanıtlar bu sayfada görünür."
@@ -253,6 +289,51 @@ export default function SupportPage() {
           <KayitSayaci toplam={total} />
         </div>
 
+        {/* Süzgeç liste kartının İÇİNDE: bu sayfada "Yeni talep" düğmesi zaten
+            sayfa başlığında duruyor, araya üçüncü bir kart girmez. */}
+        <SuzgecCubugu
+          etkinSayisi={(durum ? 1 : 0) + (arama ? 1 : 0)}
+          onTemizle={() => {
+            setDurum('');
+            setAramaGirdisi('');
+            setArama('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={aramaGirdisi}
+              onChange={(e) => setAramaGirdisi(e.target.value)}
+              placeholder="Talep konusu"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              hint="Yazmayı bıraktığınızda arama kendiliğinden yapılır."
+            />
+          </div>
+
+          <div className="w-full sm:w-64 sm:self-start">
+            <Secim
+              etiket="Durum"
+              value={durum}
+              onChange={(e) => {
+                setDurum(e.target.value);
+                // Süzgeç değişince 3. sayfada kalmak BOŞ ekran gösterir.
+                setOffset(0);
+              }}
+            >
+              {DURUM_SUZGECLERI.map((d) => (
+                <option key={d.value || 'tumu'} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </Secim>
+          </div>
+        </SuzgecCubugu>
+
         <VeriTablosu
           baslik="Destek taleplerim"
           sutunlar={sutunlar}
@@ -262,13 +343,22 @@ export default function SupportPage() {
           hata={apiHatasi(q.error)}
           duyuru={!sayfali}
           bos={
-            /* Boş durum ÖĞRETİR, "burada bir şey yok" demez (§5.1). Bu liste
-               süzgeçsizdir: boş olmasının tek anlamı GERÇEKTEN boş olmasıdır,
-               yani metin "ilk kaydı oluştur" yönündedir (§6.3). */
-            <Empty
-              title="Henüz talebiniz yok"
-              hint="Bir sorunuz veya sorununuz olduğunda 'Yeni talep' ile bize yazın; yanıtımız bu sayfada görünür."
-            />
+            /* Boş durum ÖĞRETİR, "burada bir şey yok" demez (§5.1).
+               §6.3: SÜZGEÇTEN DOLAYI BOŞ ≠ GERÇEKTEN BOŞ — talebi olan ama
+               seçtiği durumda kaydı olmayan kullanıcıya "Henüz talebiniz yok"
+               demek yanlıştır ve yeni talep açmaya iter. Gerçekten boşta metin
+               "ilk kaydı oluştur" yönündedir. */
+            durum || arama ? (
+              <Empty
+                title="Bu süzgece uyan talep yok"
+                hint="Arama metnini kısaltmayı ya da durumu “Tüm durumlar” yapmayı deneyin."
+              />
+            ) : (
+              <Empty
+                title="Henüz talebiniz yok"
+                hint="Bir sorunuz veya sorununuz olduğunda 'Yeni talep' ile bize yazın; yanıtımız bu sayfada görünür."
+              />
+            )
           }
         />
 

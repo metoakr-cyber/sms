@@ -28,7 +28,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { formatDateTime, formatMoney } from '@/lib/format';
+import { formatDateTime, formatDecimal, formatMoney } from '@/lib/format';
 import { TUTAR_FIYAT_KURALI, toMinor } from '@/lib/para';
 import { Alert, Badge, Button, Card, Empty, Field, Skeleton, cx } from '@/components/ui';
 import {
@@ -41,6 +41,10 @@ import {
   VeriTablosu,
   apiHatasi,
   type Sutun,
+  SAYFA_BOYUTU,
+  Sayfalama,
+  SuzgecCubugu,
+  useIstemciSuzgec,
 } from '@/components/yonetim';
 import type { Country, PricingPreview, PricingRule, PricingScope, Service } from '@/lib/types';
 
@@ -114,11 +118,23 @@ function useDebounced<T>(value: T, ms: number): T {
 
 export default function AdminPricingPage() {
   const qc = useQueryClient();
+  const [arama, setArama] = React.useState('');
 
   const rules = useQuery({
     queryKey: rulesKey,
     queryFn: () => apiFetch<{ items: PricingRule[] }>('/admin/pricing-rules'),
   });
+
+  /*
+   * Arama ve sayfalama İSTEMCİDE: `GET /admin/pricing-rules` sayfasızdır,
+   * yanıt `{items}` — tam liste elimizdedir. Sayfalı bir uçta bu kanca
+   * YANLIŞTIR; gerekçe `useIstemciSuzgec` başında yazılı.
+   */
+  const { sayfadakiler, toplam, offset, setOffset } = useIstemciSuzgec(
+    rules.data?.items,
+    arama,
+    (r) => [r.scope, r.serviceCode, r.countryIso, r.note],
+  );
 
   const services = useQuery({
     queryKey: ['catalog', 'services'],
@@ -317,7 +333,11 @@ export default function AdminPricingPage() {
       mobilRol: 'rozet',
       hizala: 'sag',
       sayisal: true,
-      hucre: (r) => <span className="font-semibold tabular-nums">%{r.marginPercent}</span>,
+      // `formatDecimal`: sunucu `40.00` gönderir; Türkçede `.` binlik ayırıcı
+      // olduğu için ekranda "4000" gibi okunuyordu (çarpan sütununda ölçüldü).
+      hucre: (r) => (
+        <span className="font-semibold tabular-nums">%{formatDecimal(r.marginPercent)}</span>
+      ),
     },
     {
       anahtar: 'sabitBedel',
@@ -365,7 +385,7 @@ export default function AdminPricingPage() {
   ];
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <SayfaBasligi
         baslik="Fiyat kuralları"
         aciklama="Satış fiyatı = sağlayıcı maliyeti × (1 + marj) + sabit bedel; sonuç taban fiyatın altına düşemez."
@@ -500,7 +520,7 @@ export default function AdminPricingPage() {
         {create.isSuccess && create.data && (
           <Alert tone="ok" className="mt-4">
             <p>
-              Kural yazıldı: <strong>%{create.data.marginPercent}</strong> marj,{' '}
+              Kural yazıldı: <strong>%{formatDecimal(create.data.marginPercent)}</strong> marj,{' '}
               {scopeDef(create.data.scope).label.toLowerCase()} kapsamı ({scopeText(create.data)}).
             </p>
             {create.data.replaced && (
@@ -575,26 +595,70 @@ export default function AdminPricingPage() {
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-semibold">Etkin kurallar</h2>
-          <KayitSayaci toplam={rules.data?.items.length ?? 0} />
+          <KayitSayaci toplam={toplam} />
         </div>
 
         {deactivateErr && <HataDurumu hata={deactivateErr} className="mt-4" />}
+
+        <SuzgecCubugu
+          className="mt-4"
+          etkinSayisi={arama ? 1 : 0}
+          onTemizle={() => {
+            setArama('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={arama}
+              onChange={(e) => {
+                setArama(e.target.value);
+                setOffset(0);
+              }}
+              placeholder="Kapsam, servis, ülke veya not"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        </SuzgecCubugu>
 
         <VeriTablosu<PricingRule>
           className="mt-4"
           baslik="Etkin fiyat kuralları"
           sutunlar={sutunlar}
-          satirlar={rules.data?.items}
+          satirlar={sayfadakiler}
           satirAnahtari={(r) => String(r.id)}
           yukleniyor={rules.isLoading}
           hata={apiHatasi(rules.error)}
           iskeletSatir={3}
           bos={
-            <Empty
-              title="Hiç kural yok"
-              hint="En az bir GLOBAL kural olmadan hiçbir ürün fiyatlanamaz."
-            />
+            /* §6.3: SÜZGEÇTEN DOLAYI BOŞ ≠ GERÇEKTEN BOŞ. Kuralı olan ama
+               aramasıyla eşleşme bulamayan yöneticiye "hiç kural yok" demek,
+               fiyatlandırmanın çöktüğü ALARMINI yanlış yere verir. */
+            arama ? (
+              <Empty
+                title="Bu aramaya uyan kural yok"
+                hint="Kapsamın, servis kodunun, ülke kodunun ya da notun bir parçasını yazmayı deneyin."
+              />
+            ) : (
+              <Empty
+                title="Hiç kural yok"
+                hint="En az bir GLOBAL kural olmadan hiçbir ürün fiyatlanamaz."
+              />
+            )
           }
+        />
+
+        <Sayfalama
+          className="mt-6"
+          offset={offset}
+          limit={SAYFA_BOYUTU}
+          toplam={toplam}
+          onDegis={setOffset}
         />
       </Card>
 
@@ -631,7 +695,7 @@ export default function AdminPricingPage() {
         */}
         {willReplace ? (
           <Alert tone="warn" duyur={false}>
-            Bu kapsamda şu an <strong>%{willReplace.marginPercent}</strong> marjlı bir kural
+            Bu kapsamda şu an <strong>%{formatDecimal(willReplace.marginPercent)}</strong> marjlı bir kural
             etkin. Kaydettiğinizde o kural devreden çıkar ve geçmişte kalır — bu bir
             güncelleme değil, yeni bir kayıttır.
           </Alert>
@@ -665,7 +729,7 @@ export default function AdminPricingPage() {
           <>
             <p className="text-sm">
               <strong>{scopeDef(toDeactivate.scope).label}</strong> ({scopeText(toDeactivate)})
-              kapsamındaki <strong>%{toDeactivate.marginPercent}</strong> marjlı kural
+              kapsamındaki <strong>%{formatDecimal(toDeactivate.marginPercent)}</strong> marjlı kural
               devreden çıkarılacak. Kayıt silinmez, geçmişte kalır.
             </p>
 
@@ -716,7 +780,7 @@ function OnizlemeSonucu({ veri }: { veri: PricingPreview }) {
               ? 'Formdaki kural (kaydedilmedi)'
               : `Kayıtlı kural${veri.ruleScope ? ` · ${veri.ruleScope}` : ''}`}
           </Badge>
-          <Badge tone="neutral">Marj %{veri.marginPercent}</Badge>
+          <Badge tone="neutral">Marj %{formatDecimal(veri.marginPercent)}</Badge>
           {veri.hitMinimum && <Badge tone="warn">Taban fiyat uygulandı</Badge>}
           <Badge tone={veri.inStock ? 'ok' : 'bad'}>
             {veri.inStock ? `Stok: ${veri.stock}` : 'Stok yok'}

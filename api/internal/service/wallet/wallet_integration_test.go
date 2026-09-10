@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
@@ -359,4 +360,87 @@ func TestIdempotencyKeyReuseWithDifferentPayloadIsRejected(t *testing.T) {
 func apperrIs(err error, target *apperr.Error) bool {
 	e, ok := apperr.As(err)
 	return ok && e.Code == target.Code
+}
+
+// TestListLedgerEntriesSuzgecleri ekstre süzgeçlerini doğrular:
+// `q` (not + referans), `type` ve tarih aralığı.
+//
+// 🔴 ASIL İDDİA SAYIMIN LİSTEYLE AYNI SÜZGECİ ALMASI. `CountLedgerEntries`
+// eskiden `from_ts`/`to_ts` SÜZMÜYORDU; tarih aralığı arayüzde açılmadığı
+// için hata gizliydi. Bu test onu açıkta tutar: her çağrıda `total` ile satır
+// sayısı BİRLİKTE ölçülür.
+func TestListLedgerEntriesSuzgecleri(t *testing.T) {
+	ctx := context.Background()
+	userID := newUser(t, 0)
+	s := svc()
+
+	yaz := func(anahtar, not string, tip db.LedgerType, tutar int64) {
+		t.Helper()
+		if _, err := s.ApplyTx(ctx, wallet.Input{
+			UserID: userID, Amount: try(tutar), Type: tip,
+			IdempotencyKey: anahtar, Note: not,
+		}); err != nil {
+			t.Fatalf("defter kaydı (%s): %v", anahtar, err)
+		}
+	}
+	yaz("suz-1", "Havale ile bakiye yüklemesi", db.LedgerTypeDEPOSIT, 10_000)
+	yaz("suz-2", "Whatsapp numarası satın alındı", db.LedgerTypePURCHASE, -2_500)
+	yaz("suz-3", "Kod gelmedi, iade edildi", db.LedgerTypeREFUND, 2_500)
+
+	metin := func(v string) *string { return &v }
+
+	kontrol := func(ad string, f wallet.StatementFilter, bekNot ...string) {
+		t.Helper()
+		f.Limit = 20
+		f.Normalize()
+		rows, total, err := s.Statement(ctx, userID, f)
+		if err != nil {
+			t.Fatalf("%s: ekstre: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountLedgerEntries süzgeci ListLedgerEntries ile aynı değil)",
+				ad, total, len(rows))
+		}
+		if len(rows) != len(bekNot) {
+			t.Fatalf("%s: %d kayıt bekleniyordu, %d geldi", ad, len(bekNot), len(rows))
+		}
+		got := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			if r.Note != nil {
+				got[*r.Note] = true
+			}
+		}
+		for _, n := range bekNot {
+			if !got[n] {
+				t.Errorf("%s: %q listede yok", ad, n)
+			}
+		}
+	}
+
+	kontrol("süzgeçsiz", wallet.StatementFilter{},
+		"Havale ile bakiye yüklemesi", "Whatsapp numarası satın alındı", "Kod gelmedi, iade edildi")
+	kontrol("not araması", wallet.StatementFilter{Q: metin("havale")},
+		"Havale ile bakiye yüklemesi")
+	// ILIKE: büyük/küçük harf ayrımı yok. Türkçe i/İ tuzağına girmeyen sözcük.
+	kontrol("büyük harf", wallet.StatementFilter{Q: metin("WHATSAPP")},
+		"Whatsapp numarası satın alındı")
+	kontrol("eşleşmeyen", wallet.StatementFilter{Q: metin("bulunmayan-sey")})
+	kontrol("tür", wallet.StatementFilter{Type: db.LedgerTypeREFUND},
+		"Kod gelmedi, iade edildi")
+	kontrol("tür + arama birlikte daraltır",
+		wallet.StatementFilter{Type: db.LedgerTypeDEPOSIT, Q: metin("whatsapp")})
+
+	// ─── TARİH ARALIĞI — sayımın asıl açığı buradaydı ───
+	//
+	// Kayıtları geriye tarihlemeye gerek yok: aralığın kendisi kaydırılır.
+	// `to` geçmişte → hiçbir kayıt girmez. Sayım `to_ts` süzmeseydi burada
+	// total=3, satır=0 çıkardı ve iddia düşerdi.
+	simdi := time.Now()
+	once := simdi.Add(-time.Hour)
+	sonra := simdi.Add(time.Hour)
+	kontrol("tarih: tamamı aralıkta", wallet.StatementFilter{From: &once, To: &sonra},
+		"Havale ile bakiye yüklemesi", "Whatsapp numarası satın alındı", "Kod gelmedi, iade edildi")
+	kontrol("tarih: aralık geçmişte", wallet.StatementFilter{To: &once})
+	kontrol("tarih: aralık gelecekte", wallet.StatementFilter{From: &sonra})
 }

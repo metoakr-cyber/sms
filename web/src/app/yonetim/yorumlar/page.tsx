@@ -42,7 +42,7 @@ import * as React from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
-import { Card, Button, Badge, Skeleton, Empty, cx } from '@/components/ui';
+import { Card, Button, Badge, Skeleton, Empty, cx, Field } from '@/components/ui';
 import { Yildiz } from '@/components/ikonlar';
 import {
   SayfaBasligi,
@@ -56,6 +56,7 @@ import {
   HataDurumu,
   OnayDiyalogu,
   apiHatasi,
+  sayfalamaGorunur,
 } from '@/components/yonetim';
 
 /* ═══════════════════════ Sunucu sözleşmesi ═══════════════════════ */
@@ -135,11 +136,25 @@ export default function YonetimYorumlarPage() {
   const [karar, setKarar] = React.useState<{ review: AdminReview; tur: 'onay' | 'red' } | null>(null);
 
   // Sayfa boyutu katmandan gelir: tek panelde tek `limit` (§6.3).
+
+  // İKİ AYRI DURUM: `aramaGirdisi` kutuya yazılan, `arama` sunucuya giden.
+  // 350 ms — panelin ve yönetimin her yerinde aynı gecikme.
+  const [aramaGirdisi, setAramaGirdisi] = React.useState('');
+  const [arama, setArama] = React.useState('');
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setArama(aramaGirdisi.trim());
+      setOffset(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [aramaGirdisi]);
+
   const query = new URLSearchParams({ limit: String(SAYFA_BOYUTU), offset: String(offset) });
   if (status) query.set('status', status);
+  if (arama) query.set('q', arama);
 
   const q = useQuery({
-    queryKey: ['admin', 'reviews', { status, offset }],
+    queryKey: ['admin', 'reviews', { status, arama, offset }],
     queryFn: () => apiFetch<AdminReviewList>(`/admin/reviews?${query.toString()}`),
     placeholderData: keepPreviousData,
   });
@@ -150,10 +165,12 @@ export default function YonetimYorumlarPage() {
   const items = q.data?.items;
 
   /*
-   * `Sayfalama` GÖRÜNÜR MÜ? — `sayfalama.tsx` tek sayfaya sığan listede kendini
-   * hiç çizmez; bu ifade "sayfalama ekranda var mı" ile aynı şeydir.
+   * `Sayfalama` GÖRÜNÜR MÜ? Koşul bileşenin kendisinden okunur
+   * (`sayfalamaGorunur`), burada kopyalanmaz — kopya, bileşenin gizlenme
+   * kuralı değiştiği gün sessizce yanlış olur ve iki canlı bölge birden
+   * konuşmaya başlar.
    */
-  const sayfali = total > SAYFA_BOYUTU;
+  const sayfali = sayfalamaGorunur(total);
 
   /*
    * Canlı bölge — `VeriTablosu`nun yaptığı işin kart listesi karşılığı (§7.4).
@@ -197,10 +214,10 @@ export default function YonetimYorumlarPage() {
           : `${items.length} yorum listelendi.`;
 
   return (
-    // `max-w-5xl`: panelin baskın içerik genişliği; bu ekran `max-w-4xl` ile
-    // ayrışıyordu (§10). Paragraf uzunluğunu kap değil, metnin kendi
-    // `max-w-[70ch]` sınırı korur (§3.4).
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    // GENİŞLİK KABI YOK: tavanı kabuğun `main`i verir (`max-w-12xl`), böylece
+    // içerik genişliği ekrandan ekrana zıplamaz. Eski hâlde her yönetim ekranı
+    // kendi kabını açıyordu ve beş farklı değer vardı (2xl…6xl).
+    <div className="flex flex-col gap-6">
       <SayfaBasligi
         baslik="Müşteri yorumları"
         aciklama="Onayladığınız yorumlar sitede kullanıcı adıyla yayımlanır. E-posta hiçbir zaman gösterilmez."
@@ -216,7 +233,31 @@ export default function YonetimYorumlarPage() {
       </SayfaBasligi>
 
       <Card className="flex flex-col gap-6">
-        <SuzgecCubugu sag={<KayitSayaci toplam={total} />}>
+        <SuzgecCubugu
+          sag={<KayitSayaci toplam={total} />}
+          etkinSayisi={(status ? 1 : 0) + (arama ? 1 : 0)}
+          onTemizle={() => {
+            setStatus('');
+            setAramaGirdisi('');
+            setArama('');
+            setOffset(0);
+          }}
+        >
+          <div className="w-full sm:w-72 sm:self-start">
+            <Field
+              label="Ara"
+              type="search"
+              value={aramaGirdisi}
+              onChange={(e) => setAramaGirdisi(e.target.value)}
+              placeholder="Yorum metni, e-posta veya kullanıcı adı"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              hint="Yazmayı bıraktığınızda arama kendiliğinden yapılır."
+            />
+          </div>
+
           {/* Etiket GÖRÜNÜR yapıldı (eskiden `sr-only`): aynı bölümdeki
               `destek` ekranında etiket görünürdü, burada değildi — §9.2'nin
               "ekranlar arası tutarsız bileşen dili" bulgusu. */}

@@ -47,15 +47,29 @@ WHERE t.public_id = @public_id;
 
 -- name: ListUserTickets :many
 -- tickets_user_idx (user_id, last_reply_at DESC) tam olarak bu sıralamayı kullanır.
+--
+-- Durum süzgeci `ListTicketsForAdmin` ile AYNI desen: `sqlc.narg` NULL ise
+-- süzme yok. 🔴 `user_id` koşulu süzgeçten bağımsızdır (değişmez #7).
 SELECT t.*,
        (SELECT count(*) FROM ticket_messages m WHERE m.ticket_id = t.id) AS message_count
 FROM tickets t
 WHERE t.user_id = @user_id
+  AND (sqlc.narg('status')::ticket_status IS NULL
+       OR t.status = sqlc.narg('status')::ticket_status)
+  AND (sqlc.narg('q')::text IS NULL
+       OR t.subject::text ILIKE '%' || sqlc.narg('q')::text || '%')
 ORDER BY t.last_reply_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountUserTickets :one
-SELECT count(*) FROM tickets WHERE user_id = @user_id;
+-- 🔴 SÜZGEÇ `ListUserTickets` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+-- yalan söyler (bkz. orders.sql, CountUserOrders notu).
+SELECT count(*) FROM tickets
+WHERE user_id = @user_id
+  AND (sqlc.narg('status')::ticket_status IS NULL
+       OR status = sqlc.narg('status')::ticket_status)
+  AND (sqlc.narg('q')::text IS NULL
+       OR subject::text ILIKE '%' || sqlc.narg('q')::text || '%');
 
 -- name: ListTicketsForAdmin :many
 -- Dinamik süzgeç sqlc.narg deseniyle; Go'da string birleştirilmez.
@@ -78,17 +92,27 @@ WHERE (sqlc.narg('status')::ticket_status IS NULL
        OR t.status = sqlc.narg('status')::ticket_status)
   AND (NOT sqlc.arg('only_pending')::boolean
        OR t.status IN ('OPEN', 'USER_REPLIED'))
+  AND (sqlc.narg('q')::text IS NULL
+       OR t.subject::text  ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.email::text    ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.username::text ILIKE '%' || sqlc.narg('q')::text || '%')
 ORDER BY t.last_reply_at DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountTicketsForAdmin :one
 -- Süzgeç koşulu ListTicketsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
 -- sayfalama "23 kayıt" der ama 12 satır gösterir.
+-- `q` kullanıcı sütunlarında da arandığı için sayım `users`a katılmak zorunda.
 SELECT count(*) FROM tickets t
+JOIN users u ON u.id = t.user_id
 WHERE (sqlc.narg('status')::ticket_status IS NULL
        OR t.status = sqlc.narg('status')::ticket_status)
   AND (NOT sqlc.arg('only_pending')::boolean
-       OR t.status IN ('OPEN', 'USER_REPLIED'));
+       OR t.status IN ('OPEN', 'USER_REPLIED'))
+  AND (sqlc.narg('q')::text IS NULL
+       OR t.subject::text  ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.email::text    ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.username::text ILIKE '%' || sqlc.narg('q')::text || '%');
 
 -- name: ListTicketMessagesForUser :many
 -- KULLANICI GÖRÜNÜMÜ: personelin kullanıcı adı SEÇİLMEZ.

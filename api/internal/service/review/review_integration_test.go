@@ -518,3 +518,116 @@ func TestBodyLengthIsMeasuredInRunes(t *testing.T) {
 		t.Fatalf("tam sınırdaki Türkçe yorum reddedildi (bayt sayılıyor olabilir): %v", err)
 	}
 }
+
+// TestListReviewsForUserDurumSuzgeci `GET /reviews/mine?status=` süzgecini
+// doğrular.
+//
+// ÜÇ İDDİA TEK TESTTE: süzgeç süzer · SAYIM listeyle AYNI süzgeci alır ·
+// SAHİPLİK süzgeçten üstündür (değişmez #7).
+//
+// Kullanıcı başına AYNI ANDA tek bekleyen yorum kısıtı var
+// (reviews_one_pending_per_user_idx); ikinci yorumu yazabilmek için birincisi
+// önce karara bağlanır.
+func TestListReviewsForUserDurumSuzgeci(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	alice := seedUser(t, "suzgec-a")
+	bob := seedUser(t, "suzgec-b")
+
+	yayinda := newReview(t, s, alice)
+	karara := func(id uuid.UUID) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			`UPDATE reviews SET status='APPROVED', reviewed_at=now() WHERE public_id=$1`,
+			id); err != nil {
+			t.Fatalf("durum kurulumu: %v", err)
+		}
+	}
+	karara(yayinda)
+	bekleyen := newReview(t, s, alice)
+
+	// Bob'un yorumu da APPROVED: Alice APPROVED süzdüğünde ONU GÖRMEMELİ.
+	karara(newReview(t, s, bob))
+
+	durum := func(v reviewdom.Status) *reviewdom.Status { return &v }
+
+	kontrol := func(ad string, st *reviewdom.Status, bekleyenler ...uuid.UUID) {
+		t.Helper()
+		rows, total, err := s.List(ctx, alice, st, 20, 0)
+		if err != nil {
+			t.Fatalf("%s: liste: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountReviewsForUser süzgeci ListReviewsForUser ile aynı değil)",
+				ad, total, len(rows))
+		}
+		if len(rows) != len(bekleyenler) {
+			t.Fatalf("%s: %d yorum bekleniyordu, %d geldi", ad, len(bekleyenler), len(rows))
+		}
+		got := make(map[uuid.UUID]bool, len(rows))
+		for _, r := range rows {
+			got[r.PublicID] = true
+		}
+		for _, id := range bekleyenler {
+			if !got[id] {
+				t.Errorf("%s: %s listede yok", ad, id)
+			}
+		}
+	}
+
+	kontrol("süzgeçsiz", nil, yayinda, bekleyen)
+	kontrol("onay bekleyen", durum(reviewdom.StatusPending), bekleyen)
+	// 🔴 Bob'un yorumu da APPROVED — bu satır sahiplik iddiasıdır.
+	kontrol("yayında", durum(reviewdom.StatusApproved), yayinda)
+	kontrol("hiç olmayan durum", durum(reviewdom.StatusRejected))
+}
+
+// TestListReviewsForAdminAramasi `GET /admin/reviews?q=` aramasını doğrular.
+//
+// 🔴 ASIL İDDİA SAYIMIN LİSTEYLE AYNI SORGUYU KURMASI: `q` kullanıcı
+// sütunlarında da arandığı için `count` sorgusuna `JOIN users` EKLENDİ.
+// JOIN unutulsaydı sayfalama yanlış toplam gösterirdi.
+func TestListReviewsForAdminAramasi(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	ada := seedUser(t, "ada")
+	kemal := seedUser(t, "kemal")
+
+	adaninki := newReview(t, s, ada)
+	kemalinki := newReview(t, s, kemal)
+
+	metin := func(v string) *string { return &v }
+
+	kontrol := func(ad string, ara *string, bekleyenler ...uuid.UUID) {
+		t.Helper()
+		rows, total, _, err := s.AdminList(ctx, reviewsvc.AdminFilter{Q: ara}, 50, 0)
+		if err != nil {
+			t.Fatalf("%s: liste: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountReviewsForAdmin sorgusu ListReviewsForAdmin ile aynı değil)",
+				ad, total, len(rows))
+		}
+		if len(rows) != len(bekleyenler) {
+			t.Fatalf("%s: %d yorum bekleniyordu, %d geldi", ad, len(bekleyenler), len(rows))
+		}
+		got := make(map[uuid.UUID]bool, len(rows))
+		for _, r := range rows {
+			got[r.PublicID] = true
+		}
+		for _, id := range bekleyenler {
+			if !got[id] {
+				t.Errorf("%s: %s listede yok", ad, id)
+			}
+		}
+	}
+
+	kontrol("aramasız", nil, adaninki, kemalinki)
+	kontrol("kullanıcıya göre", metin("ada"), adaninki)
+	kontrol("büyük harf", metin("KEMAL"), kemalinki)
+	// Gövde de aranır: `newReview` her ikisine de aynı metni yazıyor.
+	kontrol("gövdeye göre", metin("saniyeler içinde"), adaninki, kemalinki)
+	kontrol("eşleşmeyen", metin("bulunmayan-sey"))
+}

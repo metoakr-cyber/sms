@@ -15,7 +15,7 @@
 import * as React from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiFetch } from '@/lib/api';
-import { formatMoney, formatDuration } from '@/lib/format';
+import { formatMoney, formatDuration, formatPhone, phoneParts } from '@/lib/format';
 import { useOrderStream } from '@/hooks/useOrderStream';
 import { Button, Badge, Alert, cx } from './ui';
 import { ServiceIcon } from './service-icon';
@@ -29,6 +29,8 @@ export function CodeWaiter({
     useOrderStream(initial.id, initial);
 
   const current = order ?? initial;
+
+  const parcalar = phoneParts(current.phoneNumber, current.phoneCode);
   const latest = messages.length ? messages[messages.length - 1] : undefined;
   const done = current.status === 'COMPLETED';
   const refunded = current.status === 'REFUNDED' || current.status === 'CANCELLED';
@@ -60,13 +62,57 @@ export function CodeWaiter({
           <p className="text-xs font-medium uppercase tracking-wide text-muted">
             Tahsis edilen numara
           </p>
-          <div className="mt-1.5 flex items-center justify-between gap-3">
-            {/* select-text ZORUNLU: mobilde uzun basıp kopyalamak en yaygın yol */}
-            <p className="select-text break-anywhere text-xl font-bold tracking-tight sm:text-2xl">
-              {current.phoneNumber}
-            </p>
-            <CopyButton value={current.phoneNumber} label="Numarayı kopyala" />
+          {/*
+            GÖSTERİM gruplu, KOPYALANAN ham. Boşluklu biçimi panoya koymak
+            sessiz bir hata kaynağıdır: hedef uygulamaların hepsi boşluğu
+            temizlemez. `tabular-nums` (§3.5): numara bir sayı dizisidir,
+            orantılı rakamlarda haneler kayar.
+            `select-text` ZORUNLU: mobilde uzun basıp kopyalamak en yaygın yol.
+          */}
+          <p className="mt-1.5 select-text break-anywhere text-xl font-bold tabular-nums
+                        tracking-tight sm:text-2xl">
+            {formatPhone(current.phoneNumber, current.phoneCode)}
+          </p>
+
+          {/*
+            ═══════════════════════════════════════════════════════════════
+            İKİ AYRI KOPYALAMA — ölçülmüş kullanıcı hatasının karşılığı
+            ═══════════════════════════════════════════════════════════════
+            WhatsApp/Telegram numarayı İKİ ALANDA ister: ülke ayrı bir açılır
+            listeden seçilir, kutuya YALNIZ ulusal kısım yazılır. Kullanıcı tam
+            E.164 numarayı o kutuya yapıştırdığında hedef uygulama
+            `+49` + `+491523456789` görür ve "numara hatalı" der.
+
+            Hata kullanıcının değil ARAYÜZÜN: ekran tek bir kopyalanabilir
+            değer sunuyorsa yanlış yere yapıştırılması an meselesidir.
+
+            Ulusal parça YALNIZ ülke kodu güvenle ayrılabiliyorsa gösterilir
+            (`phoneParts` sunucudan gelen `phoneCode` ile eşleştirir); aksi
+            hâlde tek düğme kalır — yanlış bölünmüş bir numara sunmaktansa
+            hiç sunmamak yeğdir.
+          */}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <CopyButton
+              value={current.phoneNumber}
+              label="Tam numarayı kopyala"
+              metin="Tam numara"
+            />
+            {parcalar.ulusal && (
+              <CopyButton
+                value={parcalar.ulusal}
+                label="Ülke kodu olmadan kopyala"
+                metin={`Kodsuz (${parcalar.ulkeKodu} hariç)`}
+              />
+            )}
           </div>
+
+          {parcalar.ulusal && (
+            <p className="mt-2 text-sm text-muted">
+              Uygulamada ülkeyi <strong>{current.countryName}</strong> seçtiyseniz
+              numarayı <strong>kodsuz</strong> yapıştırın; ülke kodunu iki kez
+              girmek “numara hatalı” hatası verir.
+            </p>
+          )}
         </div>
       </div>
 
@@ -197,7 +243,23 @@ function WaitingPanel({ secondsLeft, transport }: { secondsLeft: number; transpo
  * o da olmazsa kullanıcıya "elle seçin" denir — sessizce hiçbir şey yapmayan
  * bir buton en kötüsüdür.
  */
-function CopyButton({ value, label, big }: { value: string; label: string; big?: boolean }) {
+function CopyButton({
+  value,
+  label,
+  big,
+  metin,
+}: {
+  value: string;
+  label: string;
+  big?: boolean;
+  /**
+   * Görünür etiket. İKİ kopyalama düğmesi yan yana durduğunda ZORUNLUDUR:
+   * aynı ikondan iki tane, hangisinin neyi kopyaladığını söylemez ve
+   * `aria-label` yalnız ekran okuyucuya ulaşır (§7.1: anlam tek kanalda
+   * taşınmaz).
+   */
+  metin?: string;
+}) {
   const [state, setState] = React.useState<'idle' | 'ok' | 'fail'>('idle');
 
   async function copy() {
@@ -220,9 +282,10 @@ function CopyButton({ value, label, big }: { value: string; label: string; big?:
       onClick={copy}
       aria-label={label}
       className={cx(
-        'grid shrink-0 place-items-center rounded-xl border transition-colors',
-        'active:scale-95',
-        big ? 'size-14' : 'size-11',
+        'shrink-0 rounded-xl border transition-colors active:scale-95',
+        metin
+          ? 'flex min-h-11 items-center justify-center gap-2 px-3 text-sm font-medium'
+          : cx('grid place-items-center', big ? 'size-14' : 'size-11'),
         state === 'ok'
           ? 'border-[var(--color-ok)] text-[var(--color-ok)]'
           : state === 'fail'
@@ -242,6 +305,7 @@ function CopyButton({ value, label, big }: { value: string; label: string; big?:
           <path d="M5 15V5a2 2 0 0 1 2-2h10" />
         </svg>
       )}
+      {metin && <span>{state === 'ok' ? 'Kopyalandı' : metin}</span>}
       <span className="sr-only" aria-live="polite">
         {state === 'ok' ? 'Kopyalandı' : state === 'fail' ? 'Kopyalanamadı, elle seçin' : ''}
       </span>

@@ -390,7 +390,7 @@ func TestUserCannotSeeOthersDeposit(t *testing.T) {
 		t.Fatalf("🔴 durum kodu = %d, 404 bekleniyordu", appErr.HTTPStatus())
 	}
 
-	rows, total, err := s.List(context.Background(), bob, 20, 0)
+	rows, total, err := s.List(context.Background(), bob, nil, 20, 0)
 	if err != nil {
 		t.Fatalf("liste: %v", err)
 	}
@@ -897,4 +897,127 @@ func TestDepositCreateIsIdempotentUnderConcurrency(t *testing.T) {
 	if hatalar > 0 {
 		t.Errorf("%d istek hata aldı — yarışı kaybeden istek de MEVCUT talebi almalıydı", hatalar)
 	}
+}
+
+// TestListUserDepositsDurumSuzgeci `GET /wallet/deposits?status=` süzgecini
+// doğrular.
+//
+// ÜÇ İDDİA TEK TESTTE:
+//  1. Süzgeç süzer.
+//  2. SAYIM LİSTEYLE AYNI SÜZGECİ ALIR — `CountUserDeposits` süzgeçsiz
+//     kalsaydı liste doğru görünür ama sayfalama "1–25 / 9" derken 3 satır
+//     gösterirdi. Ayrı testte olsaydı bu ayrışma görünmezdi.
+//  3. SAHİPLİK SÜZGEÇTEN ÜSTÜNDÜR (değişmez #7): başka kullanıcının aynı
+//     durumdaki talebi hiçbir süzgeçle görünmez.
+func TestListUserDepositsDurumSuzgeci(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	m := activeBank(t)
+	alice := seedUser(t, "suzgec-alice")
+	bob := seedUser(t, "suzgec-bob")
+
+	mustCreate(t, s, alice, m, 5000, "SUZ-BEKLEYEN")
+	reddedilen := mustCreate(t, s, alice, m, 6000, "SUZ-RED")
+	// Bob'un talebi de REJECTED olur: Alice REJECTED süzdüğünde ONU GÖRMEMELİ.
+	bobunki := mustCreate(t, s, bob, m, 7000, "SUZ-BOB")
+
+	// Durum doğrudan SQL ile kurulur: `Reject` denetim kaydı, yönetici kimliği
+	// ve saat ister; bu testin iddiası ise yalnız SORGUdur.
+	//
+	// `reviewed_at` ZORUNLU: `deposit_reviewed_has_time` kısıtı PENDING dışındaki
+	// her durumda inceleme saatini şart koşar — şemanın kendisi terminal bir
+	// talebin ne zaman karara bağlandığını bilmeyi garanti ediyor.
+	for _, id := range []int64{reddedilen.ID, bobunki.ID} {
+		if _, err := pool.Exec(ctx,
+			`UPDATE deposits SET status='REJECTED', reviewed_at=now() WHERE id=$1`, id); err != nil {
+			t.Fatalf("durum kurulumu: %v", err)
+		}
+	}
+
+	durum := func(v db.DepositStatus) *db.DepositStatus { return &v }
+
+	kontrol := func(ad string, st *db.DepositStatus, bekTutar ...int64) {
+		t.Helper()
+		rows, total, err := s.List(ctx, alice, st, 20, 0)
+		if err != nil {
+			t.Fatalf("%s: liste: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountUserDeposits süzgeci ListUserDeposits ile aynı değil)", ad, total, len(rows))
+		}
+		if len(rows) != len(bekTutar) {
+			t.Fatalf("%s: %d kayıt bekleniyordu, %d geldi", ad, len(bekTutar), len(rows))
+		}
+		// Kayıtlar TUTARLA ayırt edilir: `db.Deposit` bir referans alanı
+		// taşımaz ve üç talebin tutarı bilerek farklı seçildi.
+		got := make(map[int64]bool, len(rows))
+		for _, r := range rows {
+			got[r.AmountMinor] = true
+		}
+		for _, tutar := range bekTutar {
+			if !got[tutar] {
+				t.Errorf("%s: %d kuruşluk talep listede yok", ad, tutar)
+			}
+		}
+	}
+
+	kontrol("süzgeçsiz", nil, 5000, 6000)
+	kontrol("bekleyen", durum(db.DepositStatusPENDING), 5000)
+	// 🔴 Bob'un talebi de REJECTED (7000) — bu satır sahiplik iddiasıdır.
+	kontrol("reddedilen", durum(db.DepositStatusREJECTED), 6000)
+	kontrol("hiç olmayan durum", durum(db.DepositStatusREFUNDED))
+}
+
+// TestListDepositsForAdminAramasi `GET /admin/deposits?q=` aramasını doğrular.
+//
+// 🔴 ASIL İDDİA SAYIMIN LİSTEYLE AYNI SORGUYU KURMASI. `q` kullanıcı
+// sütunlarında (`users.email`, `users.username`) arandığı için `count`
+// sorgusuna da bir `JOIN users` EKLENDİ. JOIN unutulsaydı liste doğru süzerdi
+// ama sayım TÜM kayıtları sayardı: sayfalama "1–25 / 120" derken ekranda 2
+// satır olurdu. Bu test her çağrıda ikisini birlikte ölçer.
+func TestListDepositsForAdminAramasi(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	m := activeBank(t)
+	// `seedUser` son eki hem e-postaya hem kullanıcı adına gömer, yani "ada"
+	// araması bu kullanıcının HER İKİ sütununda da eşleşir.
+	ada := seedUser(t, "ada")
+	kemal := seedUser(t, "kemal")
+
+	mustCreate(t, s, ada, m, 5000, "ARAMA-ADA")
+	mustCreate(t, s, kemal, m, 6000, "ARAMA-KEMAL")
+
+	metin := func(v string) *string { return &v }
+
+	kontrol := func(ad string, ara *string, bekTutar ...int64) {
+		t.Helper()
+		rows, total, err := s.ListForAdmin(ctx, nil, ara, 50, 0)
+		if err != nil {
+			t.Fatalf("%s: liste: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountDepositsForAdmin sorgusu ListDepositsForAdmin ile aynı değil)",
+				ad, total, len(rows))
+		}
+		if len(rows) != len(bekTutar) {
+			t.Fatalf("%s: %d kayıt bekleniyordu, %d geldi", ad, len(bekTutar), len(rows))
+		}
+		got := make(map[int64]bool, len(rows))
+		for _, r := range rows {
+			got[r.AmountMinor] = true
+		}
+		for _, tutar := range bekTutar {
+			if !got[tutar] {
+				t.Errorf("%s: %d kuruşluk talep listede yok", ad, tutar)
+			}
+		}
+	}
+
+	kontrol("aramasız", nil, 5000, 6000)
+	kontrol("kullanıcıya göre", metin("ada"), 5000)
+	// ILIKE: büyük/küçük harf ayrımı yok.
+	kontrol("büyük harf", metin("KEMAL"), 6000)
+	kontrol("eşleşmeyen", metin("bulunmayan-kullanici"))
 }

@@ -439,3 +439,144 @@ func TestMessageLengthIsEnforcedByDB(t *testing.T) {
 		t.Fatalf("beklenen CHECK ihlali değil: %v", err)
 	}
 }
+
+// TestListUserTicketsDurumSuzgeci `GET /tickets?status=` süzgecini doğrular.
+//
+// ÜÇ İDDİA TEK TESTTE: süzgeç süzer · SAYIM listeyle AYNI süzgeci alır
+// (ayrışırsa sayfalama yalan söyler) · SAHİPLİK süzgeçten üstündür
+// (değişmez #7): başkasının aynı durumdaki talebi hiçbir süzgeçle görünmez.
+func TestListUserTicketsDurumSuzgeci(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	alice := seedUser(t, "suzgec-a")
+	bob := seedUser(t, "suzgec-b")
+
+	acik := newTicket(t, s, alice)
+	kapali := newTicket(t, s, alice)
+	bobunki := newTicket(t, s, bob)
+
+	// Durum doğrudan SQL ile kurulur: bu testin iddiası SORGUdur, geçiş
+	// kuralları değil (onları `TestInvalidTicketTransitionIsRejectedByDB` ölçer).
+	//
+	// `closed_at` ZORUNLU: `ticket_closed_has_time` kısıtı kapalı bir talebin
+	// ne zaman kapandığını bilmeyi ŞEMA düzeyinde garanti ediyor.
+	for _, id := range []uuid.UUID{kapali, bobunki} {
+		if _, err := pool.Exec(ctx,
+			`UPDATE tickets SET status='CLOSED', closed_at=now() WHERE public_id=$1`,
+			id); err != nil {
+			t.Fatalf("durum kurulumu: %v", err)
+		}
+	}
+
+	durum := func(v ticketdom.Status) *ticketdom.Status { return &v }
+
+	var ara *string
+	kontrol := func(ad string, st *ticketdom.Status, bekleyen ...uuid.UUID) {
+		t.Helper()
+		rows, total, err := s.List(ctx, alice, st, ara, 20, 0)
+		if err != nil {
+			t.Fatalf("%s: liste: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountUserTickets süzgeci ListUserTickets ile aynı değil)", ad, total, len(rows))
+		}
+		if len(rows) != len(bekleyen) {
+			t.Fatalf("%s: %d talep bekleniyordu, %d geldi", ad, len(bekleyen), len(rows))
+		}
+		got := make(map[uuid.UUID]bool, len(rows))
+		for _, r := range rows {
+			got[r.PublicID] = true
+		}
+		for _, id := range bekleyen {
+			if !got[id] {
+				t.Errorf("%s: %s listede yok", ad, id)
+			}
+		}
+	}
+
+	kontrol("süzgeçsiz", nil, acik, kapali)
+	kontrol("açık", durum(ticketdom.StatusOpen), acik)
+	// 🔴 Bob'un talebi de CLOSED — bu satır sahiplik iddiasıdır.
+	kontrol("kapalı", durum(ticketdom.StatusClosed), kapali)
+	kontrol("hiç olmayan durum", durum(ticketdom.StatusAnswered))
+
+	// ─── `?q=` konu araması ───
+	//
+	// `newTicket` hepsine AYNI konuyu yazar; ayırt etmek için konular
+	// güncellenir. Konu değişimi bu testin iddiası değil, kurulumudur.
+	if _, err := pool.Exec(ctx,
+		`UPDATE tickets SET subject='Bakiye yüklemem görünmüyor' WHERE public_id=$1`, acik); err != nil {
+		t.Fatalf("konu kurulumu: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE tickets SET subject='Numara kodu gelmedi' WHERE public_id=$1`, kapali); err != nil {
+		t.Fatalf("konu kurulumu: %v", err)
+	}
+
+	metin := func(v string) *string { return &v }
+
+	ara = metin("bakiye")
+	kontrol("konu araması", nil, acik)
+	// ILIKE: büyük/küçük harf ayrımı yok.
+	ara = metin("NUMARA")
+	kontrol("büyük harf", nil, kapali)
+	ara = metin("bulunmayan-konu")
+	kontrol("eşleşmeyen", nil)
+	// Arama ve durum BİRLİKTE daraltır, biri diğerini ezmez.
+	ara = metin("numara")
+	kontrol("arama + yanlış durum", durum(ticketdom.StatusOpen))
+	ara = metin("numara")
+	kontrol("arama + doğru durum", durum(ticketdom.StatusClosed), kapali)
+}
+
+// TestListTicketsForAdminAramasi `GET /admin/tickets?q=` aramasını doğrular.
+//
+// 🔴 ASIL İDDİA SAYIMIN LİSTEYLE AYNI SORGUYU KURMASI: `q` kullanıcı
+// sütunlarında da arandığı için `count` sorgusuna `JOIN users` EKLENDİ.
+// JOIN unutulsaydı sayfalama yanlış toplam gösterirdi.
+func TestListTicketsForAdminAramasi(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	ada := seedUser(t, "ada")
+	kemal := seedUser(t, "kemal")
+
+	adaninki := newTicket(t, s, ada)
+	kemalinki := newTicket(t, s, kemal)
+	if _, err := pool.Exec(ctx,
+		`UPDATE tickets SET subject='Numara kodu gelmedi' WHERE public_id=$1`, kemalinki); err != nil {
+		t.Fatalf("konu kurulumu: %v", err)
+	}
+
+	metin := func(v string) *string { return &v }
+
+	kontrol := func(ad string, ara *string, bekleyenler ...uuid.UUID) {
+		t.Helper()
+		rows, total, err := s.AdminList(ctx, ticketsvc.AdminFilter{Q: ara}, 50, 0)
+		if err != nil {
+			t.Fatalf("%s: liste: %v", ad, err)
+		}
+		if int(total) != len(rows) {
+			t.Errorf("%s: SAYIM LİSTEDEN AYRIŞTI — total=%d satır=%d "+
+				"(CountTicketsForAdmin sorgusu ListTicketsForAdmin ile aynı değil)",
+				ad, total, len(rows))
+		}
+		if len(rows) != len(bekleyenler) {
+			t.Fatalf("%s: %d talep bekleniyordu, %d geldi", ad, len(bekleyenler), len(rows))
+		}
+		got := make(map[uuid.UUID]bool, len(rows))
+		for _, r := range rows {
+			got[r.PublicID] = true
+		}
+		for _, id := range bekleyenler {
+			if !got[id] {
+				t.Errorf("%s: %s listede yok", ad, id)
+			}
+		}
+	}
+
+	kontrol("aramasız", nil, adaninki, kemalinki)
+	kontrol("kullanıcıya göre", metin("ada"), adaninki)
+	kontrol("konuya göre", metin("Numara kodu"), kemalinki)
+	kontrol("eşleşmeyen", metin("bulunmayan-sey"))
+}

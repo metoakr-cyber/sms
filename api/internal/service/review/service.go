@@ -85,17 +85,32 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (db.Review, error)
 }
 
 // List kullanıcının KENDİ yorumlarını ve durumlarını döner.
-func (s *Service) List(ctx context.Context, userID int64, limit, offset int32) (
+// `status` NIL ise durum süzgeci UYGULANMAZ. Sayım listeyle AYNI süzgeci alır.
+//
+// 🔴 `userID` süzgeçten AYRI parametredir ve sorguya her zaman girer
+// (değişmez #7); hiçbir `status` değeri başkasının yorumunu döndüremez.
+func (s *Service) List(
+	ctx context.Context, userID int64, status *reviewdom.Status, limit, offset int32,
+) (
 	[]db.Review, int64, error,
 ) {
+	// Alan adı dönüşümü `AdminList` ile aynı: domain tipi veritabanı enum'una
+	// SERVİSTE çevrilir, transport katmanı `db` tipini hiç tanımaz.
+	var filter *db.ReviewStatus
+	if status != nil {
+		v := db.ReviewStatus(*status)
+		filter = &v
+	}
 	q := s.tx.Queries()
 	rows, err := q.ListReviewsForUser(ctx, db.ListReviewsForUserParams{
-		UserID: userID, Lim: limit, Off: offset,
+		UserID: userID, Status: filter, Lim: limit, Off: offset,
 	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
-	total, err := q.CountReviewsForUser(ctx, userID)
+	total, err := q.CountReviewsForUser(ctx, db.CountReviewsForUserParams{
+		UserID: userID, Status: filter,
+	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
@@ -183,6 +198,9 @@ func (s *Service) PublicList(ctx context.Context) ([]PublicReview, PublicSummary
 // AdminFilter yönetim listesinin süzgeci.
 type AdminFilter struct {
 	Status *reviewdom.Status
+	// Q serbest metin: yorum gövdesi + kullanıcı e-postası/adı. NIL ise
+	// aranmaz; boş dize "hiçbir şeyle eşleşme" değil, "arama yok" demektir.
+	Q *string
 }
 
 // AdminList süzgeçle tüm yorumları döner.
@@ -198,12 +216,15 @@ func (s *Service) AdminList(ctx context.Context, f AdminFilter, limit, offset in
 	}
 	q := s.tx.Queries()
 	rows, err := q.ListReviewsForAdmin(ctx, db.ListReviewsForAdminParams{
-		Status: filter, Lim: limit, Off: offset,
+		Status: filter, Q: f.Q, Lim: limit, Off: offset,
 	})
 	if err != nil {
 		return nil, 0, 0, apperr.Internal(err)
 	}
-	total, err := q.CountReviewsForAdmin(ctx, filter)
+	// Sayım listeyle AYNI süzgeci alır (queries/reviews.sql notu).
+	total, err := q.CountReviewsForAdmin(ctx, db.CountReviewsForAdminParams{
+		Status: filter, Q: f.Q,
+	})
 	if err != nil {
 		return nil, 0, 0, apperr.Internal(err)
 	}

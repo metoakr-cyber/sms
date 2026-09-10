@@ -56,6 +56,25 @@
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
                "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /*
+   * `max-w-12xl` — panel ve yönetim içeriğinin genişlik tavanı.
+   *
+   * Tailwind'in hazır ölçeği `7xl`de (80rem / 1280px) biter; `12xl` diye bir
+   * sınıf YOKTUR ve tanımlanmadan yazılırsa sessizce hiçbir şey yapmaz —
+   * ne derleme ne tsc bunu yakalar. Jeton burada tanımlandığı için sınıf
+   * gerçekten üretilir.
+   *
+   * 120rem = 1920px: yaygın masaüstü çözünürlüklerinin tamamını kapsar, yani
+   * pratikte "sayfanın tamamı" demektir. Sınır yine de VAR: 2560px ve üstü
+   * ultra-geniş ekranlarda tavansız bir tablo satırı 2500px'e uzar ve gözün
+   * satır başından satır sonuna gitmesi bir para tablosunda YANLIŞ SATIRI
+   * okumakla biter.
+   *
+   * Ölçek Tailwind'in kendi adlandırma mantığını sürdürür (7xl=80, 8xl=88 …
+   * 12xl=120rem); ara basamaklar KULLANILMADIKLARI için tanımlanmadı.
+   */
+  --container-12xl: 120rem;
 }
 
 /*

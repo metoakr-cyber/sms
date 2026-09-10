@@ -71,22 +71,47 @@ type Querier interface {
 	CountActiveRulesByScope(ctx context.Context, scope PricingScope) (int64, error)
 	CountAllOrders(ctx context.Context, arg CountAllOrdersParams) (int64, error)
 	CountAuditLogsForAdmin(ctx context.Context, arg CountAuditLogsForAdminParams) (int64, error)
-	CountDepositsForAdmin(ctx context.Context, status *DepositStatus) (int64, error)
+	// 🔴 SÜZGEÇ VE JOIN, ListDepositsForAdmin İLE BİREBİR AYNI. `q` kullanıcı
+	// sütunlarında arandığı için sayım da `users`a katılmak ZORUNDA; katılmasaydı
+	// arama yapıldığında sayfalama yanlış toplam gösterirdi.
+	CountDepositsForAdmin(ctx context.Context, arg CountDepositsForAdminParams) (int64, error)
 	CountDimensionMaps(ctx context.Context, arg CountDimensionMapsParams) (int64, error)
+	//
+	// 🔴 SÜZGEÇLER `ListLedgerEntries` İLE BİREBİR AYNI.
+	//
+	// ÖNCEDEN DEĞİLDİ: liste `from_ts`/`to_ts` süzerken sayım SÜZMÜYORDU. Tarih
+	// aralığı arayüzde henüz açılmamıştı, yani hata gizli kalmıştı; açıldığı gün
+	// sayfalama "1–25 / 412" derken liste 3 satır gösterecekti. `q` eklenirken
+	// ikisi tek elden yazıldı.
+	// test: wallet_integration_test.go#TestListLedgerEntriesSuzgecleri
 	CountLedgerEntries(ctx context.Context, arg CountLedgerEntriesParams) (int64, error)
 	CountOrderMessages(ctx context.Context, orderID int64) (int64, error)
 	// Yönetim menüsündeki rozet için: kaç yorum karar bekliyor.
 	CountPendingReviews(ctx context.Context) (int64, error)
 	// Süzgeç koşulu ListReviewsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
 	// sayfalama "23 kayıt" der ama 12 satır gösterir.
-	CountReviewsForAdmin(ctx context.Context, status *ReviewStatus) (int64, error)
-	CountReviewsForUser(ctx context.Context, userID int64) (int64, error)
+	// `q` kullanıcı sütunlarında da arandığı için sayım `users`a katılmak zorunda.
+	CountReviewsForAdmin(ctx context.Context, arg CountReviewsForAdminParams) (int64, error)
+	// 🔴 SÜZGEÇ `ListReviewsForUser` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+	// yalan söyler (bkz. orders.sql, CountUserOrders notu).
+	CountReviewsForUser(ctx context.Context, arg CountReviewsForUserParams) (int64, error)
 	// Süzgeç koşulu ListTicketsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
 	// sayfalama "23 kayıt" der ama 12 satır gösterir.
+	// `q` kullanıcı sütunlarında da arandığı için sayım `users`a katılmak zorunda.
 	CountTicketsForAdmin(ctx context.Context, arg CountTicketsForAdminParams) (int64, error)
-	CountUserDeposits(ctx context.Context, userID int64) (int64, error)
-	CountUserOrders(ctx context.Context, userID int64) (int64, error)
-	CountUserTickets(ctx context.Context, userID int64) (int64, error)
+	// 🔴 SÜZGEÇ `ListUserDeposits` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+	// yalan söyler (bkz. orders.sql, CountUserOrders notu).
+	// test: deposit_integration_test.go#TestListUserDepositsDurumSuzgeci
+	CountUserDeposits(ctx context.Context, arg CountUserDepositsParams) (int64, error)
+	//
+	// 🔴 SÜZGEÇLER `ListUserOrders` İLE BİREBİR AYNI OLMAK ZORUNDA. Ayrışırsa
+	// sayfalama yalan söyler: "1–25 / 300" yazarken liste 4 satır gösterir ve
+	// "Sonraki" boş sayfa açar. İki sorgu tek bir kavramın iki yarısıdır.
+	// test: order_integration_test.go#TestListUserOrdersFiltreleri
+	CountUserOrders(ctx context.Context, arg CountUserOrdersParams) (int64, error)
+	// 🔴 SÜZGEÇ `ListUserTickets` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+	// yalan söyler (bkz. orders.sql, CountUserOrders notu).
+	CountUserTickets(ctx context.Context, arg CountUserTicketsParams) (int64, error)
 	CountUsersForAdmin(ctx context.Context, arg CountUsersForAdminParams) (int64, error)
 	CreateAuthToken(ctx context.Context, arg CreateAuthTokenParams) (AuthToken, error)
 	// Bakiye yükleme talepleri (FR-500 … FR-503).
@@ -397,6 +422,10 @@ type Querier interface {
 	ListExpiredPendingOrders(ctx context.Context, arg ListExpiredPendingOrdersParams) ([]Order, error)
 	// Kullanıcının hareket dökümü. SAHİPLİK sorgunun parçasıdır: user_id ayrı bir
 	// if kontrolü değil, WHERE koşuludur (docs/design.md §10).
+	//
+	// `q` SERBEST METİN: not ve referans kimliği. Tür adı ARANMAZ — "iade" yazan
+	// kullanıcı REFUND satırlarını beklerdi ama tür adı veritabanında DURMAZ,
+	// sunucuda enum'dan üretilir (`ledgerTypeLabel`). O iş tür süzgecinindir.
 	ListLedgerEntries(ctx context.Context, arg ListLedgerEntriesParams) ([]LedgerEntry, error)
 	// Bir ürün için sağlayıcı teklifleri; en ucuz önce.
 	ListOffersForProduct(ctx context.Context, productID int64) ([]ListOffersForProductRow, error)
@@ -484,6 +513,9 @@ type Querier interface {
 	// bakar. Tek bir sıralama ikisini de doğru yapamaz.
 	ListReviewsForAdmin(ctx context.Context, arg ListReviewsForAdminParams) ([]ListReviewsForAdminRow, error)
 	// Kullanıcının KENDİ yorumları ve durumları. En yeni üstte.
+	//
+	// Durum süzgeci: `sqlc.narg` NULL ise süzme yok.
+	// 🔴 `user_id` koşulu süzgeçten bağımsızdır (değişmez #7).
 	ListReviewsForUser(ctx context.Context, arg ListReviewsForUserParams) ([]Review, error)
 	// Servis IZGARASI için özet: yalnız en az bir ülkede STOKLU olan servisler,
 	// her biri için stoklu ülke sayısı.
@@ -535,6 +567,10 @@ type Querier interface {
 	// test: refund_retry_integration_test.go#TestReaperIgnoresScheduledRefundOrders
 	ListUnclosedTerminalOrders(ctx context.Context, lim int32) ([]Order, error)
 	// deposits_user_idx (user_id, created_at DESC) tam olarak bu sıralamayı kullanır.
+	//
+	// Durum süzgeci `ListDepositsForAdmin` ile AYNI desendir: `sqlc.narg` NULL ise
+	// süzme yok. 🔴 `user_id` koşulu süzgeçten bağımsızdır ve kaldırılamaz —
+	// sahiplik sorgunun parçasıdır (değişmez #7).
 	ListUserDeposits(ctx context.Context, arg ListUserDepositsParams) ([]Deposit, error)
 	//
 	// 🔴 `icon_url` CANLI KATALOGDAN gelir, sipariş kaydından DEĞİL.
@@ -557,9 +593,34 @@ type Querier interface {
 	// tipi bekleyen tüm çağrı yerleri kırılır. `embed` `db.Order`'ı olduğu gibi
 	// korur, `icon_url`'i yanına ekler — ve şemaya sütun eklendiğinde bu sorgu
 	// kendiliğinden güncel kalır.
+	//
+	// SÜZGEÇLER — `sqlc.narg()` + "NULL ise süzme" deseni (CLAUDE.md sqlc kuralları).
+	//
+	// ÜÇ SÜZGEÇ VARDIR VE `only_active` AYRI DURMAK ZORUNDADIR:
+	//   status       → TEK durum eşleşmesi ("İptal edilenleri göster")
+	//   only_active  → "AKTİF" = PENDING **veya** ACTIVE, yani tek durum DEĞİL
+	//   q            → serbest metin
+	// `ListTicketsForAdmin`'deki `only_pending` ile aynı gerekçe: bir kullanıcı
+	// kavramı ("aktif siparişim") birden çok duruma karşılık geliyorsa, onu tek
+	// durumlu süzgece sıkıştırmak listeyi sessizce eksiltir. ACTIVE, kiralık
+	// siparişin süren dönemidir ve özet ekranında gizlenemez.
+	// Go'da string birleştirerek SQL kurulmaz; `ListUsers` ile AYNI desen.
+	//
+	// 🔴 `user_id` KOŞULU HER İKİ SÜZGEÇTEN ÖNCE GELİR ve kaldırılamaz: sahiplik
+	// sorgunun parçasıdır (değişmez #7). Hiçbir `q`/`status` bileşimi başka bir
+	// kullanıcının siparişini döndüremez.
+	//
+	// İNDEKS EKLENMEDİ: `ILIKE '%...%'` bir btree indeksi kullanamaz zaten, ama
+	// tarama `user_id` ile ZATEN daraltılmış küçük bir kümede olur (bir kullanıcının
+	// kendi siparişleri) — planlayıcı `orders_user_idx` (user_id, created_at DESC) ile satırları
+	// getirir, süzgeç o küme üzerinde çalışır. Gerçek bir sorun ölçülürse çare
+	// `pg_trgm` GIN indeksidir, gövdede string birleştirmek değil.
 	ListUserOrders(ctx context.Context, arg ListUserOrdersParams) ([]ListUserOrdersRow, error)
 	ListUserSessions(ctx context.Context, userID int64) ([]Session, error)
 	// tickets_user_idx (user_id, last_reply_at DESC) tam olarak bu sıralamayı kullanır.
+	//
+	// Durum süzgeci `ListTicketsForAdmin` ile AYNI desen: `sqlc.narg` NULL ise
+	// süzme yok. 🔴 `user_id` koşulu süzgeçten bağımsızdır (değişmez #7).
 	ListUserTickets(ctx context.Context, arg ListUserTicketsParams) ([]ListUserTicketsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	// Yönetim kullanıcı listesi.

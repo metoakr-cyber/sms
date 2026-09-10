@@ -249,7 +249,8 @@ func run() error {
 
 	router := httptransport.NewRouter(httptransport.Deps{
 		Config: cfg, Pool: pool, Redis: rdb, Queries: queries,
-		Sessions: sessions, Limiter: limiter, Secrets: secrets,
+		Sessions: sessions, Limiter: limiter, RateLimitFactor: cfg.RateLimitFactor,
+		Secrets: secrets,
 		AuthSvc: authService, WalletSvc: walletService, QuoteSvc: quoteService,
 		OrderSvc: orderService, OrderBus: orderBus,
 		DepositSvc:   depositService,

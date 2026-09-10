@@ -14,32 +14,52 @@ import (
 
 const countTicketsForAdmin = `-- name: CountTicketsForAdmin :one
 SELECT count(*) FROM tickets t
+JOIN users u ON u.id = t.user_id
 WHERE ($1::ticket_status IS NULL
        OR t.status = $1::ticket_status)
   AND (NOT $2::boolean
        OR t.status IN ('OPEN', 'USER_REPLIED'))
+  AND ($3::text IS NULL
+       OR t.subject::text  ILIKE '%' || $3::text || '%'
+       OR u.email::text    ILIKE '%' || $3::text || '%'
+       OR u.username::text ILIKE '%' || $3::text || '%')
 `
 
 type CountTicketsForAdminParams struct {
 	Status      *TicketStatus
 	OnlyPending bool
+	Q           *string
 }
 
 // Süzgeç koşulu ListTicketsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
 // sayfalama "23 kayıt" der ama 12 satır gösterir.
+// `q` kullanıcı sütunlarında da arandığı için sayım `users`a katılmak zorunda.
 func (q *Queries) CountTicketsForAdmin(ctx context.Context, arg CountTicketsForAdminParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countTicketsForAdmin, arg.Status, arg.OnlyPending)
+	row := q.db.QueryRow(ctx, countTicketsForAdmin, arg.Status, arg.OnlyPending, arg.Q)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const countUserTickets = `-- name: CountUserTickets :one
-SELECT count(*) FROM tickets WHERE user_id = $1
+SELECT count(*) FROM tickets
+WHERE user_id = $1
+  AND ($2::ticket_status IS NULL
+       OR status = $2::ticket_status)
+  AND ($3::text IS NULL
+       OR subject::text ILIKE '%' || $3::text || '%')
 `
 
-func (q *Queries) CountUserTickets(ctx context.Context, userID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countUserTickets, userID)
+type CountUserTicketsParams struct {
+	UserID int64
+	Status *TicketStatus
+	Q      *string
+}
+
+// 🔴 SÜZGEÇ `ListUserTickets` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+// yalan söyler (bkz. orders.sql, CountUserOrders notu).
+func (q *Queries) CountUserTickets(ctx context.Context, arg CountUserTicketsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUserTickets, arg.UserID, arg.Status, arg.Q)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -298,13 +318,18 @@ WHERE ($1::ticket_status IS NULL
        OR t.status = $1::ticket_status)
   AND (NOT $2::boolean
        OR t.status IN ('OPEN', 'USER_REPLIED'))
+  AND ($3::text IS NULL
+       OR t.subject::text  ILIKE '%' || $3::text || '%'
+       OR u.email::text    ILIKE '%' || $3::text || '%'
+       OR u.username::text ILIKE '%' || $3::text || '%')
 ORDER BY t.last_reply_at DESC
-LIMIT $4 OFFSET $3
+LIMIT $5 OFFSET $4
 `
 
 type ListTicketsForAdminParams struct {
 	Status      *TicketStatus
 	OnlyPending bool
+	Q           *string
 	Off         int32
 	Lim         int32
 }
@@ -340,6 +365,7 @@ func (q *Queries) ListTicketsForAdmin(ctx context.Context, arg ListTicketsForAdm
 	rows, err := q.db.Query(ctx, listTicketsForAdmin,
 		arg.Status,
 		arg.OnlyPending,
+		arg.Q,
 		arg.Off,
 		arg.Lim,
 	)
@@ -381,12 +407,18 @@ SELECT t.id, t.public_id, t.user_id, t.subject, t.priority, t.status, t.last_rep
        (SELECT count(*) FROM ticket_messages m WHERE m.ticket_id = t.id) AS message_count
 FROM tickets t
 WHERE t.user_id = $1
+  AND ($2::ticket_status IS NULL
+       OR t.status = $2::ticket_status)
+  AND ($3::text IS NULL
+       OR t.subject::text ILIKE '%' || $3::text || '%')
 ORDER BY t.last_reply_at DESC
-LIMIT $3 OFFSET $2
+LIMIT $5 OFFSET $4
 `
 
 type ListUserTicketsParams struct {
 	UserID int64
+	Status *TicketStatus
+	Q      *string
 	Off    int32
 	Lim    int32
 }
@@ -406,8 +438,17 @@ type ListUserTicketsRow struct {
 }
 
 // tickets_user_idx (user_id, last_reply_at DESC) tam olarak bu sıralamayı kullanır.
+//
+// Durum süzgeci `ListTicketsForAdmin` ile AYNI desen: `sqlc.narg` NULL ise
+// süzme yok. 🔴 `user_id` koşulu süzgeçten bağımsızdır (değişmez #7).
 func (q *Queries) ListUserTickets(ctx context.Context, arg ListUserTicketsParams) ([]ListUserTicketsRow, error) {
-	rows, err := q.db.Query(ctx, listUserTickets, arg.UserID, arg.Off, arg.Lim)
+	rows, err := q.db.Query(ctx, listUserTickets,
+		arg.UserID,
+		arg.Status,
+		arg.Q,
+		arg.Off,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -112,17 +112,32 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (db.Ticket, error)
 }
 
 // List kullanıcının KENDİ taleplerini döner.
-func (s *Service) List(ctx context.Context, userID int64, limit, offset int32) (
+// `status` NIL ise durum süzgeci UYGULANMAZ. Sayım listeyle AYNI süzgeci alır.
+//
+// 🔴 `userID` süzgeçten AYRI parametredir ve sorguya her zaman girer
+// (değişmez #7); hiçbir `status` değeri başkasının talebini döndüremez.
+func (s *Service) List(
+	ctx context.Context, userID int64, status *ticketdom.Status, q *string, limit, offset int32,
+) (
 	[]db.ListUserTicketsRow, int64, error,
 ) {
-	q := s.tx.Queries()
-	rows, err := q.ListUserTickets(ctx, db.ListUserTicketsParams{
-		UserID: userID, Lim: limit, Off: offset,
+	// Alan adı dönüşümü `AdminList` ile aynı: domain tipi veritabanı enum'una
+	// SERVİSTE çevrilir, transport katmanı `db` tipini hiç tanımaz.
+	var filter *db.TicketStatus
+	if status != nil {
+		v := db.TicketStatus(*status)
+		filter = &v
+	}
+	qs := s.tx.Queries()
+	rows, err := qs.ListUserTickets(ctx, db.ListUserTicketsParams{
+		UserID: userID, Status: filter, Q: q, Lim: limit, Off: offset,
 	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
-	total, err := q.CountUserTickets(ctx, userID)
+	total, err := qs.CountUserTickets(ctx, db.CountUserTicketsParams{
+		UserID: userID, Status: filter, Q: q,
+	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
@@ -200,6 +215,9 @@ type AdminFilter struct {
 	Status *ticketdom.Status
 	// OnlyPending true ise yalnız personel müdahalesi bekleyen talepler.
 	OnlyPending bool
+	// Q serbest metin: talep konusu + kullanıcı e-postası/adı. NIL ise
+	// aranmaz; boş dize "hiçbir şeyle eşleşme" değil, "arama yok" demektir.
+	Q *string
 }
 
 // AdminList süzgeçle tüm talepleri döner.
@@ -215,13 +233,14 @@ func (s *Service) AdminList(ctx context.Context, f AdminFilter, limit, offset in
 	}
 	q := s.tx.Queries()
 	rows, err := q.ListTicketsForAdmin(ctx, db.ListTicketsForAdminParams{
-		Status: filter, OnlyPending: f.OnlyPending, Lim: limit, Off: offset,
+		Status: filter, OnlyPending: f.OnlyPending, Q: f.Q, Lim: limit, Off: offset,
 	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)
 	}
+	// Sayım listeyle AYNI süzgeci alır (queries/tickets.sql notu).
 	total, err := q.CountTicketsForAdmin(ctx, db.CountTicketsForAdminParams{
-		Status: filter, OnlyPending: f.OnlyPending,
+		Status: filter, OnlyPending: f.OnlyPending, Q: f.Q,
 	})
 	if err != nil {
 		return nil, 0, apperr.Internal(err)

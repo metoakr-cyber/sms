@@ -30,20 +30,24 @@ import (
 
 // Deps yönlendiricinin ihtiyaç duyduğu bağımlılıklar.
 type Deps struct {
-	Config       *config.Config
-	Pool         *pgxpool.Pool
-	Redis        *goredis.Client
-	Queries      *db.Queries
-	Sessions     port.SessionStore
-	Limiter      port.RateLimiter
-	Secrets      *crypto.SecretBox
-	AuthSvc      *authsvc.Service
-	WebhookQueue handler.WebhookQueue
-	WalletSvc    *walletsvc.Service
-	QuoteSvc     *pricingsvc.QuoteService
-	OrderSvc     *ordersvc.Service
-	OrderBus     handler.OrderStream
-	DepositSvc   *depositsvc.Service
+	Config   *config.Config
+	Pool     *pgxpool.Pool
+	Redis    *goredis.Client
+	Queries  *db.Queries
+	Sessions port.SessionStore
+	Limiter  port.RateLimiter
+	// RateLimitFactor tüm limitleri çarpar; 0 ya da 1 ise değişiklik olmaz.
+	// Üretimde config katmanı 1 dışındaki değeri açılışta reddeder.
+	// test: config_test.go#TestRateLimitFactorIsDevelopmentOnly
+	RateLimitFactor int
+	Secrets         *crypto.SecretBox
+	AuthSvc         *authsvc.Service
+	WebhookQueue    handler.WebhookQueue
+	WalletSvc       *walletsvc.Service
+	QuoteSvc        *pricingsvc.QuoteService
+	OrderSvc        *ordersvc.Service
+	OrderBus        handler.OrderStream
+	DepositSvc      *depositsvc.Service
 
 	// TicketSvc destek talepleri (FR-600).
 	TicketSvc *ticketsvc.Service
@@ -68,6 +72,19 @@ type Deps struct {
 }
 
 // NewRouter uygulamanın HTTP yönlendiricisini kurar.
+// hizSiniri hız limiti sayısını ortam katsayısıyla ölçekler.
+//
+// 🔴 KATSAYI YALNIZ GELİŞTİRMEDE 1'DEN BÜYÜK OLABİLİR (`config.Load`,
+// `RATE_LIMIT_FACTOR`). Limitler tek tek değil TOPLUCA ölçeklenir: aralarındaki
+// oran (sipariş 20 < teklif 60 < webhook 300) bilinçlidir ve tek tek gevşetmek
+// o oranı sessizce bozardı.
+func hizSiniri(temel, katsayi int) int {
+	if katsayi < 1 {
+		return temel
+	}
+	return temel * katsayi
+}
+
 func NewRouter(d Deps) *gin.Engine {
 	if d.Config.Env.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
@@ -136,7 +153,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	// Kaba kuvvete karşı asıl savunma HESAP BAZLI kilittir (5 deneme / 15 dk,
 	// service/auth içinde) — docs/trd.md NFR-802, KK-102.
 	authLimit := middleware.RateLimit(d.Limiter, "auth", middleware.RateLimitConfig{
-		Limit: 30, Window: time.Minute, KeyFn: middleware.ByIP,
+		Limit: hizSiniri(30, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByIP,
 	}, Fail)
 
 	// ─── Kimlik doğrulama gerektirmeyen ───
@@ -202,7 +219,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.POST("/wallet/deposits",
 			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "deposit", middleware.RateLimitConfig{
-				Limit: 10, Window: time.Minute, KeyFn: middleware.ByUser,
+				Limit: hizSiniri(10, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			depositH.Create)
 
@@ -211,7 +228,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.POST("/wallet/deposits/:id/receipt",
 			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "receipt", middleware.RateLimitConfig{
-				Limit: 10, Window: time.Minute, KeyFn: middleware.ByUser,
+				Limit: hizSiniri(10, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			depositH.UploadReceipt)
 
@@ -230,7 +247,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		// Talep açmak DAR bir limit taşır: her talep bir yöneticiye iş üretir.
 		auth.POST("/tickets",
 			middleware.RateLimit(d.Limiter, "ticket", middleware.RateLimitConfig{
-				Limit: 5, Window: time.Minute, KeyFn: middleware.ByUser,
+				Limit: hizSiniri(5, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			ticketH.Create)
 
@@ -238,7 +255,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		// birkaç mesaj yazmak olağandır, yeni talep açmak değildir.
 		auth.POST("/tickets/:id/messages",
 			middleware.RateLimit(d.Limiter, "ticket-msg", middleware.RateLimitConfig{
-				Limit: 20, Window: time.Minute, KeyFn: middleware.ByUser,
+				Limit: hizSiniri(20, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			ticketH.AddMessage)
 
@@ -262,7 +279,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.POST("/reviews",
 			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "review", middleware.RateLimitConfig{
-				Limit: 5, Window: time.Minute, KeyFn: middleware.ByUser,
+				Limit: hizSiniri(5, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			reviewH.Create)
 
@@ -276,7 +293,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.GET("/catalog/quote",
 			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "quote", middleware.RateLimitConfig{
-				Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
+				Limit: hizSiniri(60, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			catalogH.Quote)
 
@@ -289,7 +306,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.POST("/orders",
 			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "order", middleware.RateLimitConfig{
-				Limit: 20, Window: time.Minute, KeyFn: middleware.ByUser,
+				Limit: hizSiniri(20, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			orderH.Create)
 
@@ -318,7 +335,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 			d.Config.WebhookHeroSMSAllowedIPs, d.Config.TrustedProxies, responder)
 		rg.POST("/webhooks/herosms/:secret",
 			middleware.RateLimit(d.Limiter, "webhook", middleware.RateLimitConfig{
-				Limit: 300, Window: time.Minute, KeyFn: middleware.ByIP,
+				Limit: hizSiniri(300, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByIP,
 			}, Fail),
 			webhookH.HeroSMS)
 	} else {
@@ -333,7 +350,7 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 	// Yönetim uçları da hız limitlidir: yetkili bir hesabın ele geçirilmesi
 	// veya bir betik hatası, sınırsız bakiye düzeltmesi anlamına gelmemeli.
 	adminLimit := middleware.RateLimit(d.Limiter, "admin", middleware.RateLimitConfig{
-		Limit: 60, Window: time.Minute, KeyFn: middleware.ByUser,
+		Limit: hizSiniri(60, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 	}, Fail)
 
 	if d.RuleSvc == nil {

@@ -20,13 +20,23 @@ RETURNING *;
 
 -- name: ListReviewsForUser :many
 -- Kullanıcının KENDİ yorumları ve durumları. En yeni üstte.
+--
+-- Durum süzgeci: `sqlc.narg` NULL ise süzme yok.
+-- 🔴 `user_id` koşulu süzgeçten bağımsızdır (değişmez #7).
 SELECT * FROM reviews
 WHERE user_id = @user_id
+  AND (sqlc.narg('status')::review_status IS NULL
+       OR status = sqlc.narg('status')::review_status)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountReviewsForUser :one
-SELECT count(*) FROM reviews WHERE user_id = @user_id;
+-- 🔴 SÜZGEÇ `ListReviewsForUser` İLE AYNI OLMAK ZORUNDA; ayrışırsa sayfalama
+-- yalan söyler (bkz. orders.sql, CountUserOrders notu).
+SELECT count(*) FROM reviews
+WHERE user_id = @user_id
+  AND (sqlc.narg('status')::review_status IS NULL
+       OR status = sqlc.narg('status')::review_status);
 
 -- name: GetReviewForUser :one
 -- SAHİPLİK SORGUNUN PARÇASIDIR (değişmez #7). Başkasının yorumu ile var
@@ -69,6 +79,10 @@ FROM reviews r
 JOIN users u ON u.id = r.user_id
 WHERE (sqlc.narg('status')::review_status IS NULL
        OR r.status = sqlc.narg('status')::review_status)
+  AND (sqlc.narg('q')::text IS NULL
+       OR r.body::text     ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.email::text    ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.username::text ILIKE '%' || sqlc.narg('q')::text || '%')
 -- Bekleyenler EN ESKİ ÖNCE: moderasyon bir kuyruktur, en uzun bekleyen ilk
 -- sırada olmalı. Karara bağlanmışlar en yeni önce: yönetici son ne yaptığına
 -- bakar. Tek bir sıralama ikisini de doğru yapamaz.
@@ -81,9 +95,15 @@ LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 -- name: CountReviewsForAdmin :one
 -- Süzgeç koşulu ListReviewsForAdmin ile BİREBİR AYNI olmalıdır; ayrışırsa
 -- sayfalama "23 kayıt" der ama 12 satır gösterir.
+-- `q` kullanıcı sütunlarında da arandığı için sayım `users`a katılmak zorunda.
 SELECT count(*) FROM reviews r
+JOIN users u ON u.id = r.user_id
 WHERE (sqlc.narg('status')::review_status IS NULL
-       OR r.status = sqlc.narg('status')::review_status);
+       OR r.status = sqlc.narg('status')::review_status)
+  AND (sqlc.narg('q')::text IS NULL
+       OR r.body::text     ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.email::text    ILIKE '%' || sqlc.narg('q')::text || '%'
+       OR u.username::text ILIKE '%' || sqlc.narg('q')::text || '%');
 
 -- name: CountPendingReviews :one
 -- Yönetim menüsündeki rozet için: kaç yorum karar bekliyor.
