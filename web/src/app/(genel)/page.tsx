@@ -5,6 +5,7 @@ import { Button } from '@/components/ui';
 import { Belir, Akordeon } from '@/components/animasyon';
 import { Bolum, BolumBasligi, Hap, IkonKaro } from '@/components/pazarlama/parcalar';
 import { Istatistikler } from '@/components/pazarlama/istatistikler';
+import { HeroGorsel } from '@/components/pazarlama/hero-gorsel';
 import {
   Adimlar, HizmetKartlari, KapanisCTA, OzellikIzgarasi, PopulerServisler,
 } from '@/components/pazarlama/bolumler';
@@ -96,54 +97,66 @@ export default async function HomePage() {
               className="nokta-doku pointer-events-none absolute inset-0 opacity-60
                          [mask-image:radial-gradient(60%_50%_at_50%_0%,#000,transparent)]" />
         <div className="relative mx-auto max-w-6xl">
-          <div className="max-w-3xl">
-            <Hap>
-              <span className="relative inline-flex size-2 rounded-full
-                               bg-[var(--color-ok)] text-[var(--color-ok)] nabiz" />
-              Kod gelmezse ücret iade
-            </Hap>
-            <h1 className="mt-5 text-balance text-4xl font-extrabold leading-[1.08]
-                           tracking-tight sm:text-5xl md:text-6xl">
-              Sanal numara ile{' '}
-              <span className="vurgu-metin">anında SMS onayı</span>
-            </h1>
-            <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted
-                          md:text-lg">
-              WhatsApp, Telegram, Instagram ve yüzlerce servis için numara alın.
-              Onay kodu ekranınıza otomatik düşer — kod gelmezse ücretiniz
-              hesabınıza geri yüklenir.
-            </p>
+          {/* Tek sütun taban; görselin yanına ancak `lg`'de yatay yer var. */}
+          <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center lg:gap-8
+                          xl:gap-12">
+            <div className="max-w-3xl">
+              <Hap>
+                <span className="relative inline-flex size-2 rounded-full
+                                 bg-[var(--color-ok)] text-[var(--color-ok)] nabiz" />
+                Kod gelmezse ücret iade
+              </Hap>
+              <h1 className="mt-5 text-balance text-4xl font-extrabold leading-[1.08]
+                             tracking-tight sm:text-5xl md:text-6xl">
+                Sanal numara ile{' '}
+                <span className="vurgu-metin">anında SMS onayı</span>
+              </h1>
+              <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted
+                            md:text-lg">
+                WhatsApp, Telegram, Instagram ve yüzlerce servis için numara alın.
+                Onay kodu ekranınıza otomatik düşer — kod gelmezse ücretiniz
+                hesabınıza geri yüklenir.
+              </p>
 
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link href="/kayit" className="sm:w-auto">
-                <Button
-                  fullWidth
-                  className="cta-marka sm:w-auto sm:px-7"
-                >
-                  Ücretsiz hesap aç
-                  <SagOk className="size-4" />
-                </Button>
-              </Link>
-              <Link href="/fiyatlar" className="sm:w-auto">
-                <Button variant="outline" fullWidth className="sm:w-auto sm:px-7">
-                  Servisleri gör
-                </Button>
-              </Link>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                <Link href="/kayit" className="sm:w-auto">
+                  <Button
+                    fullWidth
+                    className="cta-marka sm:w-auto sm:px-7"
+                  >
+                    Ücretsiz hesap aç
+                    <SagOk className="size-4" />
+                  </Button>
+                </Link>
+                <Link href="/fiyatlar" className="sm:w-auto">
+                  <Button variant="outline" fullWidth className="sm:w-auto sm:px-7">
+                    Servisleri gör
+                  </Button>
+                </Link>
+              </div>
+
+              {/* Güven şeridi — hepsi ürünün gerçekten yaptığı şeyler. */}
+              <ul className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
+                {[
+                  [<Yildirim key="a" />, 'Numara anında tanımlanır', 'mavi'] as const,
+                  [<Iade key="b" />, 'Kod gelmezse otomatik iade', 'yesil'] as const,
+                  [<Kilit key="c" />, 'Abonelik yok, ön ödemeli bakiye', 'mor'] as const,
+                ].map(([ikon, metin, renk]) => (
+                  <li key={metin} className="flex items-center gap-2.5 text-sm font-medium">
+                    <IkonKaro renk={renk} boy="sm">{ikon}</IkonKaro>
+                    {metin}
+                  </li>
+                ))}
+              </ul>
             </div>
 
-            {/* Güven şeridi — hepsi ürünün gerçekten yaptığı şeyler. */}
-            <ul className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
-              {[
-                [<Yildirim key="a" />, 'Numara anında tanımlanır', 'mavi'] as const,
-                [<Iade key="b" />, 'Kod gelmezse otomatik iade', 'yesil'] as const,
-                [<Kilit key="c" />, 'Abonelik yok, ön ödemeli bakiye', 'mor'] as const,
-              ].map(([ikon, metin, renk]) => (
-                <li key={metin} className="flex items-center gap-2.5 text-sm font-medium">
-                  <IkonKaro renk={renk} boy="sm">{ikon}</IkonKaro>
-                  {metin}
-                </li>
-              ))}
-            </ul>
+            {/*
+              Görsel `lg` ALTINDA GİZLİDİR: dar ekranda metnin altına düşer,
+              CTA'yı ve istatistikleri katlamanın altına iter. Dekoratif bir
+              öğe için bu kötü bir takas — mobilde metin tek başına daha hızlı
+              iş görür.
+            */}
+            <HeroGorsel className="hidden w-[24rem] shrink-0 lg:block xl:w-[30rem]" />
           </div>
 
           {/* ═══════════ Canlı istatistikler ═══════════ */}
