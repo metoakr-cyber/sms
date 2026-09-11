@@ -97,12 +97,6 @@ export default function BuyPage() {
         </p>
       </div>
 
-      {!user?.emailVerified && (
-        <Alert tone="warn">
-          Numara alabilmek için önce e-posta adresinizi doğrulamanız gerekiyor.
-        </Alert>
-      )}
-
       {/* Arama HER ZAMAN görünür. Yüzlerce servis arasında kaydırarak aramak,
           mobilde kullanıcıyı listeyi terk etmeye iter. */}
       <label className="relative block">
@@ -181,7 +175,6 @@ export default function BuyPage() {
         service={openService}
         rentalAvailable={openService ? rentalCodes.has(openService.code) : false}
         onClose={() => setOpenService(null)}
-        emailVerified={!!user?.emailVerified}
       />
     </div>
   );
@@ -190,10 +183,10 @@ export default function BuyPage() {
 /* ─────────────────────────────────────────────────────────────── */
 
 function BuyModal({
-  service, rentalAvailable, onClose, emailVerified,
+  service, rentalAvailable, onClose,
 }: {
   service: ServiceSummary | null; rentalAvailable: boolean;
-  onClose: () => void; emailVerified: boolean;
+  onClose: () => void;
 }) {
   // MOD ARTIK MODALIN İÇİNDE.
   //
@@ -447,7 +440,6 @@ function BuyModal({
               quote={quote.data ?? null}
               error={quote.error}
               pending={quote.isPending}
-              emailVerified={emailVerified}
               buying={purchase.isPending}
               buyError={purchase.error}
               onBuy={() => quote.data && purchase.mutate(quote.data.quoteId)}
@@ -464,10 +456,10 @@ function BuyModal({
 }
 
 function QuoteBox({
-  quote, error, pending, emailVerified, buying, buyError, onBuy, onRefresh,
+  quote, error, pending, buying, buyError, onBuy, onRefresh,
 }: {
   quote: Quote | null; error: unknown; pending: boolean;
-  emailVerified: boolean; buying: boolean; buyError: unknown;
+  buying: boolean; buyError: unknown;
   onBuy: () => void; onRefresh: () => void;
 }) {
   const left = useCountdown(quote?.expiresAt);
@@ -535,7 +527,7 @@ function QuoteBox({
             fullWidth
             className="mt-4"
             loading={buying}
-            disabled={!emailVerified || quote.stock <= 0}
+            disabled={quote.stock <= 0}
             onClick={onBuy}
           >
             Satın Al ({formatMoney(quote.price)})
@@ -551,10 +543,6 @@ function QuoteBox({
             <p className="mt-2 text-xs opacity-60">İstek no: {buyError.requestId}</p>
           )}
         </Alert>
-      )}
-
-      {!emailVerified && (
-        <Alert tone="warn">E-posta doğrulaması olmadan satın alma yapılamaz.</Alert>
       )}
 
       <p className="text-xs leading-relaxed text-muted">

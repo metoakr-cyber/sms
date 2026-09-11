@@ -114,7 +114,7 @@ export default function VerifyEmailForm() {
       ) : verify.isSuccess ? (
         <>
           <Alert tone="ok" className="mt-5">
-            E-posta adresiniz doğrulandı. Hesabınız artık numara satın alabilir.
+            E-posta adresiniz doğrulandı.
           </Alert>
           <p className="mt-4 text-sm text-muted">
             Birkaç saniye içinde yönlendirileceksiniz.

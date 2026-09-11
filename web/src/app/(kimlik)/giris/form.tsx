@@ -67,7 +67,8 @@ export default function LoginForm() {
 
       {justRegistered && (
         <Alert tone="ok" className="mt-5">
-          Kaydınız alındı. E-postanıza gönderilen bağlantı ile hesabınızı doğrulayın.
+          Kaydınız alındı. Giriş yapıp hemen numara alabilirsiniz. E-posta
+          adresinizi doğrulamak için gönderdiğimiz bağlantıyı da kullanabilirsiniz.
         </Alert>
       )}
       {sessionExpired && (

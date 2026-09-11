@@ -55,8 +55,17 @@ kritik: `ENCRYPTION_KEY` yeniden üretilirse veritabanındaki şifreli sağlayı
 API anahtarları bir daha açılamaz. Güncelleme de aynı komuttur:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/metoakr-cyber/sms/main/deploy/kur.sh -o /tmp/kur.sh && sudo bash /tmp/kur.sh
+sudo /opt/onay360/deploy/guncelle.sh
 ```
+
+`guncelle.sh` **soru sormaz** ve yapılandırmaya hiç dokunmaz: kodu çeker,
+derler, migration'ları uygular, servis logolarını bağlar, `onay360-api` ve
+`onay360-web`'i yeniden başlatır, sağlık kontrolü yapar. Caddy yalnız
+`deploy/Caddyfile` değiştiyse yenilenir.
+
+**Ne zaman `kurulum.sh`?** Yapılandırma değişecekse — port, alan adı,
+sertifika kaynağı, veritabanı, üretim moduna geçiş. O zaman sorular yerindedir.
+Kod güncellemesi için `guncelle.sh` yeterlidir.
 
 Yalnız yapılandırma değiştiyse (port, sağlayıcı anahtarı, üretim moduna geçiş)
 yeniden derlemeye gerek yok — `npm ci` + `next build` ~10 dakika ve ~800 MB
