@@ -19,7 +19,16 @@ set -uo pipefail
 
 KOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DOSYA="${COMPOSE_DOSYA:-$KOK/deploy/docker-compose.prod.yml}"
-ENV_DOSYA="${ENV_DOSYA:-$KOK/deploy/.env}"
+
+# ENV DOSYASI İKİ TOPOLOJİYE GÖRE SEÇİLİR.
+# Docker yolunda ayarlar `deploy/.env`te (POSTGRES_USER, POSTGRES_DB);
+# Docker'sız kurulumda `kurulum.sh` depo köküne `.env` yazar (DATABASE_URL).
+# Yalnız birincisine bakmak, Docker'sız kurulumda betiğin hiçbir ayarı
+# görmeden "BACKUP_DIR tanımsız" ile düşmesi demekti.
+if [ -z "${ENV_DOSYA:-}" ]; then
+  if [ -f "$KOK/deploy/.env" ]; then ENV_DOSYA="$KOK/deploy/.env"
+  else ENV_DOSYA="$KOK/.env"; fi
+fi
 
 # .env yüklenir ama MEVCUT ORTAM KAZANIR: cron'dan gelen bir değişkeni
 # dosyadaki eski değerin ezmesi, gece yarısı fark edilmeyen bir arızadır.
@@ -90,14 +99,31 @@ HAM="$BACKUP_DIR/.gecici-$DAMGA.dump"
 temizle() { rm -f "$HAM"; }
 trap temizle EXIT INT TERM
 
+# ══════════════════════════════════════════════════════════════════════════
+# İKİ TOPOLOJİ, TEK BETİK
+# ══════════════════════════════════════════════════════════════════════════
+# Docker'sız kurulumda (deploy/kurulum.sh) `docker` komutu YOKTUR. Betik
+# yalnız `docker compose exec postgres pg_dump` biliyordu; o kurulumda hiç
+# çalışmıyordu ve kurulum çıktısı yine de "yedekleme: cron'a ekleyin"
+# diyordu. Yedeği olmadığını fark etmemek, yedeği olmamaktan beterdir.
+#
+# Seçim ölçütü DATABASE_URL'dir: Docker'sız kurulumda 127.0.0.1'i gösterir ve
+# yerel `pg_dump` ona doğrudan bağlanır. Docker yolunda konak adı servis adıdır
+# (`postgres`) ve konaktan çözülmez — orada compose yolu kullanılır.
 if [ -n "$PG_DUMP_CMD" ]; then
   # shellcheck disable=SC2086
   $PG_DUMP_CMD > "$HAM"
-else
+elif [ -n "${DATABASE_URL:-}" ] && command -v pg_dump >/dev/null 2>&1; then
+  pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner > "$HAM"
+elif command -v docker >/dev/null 2>&1 && [ -f "$COMPOSE_DOSYA" ]; then
   docker compose -f "$COMPOSE_DOSYA" exec -T postgres \
     pg_dump -U "${POSTGRES_USER:?POSTGRES_USER tanımsız}" \
             -d "${POSTGRES_DB:?POSTGRES_DB tanımsız}" \
             --format=custom --no-owner > "$HAM"
+else
+  hata "yedek alınamıyor: ne DATABASE_URL + pg_dump, ne docker compose bulundu"
+  hata "Docker'sız kurulumda ENV_DOSYA=/opt/onay360/.env olmalı ve postgresql-client kurulu olmalı"
+  exit 1
 fi
 DUMP_KOD=$?
 
