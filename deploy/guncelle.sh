@@ -121,6 +121,33 @@ ADIM="ön yüz derlemesi"
      NEXT_PUBLIC_RECAPTCHA_SITE_KEY="$RECAPTCHA_SITE" \
      npm run build >/dev/null )
 tamam "ön yüz (standalone)"
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🔴 STATİK DOSYALAR ELLE TAŞINIR — ATLANIRSA SİTE ÇÖKER
+# ══════════════════════════════════════════════════════════════════════════
+# Next standalone `server.js`i .next/standalone altında koşar ve statik
+# dosyaları KENDİ ALTINDAN okur; derleme onları oraya kopyalamaz.
+#
+# Güncellemede atlanması kurulumdakinden DAHA KÖTÜDÜR: kurulumda site
+# CSS'siz açılır (görünür bir arıza), güncellemede ise HTML yeni parça
+# adlarını ister ama dizinde ESKİLERİ durur — istenen dosya 404 döner ve
+# tarayıcı "Application error: a client-side exception has occurred" der.
+# Üstelik yalnız DEĞİŞEN sayfalar çöker (adı değişmeyen parça hâlâ bulunur),
+# yani ana sayfa açılır ve arıza kısmi görünür — sebebi bulmak zorlaşır.
+# Ölçüldü: 11 Eylül 2026, gerçek sunucu, /giris ve /dogrula ChunkLoadError.
+#
+# `rm -rf` ÖNCE: hedef varsa `cp -r kaynak hedef` onu İÇİNE kopyalar
+# (`.next/static/static`) ve dosyalar yanlış yoldan servis edilir.
+ADIM="statik dosyalar"
+install -d "$KOK/web/.next/standalone/.next"
+rm -rf "$KOK/web/.next/standalone/.next/static"
+cp -r "$KOK/web/.next/static" "$KOK/web/.next/standalone/.next/static"
+if [[ -d "$KOK/web/public" ]]; then
+  rm -rf "$KOK/web/.next/standalone/public"
+  cp -r "$KOK/web/public" "$KOK/web/.next/standalone/public"
+fi
+tamam "statik dosyalar taşındı"
+
 chown -R "$SERVIS_KULLANICI":"$SERVIS_KULLANICI" "$KOK/bin" "$KOK/web/.next"
 
 # ─────────────────────────── Veritabanı ───────────────────────────
