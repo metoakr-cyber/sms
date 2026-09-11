@@ -594,8 +594,14 @@ ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=3
 $(ortak_sertlestirme)
-# Next standalone çalışma anında `.next/cache` altına yazar; `ProtectSystem=strict`
+# Next standalone çalışma anında .next/cache altına yazar; ProtectSystem=strict
 # altında bu yol açıkça yazılabilir olmalıdır, yoksa ilk istekte EACCES alınır.
+#
+# 🔴 BU YORUMDA TERS TIRNAK KULLANMAYIN. Heredoc tırnaksız (<<WEBBIRIM) çünkü
+# ${KOK} ve $(ortak_sertlestirme) genişlemeli; ama aynı genişleme ters tırnağı
+# da KOMUT İKAMESİ sayar. Yorum içindeki `.next/cache` bash tarafından
+# çalıştırılmaya kalkıldı ve kurulum "line 580: .next/cache: No such file or
+# directory" hatası verdi — yorum, kodu bozdu.
 ReadWritePaths=${KOK}/web/.next
 
 [Install]
@@ -719,12 +725,12 @@ if [[ -n "$ALAN_ADI" ]]; then
   # Yöneticinin adresi yazılır: gerçek, izlenen ve zaten elimizde.
   ACME_EPOSTA="${ACME_EPOSTA:-$YONETICI_EPOSTA}"
   cat > /etc/caddy/env <<CADDYENV
-DOMAIN=${ALAN_ADI}
-ACME_EMAIL=${ACME_EPOSTA}
-API_UPSTREAM=127.0.0.1:${API_PORT}
-WEB_UPSTREAM=127.0.0.1:${WEB_PORT}
-GUVENILEN_VEKILLER=${GUVENILEN_VEKILLER}
-ISTEMCI_IP_BASLIGI=${ISTEMCI_IP_BASLIGI}
+DOMAIN="${ALAN_ADI}"
+ACME_EMAIL="${ACME_EPOSTA}"
+API_UPSTREAM="127.0.0.1:${API_PORT}"
+WEB_UPSTREAM="127.0.0.1:${WEB_PORT}"
+GUVENILEN_VEKILLER="${GUVENILEN_VEKILLER}"
+ISTEMCI_IP_BASLIGI="${ISTEMCI_IP_BASLIGI}"
 CADDYENV
   install -d /etc/systemd/system/caddy.service.d
   cat > /etc/systemd/system/caddy.service.d/onay360.conf <<'CADDYOVR'
@@ -765,7 +771,25 @@ else
 }
 CADDYIP
 fi
-caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 || hata "Caddy yapılandırması geçersiz"
+# ══════════════════════════════════════════════════════════════════════════
+# DOĞRULAMA ORTAM DEĞİŞKENLERİYLE YAPILIR
+# ══════════════════════════════════════════════════════════════════════════
+# Depodaki Caddyfile {$DOMAIN}, {$API_UPSTREAM} gibi değişkenler kullanır ve
+# bunlar caddy servisine EnvironmentFile ile geçer. Doğrulamayı çıplak kabukta
+# çalıştırmak hepsini BOŞ çözer: `{$DOMAIN} { … }` adsız bir bloğa dönüşür ve
+# caddy "server block without any key is global configuration" der. Yani
+# yapılandırma doğruyken doğrulama düşer — ölçüldü, gerçek bir kurulumda.
+#
+# 🔴 HATA ÇIKTISI YUTULMAZ. Eskiden `>/dev/null 2>&1` idi ve kullanıcı yalnız
+# "geçersiz" görüyordu; hangi satırın neden bozuk olduğu görünmüyordu.
+ADIM="caddy doğrulama"
+if ! CADDY_CIKTI="$(
+      if [[ -f /etc/caddy/env ]]; then set -a; . /etc/caddy/env; set +a; fi
+      caddy validate --config /etc/caddy/Caddyfile 2>&1
+    )"; then
+  printf '%s\n' "$CADDY_CIKTI" | grep -v '"level":"info"' | tail -6 | sed 's/^/    /' >&2
+  hata "Caddy yapılandırması geçersiz — ayrıntı yukarıda"
+fi
 systemctl enable --now caddy >/dev/null
 systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy
 tamam "caddy"
