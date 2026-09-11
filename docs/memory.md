@@ -13,6 +13,33 @@
 Her önemli karar tarihiyle ve gerekçesiyle. **Karar değiştiğinde eskisi silinmez, üstü çizilir ve
 altına yenisi yazılır** — geçmiş kararın gerekçesi gelecekte işe yarar.
 
+### 2026-09-11 · E-posta doğrulama kapısı KALDIRILDI
+
+~~Doğrulanmamış kullanıcı satın alma ve bakiye yükleme yapamaz (FR-101).~~
+Kullanıcı kararı: doğrulama artık **hiçbir işlemi engellemiyor**.
+`middleware.RequireVerifiedEmail` beş rotadan çıkarıldı:
+`POST /wallet/deposits`, `POST /wallet/deposits/:id/receipt`, `POST /reviews`,
+`GET /catalog/quote`, `POST /orders`. Panelin her sayfasında görünen uyarı bandı
+da kaldırıldı — kapı yokken "numara alabilmek için doğrulayın" demek yanlıştı.
+
+**Gerekçe (kullanıcı):** kurulum staging modunda olduğu için e-postalar
+gönderilmiyor, log'a yazılıyor; doğrulama bağlantısı kimseye ulaşmıyor ve uyarı
+her sayfada duruyordu.
+
+🔴 **ALINAN RİSK — karar verilirken açıkça söylendi ve kullanıcı tekrarladı:**
+tek kullanımlık e-postayla açılan hesaplar artık numara satın alabilir. Kod
+gelmeyen siparişte otomatik iade var, yani suistimalin maliyeti doğrudan
+işletmeye yazılır. Sahte hesap sayısı artarsa ilk bakılacak yer burasıdır.
+
+**Geri açmak beş satırdır:** `router.go` içinde ilgili beş rotaya
+`middleware.RequireVerifiedEmail(Fail),` eklemek yeterli. Ara katman silinmedi,
+testleri duruyor. `scripts/smoke-auth.sh` kapının **geri gelmediğini** sınar —
+403 `EMAIL_NOT_VERIFIED` görürse kasıtsız bir gerileme var demektir.
+
+**Not:** Asıl sorun doğrulama değil, staging modunda e-posta gönderilmemesiydi.
+Üretime geçilip Resend anahtarı girildiğinde e-postalar gerçekten gidecek; o gün
+bu kararı yeniden değerlendirmek mantıklı olabilir.
+
 ### 2026-09-10 · Stok ölçütü `counts.physical` → `counts.defaultPrice`
 
 ~~Stok = `counts.physical`~~ (2026-09-08, canlı gözleme dayanıyordu — ❓H16). Ölçüt

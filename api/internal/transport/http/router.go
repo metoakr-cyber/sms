@@ -213,11 +213,12 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		auth.GET("/wallet/deposits/:id", depositH.Get)
 		auth.GET("/wallet/deposits/:id/receipt", depositH.Receipt)
 
-		// Talep açmak DOĞRULANMIŞ E-POSTA ister ve DAR bir limit taşır:
-		// her talep bir yöneticiye iş üretir ve doğrulanmamış bir hesabın
-		// kuyruğu doldurması operasyonu kilitler.
+		// Talep açmak DAR bir limit taşır: her talep bir yöneticiye iş üretir
+		// ve bir hesabın kuyruğu doldurması operasyonu kilitler.
+		//
+		// E-POSTA DOĞRULAMASI ARANMAZ (kullanıcı kararı, 11 Eylül 2026) —
+		// gerekçe ve karşılığında alınan risk: docs/memory.md §1.
 		auth.POST("/wallet/deposits",
-			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "deposit", middleware.RateLimitConfig{
 				Limit: hizSiniri(10, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
@@ -226,7 +227,6 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		// Dekont yükleme AYRI ve daha dar bir limit taşır: her istek diske
 		// yazar. POST'tur — durum değiştirir (değişmez #8).
 		auth.POST("/wallet/deposits/:id/receipt",
-			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "receipt", middleware.RateLimitConfig{
 				Limit: hizSiniri(10, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
@@ -277,21 +277,20 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 		// indiriyor, ama reddedilen yorumu art arda yeniden göndermek
 		// mümkün olmamalı.
 		auth.POST("/reviews",
-			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "review", middleware.RateLimitConfig{
 				Limit: hizSiniri(5, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
 			reviewH.Create)
 
-		// Teklif: oturum + DOĞRULANMIŞ E-POSTA + hız limiti.
+		// Teklif: oturum + hız limiti.
 		//
-		// E-posta doğrulaması FR-101 gereğidir: doğrulanmamış hesap satın alma
-		// yapamaz. Ara katman yazılmıştı ama HİÇBİR YERE BAĞLANMAMIŞTI —
-		// tasarım biliniyordu, koda bağlanmamıştı.
+		// 🔴 E-POSTA DOĞRULAMASI ARANMAZ. `middleware.RequireVerifiedEmail`
+		// duruyor ve sınanıyor ama hiçbir rotaya BAĞLI DEĞİL — kullanıcı
+		// kararı, 11 Eylül 2026. Geri açmak için bu satırlara tek tek
+		// eklemek yeterli; gerekçe ve alınan risk docs/memory.md §1'de.
 		//
-		// test: scripts/smoke-auth.sh (doğrulanmamış kullanıcı teklif alamıyor)
+		// test: scripts/smoke-auth.sh (doğrulanmamış kullanıcı teklif ALABİLİR)
 		auth.GET("/catalog/quote",
-			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "quote", middleware.RateLimitConfig{
 				Limit: hizSiniri(60, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),
@@ -299,12 +298,10 @@ func registerV1(rg *gin.RouterGroup, d Deps) {
 
 		// ─── Siparişler ───
 		//
-		// Satın alma DOĞRULANMIŞ E-POSTA gerektirir (FR-101) ve ayrı bir hız
-		// limiti taşır: her istek gerçek para harcar ve sağlayıcıda envanter
-		// tüketir. Genel /auth limitiyle aynı kovaya koymak, bir kullanıcının
+		// Satın alma ayrı bir hız limiti taşır: her istek gerçek para harcar
+		// ve sağlayıcıda envanter tüketir. Genel /auth limitiyle aynı kovaya koymak, bir kullanıcının
 		// giriş denemeleriyle satın alma hakkını tüketmesi demekti.
 		auth.POST("/orders",
-			middleware.RequireVerifiedEmail(Fail),
 			middleware.RateLimit(d.Limiter, "order", middleware.RateLimitConfig{
 				Limit: hizSiniri(20, d.RateLimitFactor), Window: time.Minute, KeyFn: middleware.ByUser,
 			}, Fail),

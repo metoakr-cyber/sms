@@ -25,12 +25,20 @@ Kullanıcı e-posta, kullanıcı adı ve şifre ile kayıt olur.
 > **KK-100:** Aynı e-posta ile ikinci kayıt 409 döner. Şifre veritabanında düz metin olarak
 > **hiçbir sorguda** görünmez. Zayıf şifre 422 ve Türkçe hata mesajı döner.
 
-### FR-101 · E-posta doğrulama `ZORUNLU`
-Tek kullanımlık, 24 saat geçerli, kriptografik olarak rastgele token. Doğrulanmamış kullanıcı
-**satın alma ve bakiye yükleme yapamaz** (giriş yapabilir, paneli görebilir).
+### FR-101 · E-posta doğrulama `ZORUNLU` *(akış), `KAPI DEĞİL` (yetki)*
+Tek kullanımlık, 24 saat geçerli, kriptografik olarak rastgele token. Kayıt sonrası doğrulama
+e-postası gönderilir ve `/dogrula` ucu çalışır.
 
-> **KK-101:** Kullanılmış token ikinci kez 410 döner. Doğrulanmamış kullanıcının `POST /orders` isteği
-> 403 `EMAIL_NOT_VERIFIED` döner.
+> 🔴 **DOĞRULAMA HİÇBİR İŞLEMİ ENGELLEMEZ** — kullanıcı kararı, 11 Eylül 2026.
+> ~~Doğrulanmamış kullanıcı satın alma ve bakiye yükleme yapamaz.~~
+> Doğrulanmamış hesap da numara alabilir, bakiye yükleyebilir, yorum yazabilir.
+> `middleware.RequireVerifiedEmail` kodda duruyor ve sınanıyor ama **hiçbir rotaya bağlı
+> değildir**; geri açmak beş satır eklemektir (`router.go`).
+> Karşılığında alınan risk ve gerekçe: [memory.md](memory.md) §1.
+
+> **KK-101:** Kullanılmış token ikinci kez 410 döner. Doğrulanmamış kullanıcının
+> `POST /orders` isteği **başarılı olur** — 403 `EMAIL_NOT_VERIFIED` dönerse kapı
+> yanlışlıkla geri gelmiş demektir (`scripts/smoke-auth.sh` bunu sınar).
 
 ### FR-102 · Giriş `ZORUNLU`
 E-posta + şifre + reCAPTCHA. Başarıda Redis oturumu oluşturulur, `sid` çerezi yazılır.

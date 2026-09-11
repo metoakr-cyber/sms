@@ -330,9 +330,14 @@ N=$(python3 -c "import json;print(json.load(open('/tmp/sm.body'))['total'])" 2>/
 psql -c "UPDATE users SET email_verified_at = NULL, status='PENDING_VERIFICATION'
          WHERE email='sivil@ornek.com';" >/dev/null
 S=$(code "$API/catalog/quote?serviceCode=tg&countryIso=RU" -b /tmp/cj2)
-[ "$(field code)" = EMAIL_NOT_VERIFIED ] \
-  && pass "doğrulanmamış kullanıcı teklif alamıyor (FR-101)" \
-  || fail "e-posta doğrulama kapısı" "HTTP $S $(body)"
+# 🔴 İDDİA TERSİNE ÇEVRİLDİ — kullanıcı kararı, 11 Eylül 2026.
+# Doğrulanmamış kullanıcı artık teklif ALABİLİR; doğrulama hiçbir işlemi
+# engellemiyor. Bu satır silinmedi çünkü asıl değeri şu: kapı bir gün
+# YANLIŞLIKLA geri gelirse (kopyala-yapıştır, geri alma) burada görünür.
+# 403 EMAIL_NOT_VERIFIED dönerse kasıtsız bir gerileme var demektir.
+[ "$(field code)" != EMAIL_NOT_VERIFIED ] \
+  && pass "doğrulanmamış kullanıcı teklif ALABİLİYOR (doğrulama kapısı kaldırıldı)" \
+  || fail "e-posta doğrulama kapısı GERİ GELMİŞ" "HTTP $S $(body)"
 
 # Oturum listesi ham token SIZDIRMAMALI.
 SID=$(awk '$6=="sid"{print $7}' /tmp/cj 2>/dev/null | tail -1)

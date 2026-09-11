@@ -110,15 +110,14 @@ export function PanelShell({ children }: { children: React.ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <PanelHeader user={user} />
 
-
-      {!user.emailVerified && (
-        <div className="w-full px-4 pt-4 md:px-6">
-          <Alert tone="warn">
-            E-posta adresiniz doğrulanmamış. Numara satın alabilmek için
-            e-postanıza gönderdiğimiz bağlantıya tıklayın.
-          </Alert>
-        </div>
-      )}
+        {/*
+          E-POSTA DOĞRULAMA UYARISI KALDIRILDI — kullanıcı kararı, 11 Eylül 2026.
+          Doğrulama artık hiçbir işlemi engellemediği için (bkz. router.go),
+          "numara satın alabilmek için tıklayın" demek DOĞRU DEĞİLDİ: kullanıcı
+          zaten satın alabiliyor. Yanlış bir uyarıyı panelin her sayfasında
+          göstermek, doğru uyarıların da okunmamasına yol açar.
+          Gerekçe ve alınan risk: docs/memory.md §1.
+        */}
 
         {/*
           GENİŞLİK TAVANI `max-w-12xl` (120rem / 1920px) — kullanıcı kararı,

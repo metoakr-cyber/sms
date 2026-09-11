@@ -761,18 +761,19 @@ func TestRouterGuardsDepositEndpoints(t *testing.T) {
 		}
 	}
 
-	// Kullanıcı uçları: talep açma ve dekont yükleme POST'tur ve doğrulanmış
-	// e-posta ister (FR-101).
+	// Kullanıcı uçları POST'tur ve KAYITLI olmalıdır.
+	//
+	// 🔴 DOĞRULANMIŞ E-POSTA ARTIK ARANMIYOR (kullanıcı kararı, 11 Eylül 2026).
+	// Bu döngü eskiden `RequireVerifiedEmail`in BAĞLI OLDUĞUNU iddia ediyordu.
+	// İddia tersine çevrilmedi, KALDIRILDI: "bağlı olmamalı" diye bir kural
+	// yok — karar değişirse ara katman tekrar eklenebilir ve bu test onu
+	// yanlışlıkla engellememeli. Rotanın var olduğu yine de sınanır.
 	for _, w := range []string{
 		`auth.POST("/wallet/deposits",`,
 		`auth.POST("/wallet/deposits/:id/receipt",`,
 	} {
-		block, ok := registration(src, w, "auth.")
-		if !ok {
+		if _, ok := registration(src, w, "auth."); !ok {
 			t.Fatalf("🔴 rota KAYITLI DEĞİL: %s", w)
-		}
-		if !strings.Contains(block, "middleware.RequireVerifiedEmail") {
-			t.Fatalf("🔴 %s doğrulanmış e-posta İSTEMİYOR:\n%s", w, block)
 		}
 	}
 }
