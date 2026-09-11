@@ -111,11 +111,78 @@ bilgi "Enter'a basarak köşeli parantezdeki varsayılanı kabul edebilirsiniz."
 # görünür. `|| true` bu ihtimali kapatır ve niyeti görünür kılar.
 [[ -n "$KONUM_UYARISI" ]] && uyari "$KONUM_UYARISI" || true
 
+# Cloudflare'in yayımladığı kaynak IP aralıkları — ağ yoksa diye gömülü yedek.
+# Liste yılda bir iki kez değişir; kurulum anında canlı sürüm çekilir.
+readonly CF_YEDEK_V4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
+readonly CF_YEDEK_V6="2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
+
+cf_araliklari() {
+  local v4 v6
+  v4="$(curl -fsSL --max-time 10 https://www.cloudflare.com/ips-v4 2>/dev/null | tr '\n' ' ' || true)"
+  v6="$(curl -fsSL --max-time 10 https://www.cloudflare.com/ips-v6 2>/dev/null | tr '\n' ' ' || true)"
+  if [[ -z "$v4" || -z "$v6" ]]; then
+    echo "$CF_YEDEK_V4 $CF_YEDEK_V6"
+  else
+    echo "$v4 $v6"
+  fi
+}
+
 baslik "1/4 · Adres"
 sor ALAN_ADI "Alan adı (boş bırakırsanız yalnız IP üzerinden HTTP)" ""
+TLS_MODU="acme"; SERT_CRT=""; SERT_KEY=""
+GUVENILEN_VEKILLER="127.0.0.1/32 ::1/128"; ISTEMCI_IP_BASLIGI="X-Forwarded-For"
 if [[ -n "$ALAN_ADI" ]]; then
-  sor ACME_EPOSTA "Let's Encrypt bildirim e-postası" ""
-  [[ -n "$ACME_EPOSTA" ]] || hata "alan adı verdiyseniz ACME e-postası zorunlu"
+  # ── Sertifika kaynağı ──
+  # Let's Encrypt doğrulaması 80/443 portuna DOĞRUDAN ulaşmayı gerektirir.
+  # Cloudflare proxy'si (turuncu bulut) açıkken o portlara Cloudflare cevap
+  # verir ve doğrulama sunucuya HİÇ ulaşmaz — Caddy de certbot da alamaz.
+  # O kurulumda çözüm, uzun ömürlü bir origin sertifikasıdır.
+  bilgi "1 = Let's Encrypt · Caddy alır ve 60 günde bir yeniler."
+  bilgi "    Alan adı bu sunucuya DOĞRUDAN çözülmeli (Cloudflare proxy KAPALI)."
+  bilgi "2 = Kendi sertifikam · ör. Cloudflare Origin Certificate (15 yıl)."
+  bilgi "    Proxy açık kalabilir; ACME hiç devreye girmez."
+  sor TLS_KAYNAK "Sertifika kaynağı [1/2]" "1"
+  if [[ "$TLS_KAYNAK" == "2" ]]; then
+    TLS_MODU="kendi"
+    ACME_EPOSTA=""
+    sor SERT_CRT "Sertifika dosyası (tam zincir, .pem)" "/etc/ssl/onay360.pem"
+    sor SERT_KEY "Özel anahtar dosyası (.key)" "/etc/ssl/onay360.key"
+    [[ -f "$SERT_CRT" ]] || hata "sertifika bulunamadı: $SERT_CRT"
+    [[ -f "$SERT_KEY" ]] || hata "özel anahtar bulunamadı: $SERT_KEY"
+    # 🔴 ÇİFT EŞLEŞMESİ BURADA SINANIR. Eşleşmeyen sertifika/anahtar Caddy'yi
+    # açılışta düşürür ve hatası ("tls: private key does not match public
+    # key") kurulumun sonunda, servis başlatılırken çıkar — o noktada sebebi
+    # aramak 10 dakika sürer. Soru anında söylemek saniye alır.
+    CRT_OZET="$(openssl x509 -noout -pubkey -in "$SERT_CRT" 2>/dev/null | openssl md5 2>/dev/null || echo crt-okunamadi)"
+    KEY_OZET="$(openssl pkey -pubout -in "$SERT_KEY" 2>/dev/null | openssl md5 2>/dev/null || echo key-okunamadi)"
+    [[ "$CRT_OZET" == "$KEY_OZET" ]] || hata "sertifika ile özel anahtar EŞLEŞMİYOR — dosyaları kontrol edin"
+    # Sertifika bu alan adını kapsıyor mu? Kapsamıyorsa tarayıcı uyarı verir
+    # ve Cloudflare "Full (strict)" modunda bağlantıyı TAMAMEN reddeder.
+    #
+    # 🔴 ÇIKIŞ KODUNA BAKILMAZ. `openssl x509 -checkhost` eşleşme olmasa da
+    # 0 döner; sonucu yalnız stdout'a yazar ("Hostname X does NOT match
+    # certificate"). Çıkış koduna bakan bir kontrol HİÇ TETİKLENMEZ ve
+    # sessizce "doğruladım" izlenimi verir — ölçüldü (openssl 3, Ubuntu 24.04).
+    if ! openssl x509 -noout -checkhost "$ALAN_ADI" -in "$SERT_CRT" 2>/dev/null \
+         | grep -q 'does match'; then
+      uyari "sertifika $ALAN_ADI adını kapsamıyor — Cloudflare Full (strict) bunu REDDEDER"
+    else
+      tamam "sertifika $ALAN_ADI adını kapsıyor"
+    fi
+    tamam "sertifika ve anahtar eşleşiyor"
+    sor CF_ARKASI "Cloudflare proxy'sinin arkasında mı? (turuncu bulut) [E/h]" "e"
+    if evet_mi "$CF_ARKASI"; then
+      # Gerçek istemci IP'si olmadan hız limitleri IP başına ÇALIŞMAZ:
+      # bütün istekler Cloudflare'in adresinden gelir ve tek bir kullanıcı
+      # limite takıldığında herkes takılır.
+      GUVENILEN_VEKILLER="$(cf_araliklari)"
+      ISTEMCI_IP_BASLIGI="CF-Connecting-IP"
+      tamam "Cloudflare aralıkları alındı ($(echo "$GUVENILEN_VEKILLER" | wc -w) aralık)"
+    fi
+  else
+    sor ACME_EPOSTA "Let's Encrypt bildirim e-postası" ""
+    [[ -n "$ACME_EPOSTA" ]] || hata "Let's Encrypt seçtiyseniz bildirim e-postası zorunlu"
+  fi
   KOK_URL="https://$ALAN_ADI"
 else
   IP_TAHMIN="$(hostname -I 2>/dev/null | awk '{print $1}')"
@@ -192,6 +259,8 @@ fi
 baslik "Özet"
 cat <<OZET
   Adres              : ${KOK_URL}
+  Sertifika          : $([[ "$TLS_MODU" == "kendi" ]] && echo "kendi sertifikanız ($SERT_CRT)" || echo "$([[ -n "$ALAN_ADI" ]] && echo "Let's Encrypt" || echo "yok — düz HTTP")")
+  Gerçek istemci IP  : $([[ "$ISTEMCI_IP_BASLIGI" == "CF-Connecting-IP" ]] && echo "CF-Connecting-IP (Cloudflare arkası)" || echo "doğrudan bağlantı")
   Ortam              : ${APP_ORTAM}
   Kurulum dizini     : ${KOK}
   Servis kullanıcısı : ${SERVIS_KULLANICI}
@@ -625,13 +694,37 @@ baslik "Ters vekil"
 if [[ -n "$ALAN_ADI" ]]; then
   # Depodaki Caddyfile KULLANILIR — kopyalanmaz. SSE tamponlaması, güvenlik
   # başlıkları ve sıkıştırma istisnaları oradaki ölçülmüş kararlardır.
-  install -d /etc/caddy
+  install -d /etc/caddy /etc/caddy/tls.d
   cp "$KOK/deploy/Caddyfile" /etc/caddy/Caddyfile
+
+  # ── Sertifika: iki mod ──
+  # `tls.d` BOŞSA Caddy ACME'ye düşer (varsayılan davranış). Dolduğunda
+  # `tls <crt> <key>` satırı site bloğuna import edilir ve ACME hiç çalışmaz.
+  # Dizin her kurulumda TEMİZLENİR: moddan moda geçerken eski dosya kalırsa
+  # "Let's Encrypt seçtim ama hâlâ eski sertifikayı sunuyor" denir ve sebebi
+  # görünmez.
+  rm -f /etc/caddy/tls.d/*.conf
+  if [[ "$TLS_MODU" == "kendi" ]]; then
+    install -m 644 "$SERT_CRT" /etc/caddy/onay360.crt
+    install -m 600 "$SERT_KEY" /etc/caddy/onay360.key
+    chown root:root /etc/caddy/onay360.crt /etc/caddy/onay360.key
+    printf 'tls /etc/caddy/onay360.crt /etc/caddy/onay360.key\n' > /etc/caddy/tls.d/onay360.conf
+    tamam "sertifika kuruldu (ACME devre dışı)"
+  else
+    tamam "sertifika Let's Encrypt'ten alınacak"
+  fi
+
+  # Kendi sertifikası modunda ACME hiç çalışmaz ama değişken BOŞ KALAMAZ
+  # (Caddyfile'daki `email` satırı argümansız kalır ve servis başlamaz).
+  # Yöneticinin adresi yazılır: gerçek, izlenen ve zaten elimizde.
+  ACME_EPOSTA="${ACME_EPOSTA:-$YONETICI_EPOSTA}"
   cat > /etc/caddy/env <<CADDYENV
 DOMAIN=${ALAN_ADI}
 ACME_EMAIL=${ACME_EPOSTA}
 API_UPSTREAM=127.0.0.1:${API_PORT}
 WEB_UPSTREAM=127.0.0.1:${WEB_PORT}
+GUVENILEN_VEKILLER=${GUVENILEN_VEKILLER}
+ISTEMCI_IP_BASLIGI=${ISTEMCI_IP_BASLIGI}
 CADDYENV
   install -d /etc/systemd/system/caddy.service.d
   cat > /etc/systemd/system/caddy.service.d/onay360.conf <<'CADDYOVR'

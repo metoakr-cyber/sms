@@ -19,9 +19,38 @@
 # yalnız birinde güncellenmesi demekti — ve o kararların sessizce kaybolması
 # bu projedeki en pahalı arıza sınıfıdır (bkz. flush_interval notu).
 {
-	email {$ACME_EMAIL}
+	# 🔴 DEĞİŞKEN BOŞ TANIMLANAMAZ. Boş çözülürse satır argümansız `email`
+	# olur, Caddyfile AYRIŞMAZ ve servis hiç başlamaz; hata da TLS ile
+	# ilgisiz görünür: "wrong argument count after 'email'".
+	#
+	# ⚠️ Aşağıdaki varsayılan bunu TAM KORUMAZ: Caddy'de `{$VAR:varsayılan}`
+	# yalnız değişken TANIMSIZKEN devreye girer, BOŞ TANIMLIYKEN girmez
+	# (üçü de ölçüldü: tanımsız ✓ · dolu ✓ · boş ✗). Asıl güvence
+	# `deploy/kurulum.sh`tedir: kendi sertifikası modunda buraya yöneticinin
+	# e-postasını yazar, çünkü ACME çalışmasa da alan boş kalamaz.
+	# (Ölçüldü: caddy 2 validate, kendi sertifikası modunda.)
+	email {$ACME_EMAIL:kurulum@localhost}
 
 	servers {
+		# ─── GERÇEK İSTEMCİ IP'Sİ ───
+		#
+		# Cloudflare gibi bir proxy'nin ARKASINDAYSA her istek onun
+		# IP'sinden gelir. Hız limitleri IP başınadır (giriş denemesi,
+		# sipariş açma); düzeltilmezse bir kullanıcı limite takıldığında
+		# HERKES takılır — ve bu sessizdir, log'da "rate limit" yazar ama
+		# kimin yüzünden olduğu görünmez.
+		#
+		# 🔴 BAŞLIK KOŞULSUZ OKUNMAZ. `client_ip_headers` yalnız bağlantı
+		# `trusted_proxies` listesindeki bir adresten geldiğinde dikkate
+		# alınır. Doğrudan sunucuya ulaşan biri sahte bir CF-Connecting-IP
+		# gönderirse YOK SAYILIR — aksi hâlde hız limiti anlamsız olurdu.
+		#
+		# Varsayılan yalnız loopback'tir: proxy yokken davranış değişmez.
+		# `deploy/kurulum.sh` Cloudflare arkasında kurulumda bu değişkeni
+		# Cloudflare'in yayımladığı aralıklarla doldurur.
+		trusted_proxies static {$GUVENILEN_VEKILLER:127.0.0.1/32 ::1/128}
+		client_ip_headers {$ISTEMCI_IP_BASLIGI:X-Forwarded-For}
+
 		# HTTP/2 ZORUNLUDUR, süs değil.
 		#
 		# HTTP/1.1'de tarayıcı origin başına 6 eşzamanlı bağlantı açar. Her
@@ -73,7 +102,11 @@
 		# deploy/.env.prod.example → TRUSTED_PROXIES
 		# (X-Forwarded-For / -Proto / -Host Caddy'nin varsayılanıdır; elle
 		#  yazmak `caddy validate` uyarısı üretir.)
-		header_up X-Real-IP {http.request.remote.host}
+		# `client_ip`, `remote.host` DEĞİL: ikincisi bağlantının geldiği
+		# adrestir ve bir proxy arkasında HER ZAMAN proxy'nin IP'sidir.
+		# `client_ip` yukarıdaki `trusted_proxies`/`client_ip_headers`
+		# ayarını uygular; proxy yoksa ikisi zaten aynı değeri verir.
+		header_up X-Real-IP {http.request.client_ip}
 	}
 }
 
@@ -139,11 +172,27 @@
 # Tek kanonik ad. İki adres aynı içeriği sunarsa çerezler, canonical
 # etiketler ve arama sonuçları bölünür.
 www.{$DOMAIN} {
+	# ─── SERTİFİKA: iki mod, tek dosya ───
+	# Dizin boşsa (varsayılan) Caddy sertifikayı Let's Encrypt'ten kendisi
+	# alır ve yeniler. `kurulum.sh` "kendi sertifikam" seçildiğinde buraya
+	# tek satırlık bir `tls <crt> <key>` dosyası yazar ve ACME devre dışı
+	# kalır — Cloudflare Origin Certificate gibi uzun ömürlü sertifikalar
+	# için. Eşleşmeyen glob Caddy'de hata değildir, yani Docker yolunda
+	# dizin hiç olmasa da bu satır zararsızdır.
+	import /etc/caddy/tls.d/*.conf
 	redir https://{$DOMAIN}{uri} permanent
 }
 
 # ─────────────────────────── Site ───────────────────────────
 {$DOMAIN} {
+	# ─── SERTİFİKA: iki mod, tek dosya ───
+	# Dizin boşsa (varsayılan) Caddy sertifikayı Let's Encrypt'ten kendisi
+	# alır ve yeniler. `kurulum.sh` "kendi sertifikam" seçildiğinde buraya
+	# tek satırlık bir `tls <crt> <key>` dosyası yazar ve ACME devre dışı
+	# kalır — Cloudflare Origin Certificate gibi uzun ömürlü sertifikalar
+	# için. Eşleşmeyen glob Caddy'de hata değildir, yani Docker yolunda
+	# dizin hiç olmasa da bu satır zararsızdır.
+	import /etc/caddy/tls.d/*.conf
 	import guvenlik_basliklari
 	import sse_guvenli_sikistirma
 
