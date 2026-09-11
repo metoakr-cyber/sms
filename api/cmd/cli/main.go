@@ -281,19 +281,28 @@ func (a *appCtx) seed(args []string) error {
 	if err != nil {
 		return err
 	}
-	senkronlanan := 0
+	// Başarı ve başarısızlık AYRI sayılır. Tek bir sayaçla "senkronlanan == 0"
+	// hem "hiç sağlayıcı yok" hem "sağlayıcı var ama senkron düştü" demekti ve
+	// ekrana ikincisinde de "etkin sağlayıcı yok" yazıyordu — bir satır yukarıda
+	// sağlayıcının adıyla hata basıldığı hâlde. Ölçüldü: gerçek kurulum,
+	// 11 Eylül 2026, BAD_API_KEY.
+	senkronlanan, senkronDusen := 0, 0
 	for _, p := range provs {
 		if *saglayici != "" && p.Name != *saglayici {
 			continue
 		}
 		if err := a.catalogSync([]string{"--provider=" + p.Name}); err != nil {
 			fmt.Printf("  ! %s katalogu senkronlanamadı: %v\n", p.Name, err)
+			senkronDusen++
 			continue
 		}
 		senkronlanan++
 	}
-	if senkronlanan == 0 {
+	switch {
+	case len(provs) == 0:
 		fmt.Println("  ! etkin sağlayıcı yok — katalog senkronu atlandı")
+	case senkronDusen > 0:
+		fmt.Printf("  ! %d sağlayıcının katalogu alınamadı — stok ve fiyat BAYAT\n", senkronDusen)
 	}
 
 	say := func(sorgu string) int64 {
@@ -316,8 +325,24 @@ func (a *appCtx) seed(args []string) error {
 	hazir := true
 	hazir = satir(say("SELECT count(*) FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id WHERE r.name='admin'") > 0,
 		"yönetici hesabı", "cli user:create --email=... --username=... --env-password=... --role=admin") && hazir
-	hazir = satir(say("SELECT count(*) FROM providers WHERE is_active AND api_key_enc IS NOT NULL AND length(api_key_enc)>0") > 0,
-		"etkin sağlayıcı + API anahtarı", "cli provider:add ... --env-key=HEROSMS_API_KEY") && hazir
+	// 🔴 ANAHTARIN VAR OLMASI YETMEZ, ÇALIŞMASI GEREKİR.
+	//
+	// Bu satır yalnız `length(api_key_enc) > 0` sorgusuna bakıyordu ve
+	// sağlayıcı iki satır yukarıda BAD_API_KEY ile reddedilmişken ✓ basıyordu.
+	// Rapor tam da "kurulum açıldı" ile "satış yapılabilir" farkını göstermek
+	// için var; orada yanlış yeşil vermek raporun kendi amacını bozar.
+	// Senkron bu çalıştırmada düştüyse anahtar çalışmıyor demektir.
+	//
+	// test: seed_hazirlik_test.go#TestSaglayiciSatiriSenkronDustugundeKirmiziOlur
+	anahtarVar := say("SELECT count(*) FROM providers WHERE is_active AND api_key_enc IS NOT NULL AND length(api_key_enc)>0") > 0
+	hazir = satir(saglayiciHazirMi(anahtarVar, senkronDusen),
+		"etkin sağlayıcı + API anahtarı",
+		func() string {
+			if anahtarVar && senkronDusen > 0 {
+				return "anahtar kayıtlı ama sağlayıcı REDDETTİ — /yonetim/saglayicilar → API anahtarı"
+			}
+			return "cli provider:add ... --env-key=HEROSMS_API_KEY"
+		}()) && hazir
 	hazir = satir(say("SELECT count(*) FROM fx_rates WHERE fetched_at > now() - interval '1 day'") > 0,
 		"güncel döviz kuru", "cli fx:sync") && hazir
 	hazir = satir(say("SELECT count(*) FROM provider_offers WHERE is_available AND stock > 0") > 0,
@@ -681,4 +706,16 @@ Komutlar:
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "hata: %v\n", err)
 	os.Exit(1)
+}
+
+// saglayiciHazirMi, sağlayıcı bağlantısının SATIŞ YAPILABİLİR olup olmadığını
+// söyler.
+//
+// İki koşul da gereklidir: anahtar kayıtlı OLMALI ve bu çalıştırmadaki katalog
+// senkronu DÜŞMEMİŞ olmalı. Yalnız varlığa bakmak, sağlayıcı anahtarı
+// reddetmişken raporun ✓ basmasına yol açıyordu.
+//
+// test: seed_hazirlik_test.go#TestSaglayiciSatiriSenkronDustugundeKirmiziOlur
+func saglayiciHazirMi(anahtarVar bool, senkronDusen int) bool {
+	return anahtarVar && senkronDusen == 0
 }

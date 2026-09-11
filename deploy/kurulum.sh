@@ -524,6 +524,31 @@ fi
 echo
 "$CLI" seed || uyari "tohumlama kısmen başarısız — sonra: ${KOK}/bin/cli seed"
 
+# ─── Servis logoları ───
+# `services.icon_url` boşsa API `iconUrl` alanını HİÇ göndermez (omitempty) ve
+# site yüzlerce servisi logosuz gösterir. Hata da çıkmaz: eksik bir alan,
+# bozuk bir alan gibi görünmez.
+#
+# 🔴 SEED'DEN SONRA ÇALIŞIR. Dosya `WHERE code = ...` ile günceller; servisler
+# henüz yoksa 646 UPDATE'in hepsi sıfır satır etkiler ve sessizce hiçbir şey
+# yapmaz. Servisler boyut senkronunda (seed içinde) oluşur.
+#
+# Logolar depoda durur (web/public/servis-logolari); çalışma anında dış bir
+# CDN'e gidilmez — ziyaretçinin IP'si üçüncü tarafa sızmasın diye.
+ADIM="servis logoları"
+IKON_SQL="${KOK}/web/scripts/servis-logolari.sql"
+if [[ -f "$IKON_SQL" ]]; then
+  if sudo -u postgres psql -q -d "$DB_ADI" -f "$IKON_SQL" >/dev/null 2>&1; then
+    IKON_SAYI="$(sudo -u postgres psql -tAc "SELECT count(*) FROM services WHERE icon_url <> ''" -d "$DB_ADI" 2>/dev/null || echo '?')"
+    tamam "servis logoları bağlandı (${IKON_SAYI} servis)"
+  else
+    uyari "servis logoları bağlanamadı — site logosuz açılır"
+    bilgi "  sudo -u postgres psql -d ${DB_ADI} -f ${IKON_SQL}"
+  fi
+else
+  uyari "logo dosyası bulunamadı: $IKON_SQL"
+fi
+
 # ─────────────────────────── systemd ───────────────────────────
 ADIM="systemd"
 baslik "Servisler"
@@ -597,11 +622,11 @@ $(ortak_sertlestirme)
 # Next standalone çalışma anında .next/cache altına yazar; ProtectSystem=strict
 # altında bu yol açıkça yazılabilir olmalıdır, yoksa ilk istekte EACCES alınır.
 #
-# 🔴 BU YORUMDA TERS TIRNAK KULLANMAYIN. Heredoc tırnaksız (<<WEBBIRIM) çünkü
-# ${KOK} ve $(ortak_sertlestirme) genişlemeli; ama aynı genişleme ters tırnağı
-# da KOMUT İKAMESİ sayar. Yorum içindeki `.next/cache` bash tarafından
-# çalıştırılmaya kalkıldı ve kurulum "line 580: .next/cache: No such file or
-# directory" hatası verdi — yorum, kodu bozdu.
+# BU YORUMDA TERS TIRNAK YOK, BİLEREK. Heredoc tırnaksız yazılmak zorunda
+# (KOK ve ortak_sertlestirme genişlemeli); aynı genişleme ters tırnağı da
+# komut ikamesi sayar. Daha önce buradaki bir yorum ters tırnak içeriyordu ve
+# bash onu ÇALIŞTIRMAYA kalkıp "No such file or directory" verdi — yorum,
+# kodu bozdu. Uyarının kendisi de ters tırnakla yazılınca hata tekrarlandı.
 ReadWritePaths=${KOK}/web/.next
 
 [Install]
@@ -711,9 +736,23 @@ if [[ -n "$ALAN_ADI" ]]; then
   # görünmez.
   rm -f /etc/caddy/tls.d/*.conf
   if [[ "$TLS_MODU" == "kendi" ]]; then
+    # 🔴 SAHİPLİK `root:caddy`, İZİN 640 — `root:root 600` DEĞİL.
+    #
+    # Caddy servisi `caddy` kullanıcısı olarak koşar (Debian paketi:
+    # User=caddy). Anahtar yalnız root tarafından okunabilir olursa Caddy
+    # açılışta ölür:
+    #   "loading certificates: open /etc/caddy/onay360.key: permission denied"
+    # ve 443 HİÇ dinlenmez. Cloudflare arkasındaysanız gördüğünüz tek şey
+    # "Error 521 Web server is down" olur — sebebi origin'de, mesaj Cloudflare'de.
+    # Ölçüldü: gerçek kurulum, 11 Eylül 2026.
+    #
+    # Grup okuması yeterlidir; anahtar hâlâ dünyaya kapalıdır (640).
+    SERT_GRUP="caddy"
+    getent group caddy >/dev/null 2>&1 || SERT_GRUP="root"
     install -m 644 "$SERT_CRT" /etc/caddy/onay360.crt
-    install -m 600 "$SERT_KEY" /etc/caddy/onay360.key
-    chown root:root /etc/caddy/onay360.crt /etc/caddy/onay360.key
+    install -m 640 "$SERT_KEY" /etc/caddy/onay360.key
+    chown "root:$SERT_GRUP" /etc/caddy/onay360.crt /etc/caddy/onay360.key
+    [[ "$SERT_GRUP" == "caddy" ]] || uyari "caddy grubu yok — anahtar root'a ait kaldı, Caddy okuyamayabilir"
     printf 'tls /etc/caddy/onay360.crt /etc/caddy/onay360.key\n' > /etc/caddy/tls.d/onay360.conf
     tamam "sertifika kuruldu (ACME devre dışı)"
   else
