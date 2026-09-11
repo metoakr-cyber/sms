@@ -52,6 +52,19 @@ ADIM="ön kontroller"
 [[ -f "$ENV_YOLU" ]] || hata "$ENV_YOLU yok — bu sunucuda kurulum yapılmamış. Önce: sudo bash deploy/kurulum.sh"
 [[ -d "$KOK/.git" ]] || hata "$KOK bir git deposu değil"
 
+# 🔴 GO APT PAKETİ DEĞİL. `kurulum.sh` onu /usr/local/go altına açar ve o dizin
+# root'un VARSAYILAN PATH'inde YOKTUR — kurulum kendi içinde export ettiği için
+# orada sorun çıkmaz, ama bu betik ayrı bir kabukta koşar. Ölçüldü (11 Eylül
+# 2026, gerçek sunucu): "line 98: go: command not found" ile derleme adımında
+# durdu. `goose` GOBIN=/usr/local/bin ile kurulduğu için zaten yoldadır;
+# node/npm apt'tan gelir. Yine de üçü de burada AÇIKÇA aranır: eksik bir aracı
+# derleme ortasında keşfetmek, yarım kalmış bir güncelleme demektir.
+export PATH="/usr/local/go/bin:/root/go/bin:$PATH"
+for arac in go npm goose; do
+  command -v "$arac" >/dev/null 2>&1 \
+    || hata "$arac bulunamadı — bu sunucuda kurulum eksik. Çalıştırın: sudo bash $KOK/deploy/kurulum.sh"
+done
+
 # Yapılandırma .env'den OKUNUR, sorulmaz. Derlemenin ihtiyaç duyduğu üç değer:
 set -a; . "$ENV_YOLU"; set +a
 KOK_URL="${PUBLIC_BASE_URL:?PUBLIC_BASE_URL .env içinde yok}"
